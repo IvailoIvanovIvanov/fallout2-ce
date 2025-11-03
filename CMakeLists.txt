@@ -30,6 +30,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_CXX_EXTENSIONS NO)
 
 option(FALLOUT_VENDORED "Use vendored third-party libraries" ON)
+option(FALLOUT_SDL2_IMAGE "Enable PNG loading via SDL2_image (system dependency)" OFF)
 
 if(ANDROID)
     add_library(${EXECUTABLE_NAME} SHARED)
@@ -44,6 +45,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/animation.h"
     "src/art.cc"
     "src/art.h"
+    "src/art_texture.cc"
+    "src/art_texture.h"
     "src/audio_file.cc"
     "src/audio_file.h"
     "src/audio.cc"
@@ -378,6 +381,14 @@ if(FALLOUT_VENDORED)
 else()
     find_package(ZLIB)
     find_package(SDL2)
+    if(FALLOUT_SDL2_IMAGE)
+        find_package(SDL2_image)
+        if(SDL2_IMAGE_FOUND)
+            target_compile_definitions(${EXECUTABLE_NAME} PUBLIC HAVE_SDL2_IMAGE)
+            target_link_libraries(${EXECUTABLE_NAME} ${SDL2_IMAGE_LIBRARIES})
+            target_include_directories(${EXECUTABLE_NAME} PRIVATE ${SDL2_IMAGE_INCLUDE_DIRS})
+        endif()
+    endif()
 endif()
 
 target_link_libraries(${EXECUTABLE_NAME} ${ZLIB_LIBRARIES})
