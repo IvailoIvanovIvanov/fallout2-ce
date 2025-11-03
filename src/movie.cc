@@ -261,7 +261,7 @@ static void movieDirectImpl(unsigned char* pixels, int src_width, int src_height
     destRect.x += gMovieWindowRect.left;
     destRect.y += gMovieWindowRect.top;
 
-    _scr_blit(pixels, src_width, src_height, src_x, src_y, dst_width, dst_height, dst_x, dst_y);
+    scrBlitLogical(pixels, src_width, src_x, src_y, dst_width, dst_height, dst_x, dst_y);
     renderPresent();
 }
 
