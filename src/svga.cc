@@ -13,6 +13,7 @@
 #include "win32.h"
 #include "window_manager.h"
 #include "window_manager_private.h"
+#include "display_scale.h"
 
 namespace fallout {
 
@@ -194,6 +195,11 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
 
             return -1;
         }
+
+        // Initialize logical/physical scale mapping for rendering and input.
+        int winW = 0, winH = 0;
+        SDL_GetWindowSize(gSdlWindow, &winW, &winH);
+        displayScaleInit(width, height, winW, winH);
     }
 
     return 0;
@@ -405,6 +411,13 @@ void handleWindowSizeChanged()
 {
     destroyRenderer();
     createRenderer(screenGetWidth(), screenGetHeight());
+
+    // Recompute scale mapping on resize.
+    if (gSdlWindow != nullptr) {
+        int winW = 0, winH = 0;
+        SDL_GetWindowSize(gSdlWindow, &winW, &winH);
+        displayScaleInit(screenGetWidth(), screenGetHeight(), winW, winH);
+    }
 }
 
 void renderPresent()

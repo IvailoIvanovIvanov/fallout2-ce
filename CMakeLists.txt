@@ -2,6 +2,15 @@ cmake_minimum_required(VERSION 3.13)
 
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
 
+# Allow older third-party subprojects (like some SDL2 CMake scripts) to
+# configure under modern CMake by declaring the minimum policy version they
+# expect. This avoids errors like:
+#   "Compatibility with CMake < 3.5 has been removed from CMake."
+# Users can also pass -DCMAKE_POLICY_VERSION_MINIMUM=3.5 on the command line.
+if(NOT DEFINED CMAKE_POLICY_VERSION_MINIMUM)
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
+
 set(EXECUTABLE_NAME fallout2-ce)
 
 if(APPLE)
@@ -83,6 +92,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/dinput.h"
     "src/display_monitor.cc"
     "src/display_monitor.h"
+    "src/display_scale.cc"
+    "src/display_scale.h"
     "src/draw.cc"
     "src/draw.h"
     "src/elevator.cc"

@@ -1487,7 +1487,7 @@ static void showSplash()
 
             int x = screenWidth > scaledWidth ? (screenWidth - scaledWidth) / 2 : 0;
             int y = screenHeight > scaledHeight ? (screenHeight - scaledHeight) / 2 : 0;
-            _scr_blit(scaled, scaledWidth, scaledHeight, 0, 0, scaledWidth, scaledHeight, x, y);
+            scrBlitLogical(scaled, scaledWidth, 0, 0, scaledWidth, scaledHeight, x, y);
             paletteFadeTo(palette);
 
             internal_free(scaled);
@@ -1495,7 +1495,7 @@ static void showSplash()
     } else {
         int x = (screenWidth - width) / 2;
         int y = (screenHeight - height) / 2;
-        _scr_blit(data, width, height, 0, 0, width, height, x, y);
+    scrBlitLogical(data, width, 0, 0, width, height, x, y);
         paletteFadeTo(palette);
     }
 
