@@ -1,4 +1,5 @@
 #include "dinput.h"
+#include "display_scale.h"
 
 namespace fallout {
 
@@ -53,7 +54,37 @@ bool mouseDeviceGetData(MouseData* mouseState)
     // update mouse position manually.
     SDL_PumpEvents();
 
-    Uint32 buttons = SDL_GetRelativeMouseState(&(mouseState->x), &(mouseState->y));
+    // Get raw relative movement in physical window pixels.
+    int dxPhysical = 0;
+    int dyPhysical = 0;
+    Uint32 buttons = SDL_GetRelativeMouseState(&dxPhysical, &dyPhysical);
+
+    // Map physical deltas to logical coordinates using integer scaling.
+    // Accumulate sub-pixel remainders to avoid losing movement when scale > 1.
+    static int remX = 0;
+    static int remY = 0;
+    int scale = displayGetScale();
+    if (scale < 1) scale = 1;
+
+    remX += dxPhysical;
+    remY += dyPhysical;
+
+    int dxLogical;
+    int dyLogical;
+    if (scale == 1) {
+        dxLogical = remX;
+        dyLogical = remY;
+        remX = 0;
+        remY = 0;
+    } else {
+        dxLogical = remX / scale;
+        dyLogical = remY / scale;
+        remX -= dxLogical * scale;
+        remY -= dyLogical * scale;
+    }
+
+    mouseState->x = dxLogical;
+    mouseState->y = dyLogical;
     mouseState->buttons[0] = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
     mouseState->buttons[1] = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
     mouseState->wheelX = gMouseWheelDeltaX;
