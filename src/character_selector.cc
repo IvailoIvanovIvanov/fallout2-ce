@@ -13,6 +13,7 @@
 #include "db.h"
 #include "debug.h"
 #include "draw.h"
+#include "art_png_loader.h"
 #include "game.h"
 #include "game_sound.h"
 #include "input.h"
@@ -591,17 +592,27 @@ static bool characterSelectorWindowRenderFace()
 {
     bool success = false;
 
-    FrmImage faceFrmImage;
     int faceFid = buildFid(OBJ_TYPE_INTERFACE, gCustomPremadeCharacterDescriptions[gCurrentPremadeCharacter].face, 0, 0, 0);
-    if (faceFrmImage.lock(faceFid)) {
-        unsigned char* data = faceFrmImage.getData();
-        if (data != nullptr) {
-            int width = faceFrmImage.getWidth();
-            int height = faceFrmImage.getHeight();
-            blitBufferToBufferTrans(data, width, height, width, (gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * 23 + 27), CS_WINDOW_WIDTH);
-            success = true;
+
+    // Prefer PNG override if available and SDL2_image is enabled; otherwise fall back to FRM.
+    unsigned char* pngData = nullptr;
+    int pngW = 0, pngH = 0;
+    if (artPngLoadIndexed(faceFid, &pngData, &pngW, &pngH)) {
+        blitBufferToBufferTrans(pngData, pngW, pngH, pngW, (gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * 23 + 27), CS_WINDOW_WIDTH);
+        internal_free(pngData);
+        success = true;
+    } else {
+        FrmImage faceFrmImage;
+        if (faceFrmImage.lock(faceFid)) {
+            unsigned char* data = faceFrmImage.getData();
+            if (data != nullptr) {
+                int width = faceFrmImage.getWidth();
+                int height = faceFrmImage.getHeight();
+                blitBufferToBufferTrans(data, width, height, width, (gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * 23 + 27), CS_WINDOW_WIDTH);
+                success = true;
+            }
+            faceFrmImage.unlock();
         }
-        faceFrmImage.unlock();
     }
 
     return success;

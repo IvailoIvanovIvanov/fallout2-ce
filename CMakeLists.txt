@@ -47,6 +47,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/art.h"
     "src/art_texture.cc"
     "src/art_texture.h"
+    "src/art_png_loader.cc"
+    "src/art_png_loader.h"
     "src/audio_file.cc"
     "src/audio_file.h"
     "src/audio.cc"
