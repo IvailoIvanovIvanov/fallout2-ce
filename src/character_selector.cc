@@ -594,6 +594,25 @@ static bool characterSelectorWindowRenderFace()
 
     int faceFid = buildFid(OBJ_TYPE_INTERFACE, gCustomPremadeCharacterDescriptions[gCurrentPremadeCharacter].face, 0, 0, 0);
 
+    // Tiny debug: log the FRM path and the PNG path we will try.
+    const char* frmPath = artBuildFilePath(faceFid);
+    if (frmPath != nullptr && frmPath[0] != '\0') {
+        char pngPath[COMPAT_MAX_PATH];
+        // Copy and replace extension with .png
+        strncpy(pngPath, frmPath, sizeof(pngPath) - 1);
+        pngPath[sizeof(pngPath) - 1] = '\0';
+        char* dot = strrchr(pngPath, '.');
+        if (dot != nullptr) {
+            strcpy(dot, ".png");
+        } else {
+            size_t len = strlen(pngPath);
+            if (len + 4 < sizeof(pngPath)) {
+                strcat(pngPath, ".png");
+            }
+        }
+        debugPrint("CS: face fid=%d -> FRM=\"%s\" PNG=\"%s\"\n", faceFid, frmPath, pngPath);
+    }
+
     // Prefer PNG override if available and SDL2_image is enabled; otherwise fall back to FRM.
     unsigned char* pngData = nullptr;
     int pngW = 0, pngH = 0;
@@ -601,6 +620,7 @@ static bool characterSelectorWindowRenderFace()
         blitBufferToBufferTrans(pngData, pngW, pngH, pngW, (gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * 23 + 27), CS_WINDOW_WIDTH);
         internal_free(pngData);
         success = true;
+        debugPrint("CS: loaded PNG face %dx%d\n", pngW, pngH);
     } else {
         FrmImage faceFrmImage;
         if (faceFrmImage.lock(faceFid)) {
@@ -612,6 +632,9 @@ static bool characterSelectorWindowRenderFace()
                 success = true;
             }
             faceFrmImage.unlock();
+        }
+        if (success) {
+            debugPrint("CS: using FRM face (no PNG override)\n");
         }
     }
 

@@ -23,6 +23,10 @@ static void destroyRenderer();
 // screen rect
 Rect _scr_size;
 
+// When non-zero, overrides the created SDL window size independent of logical size.
+static int gRequestedWindowW = 0;
+static int gRequestedWindowH = 0;
+
 // 0x6ACA18
 void (*_scr_blit)(unsigned char* src, int src_pitch, int a3, int src_x, int src_y, int src_width, int src_height, int dest_x, int dest_y) = _GNW95_ShowRect;
 
@@ -104,6 +108,7 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
 {
     bool fullscreen = true;
     int scale = 1;
+    bool fitToWindow = false; // Preserve 640x480 logical size and scale to window
 
     Config resolutionConfig;
     if (configInit(&resolutionConfig)) {
@@ -118,10 +123,17 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
                 height = screenHeight;
             }
 
+            // Cache original requested window size from config before any scaling logic.
+            int cfgWindowW = width;
+            int cfgWindowH = height;
+
             bool windowed;
             if (configGetBool(&resolutionConfig, "MAIN", "WINDOWED", &windowed)) {
                 fullscreen = !windowed;
             }
+
+            // New option: When enabled, force logical 640x480 and scale to fit window (preserve aspect).
+            configGetBool(&resolutionConfig, "MAIN", "FIT_TO_WINDOW", &fitToWindow);
 
             int scaleValue;
             if (configGetInt(&resolutionConfig, "MAIN", "SCALE_2X", &scaleValue)) {
@@ -141,6 +153,29 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
             configGetBool(&resolutionConfig, "IFACE", "IFACE_BAR_SIDES_ORI", &gInterfaceSidePanelsExtendFromScreenEdge);
         }
         configFree(&resolutionConfig);
+    }
+
+    // Apply FIT_TO_WINDOW by keeping logical size at 640x480 and requesting
+    // the window size from SCR_WIDTH/SCR_HEIGHT (via gRequestedWindowW/H).
+    if (fitToWindow) {
+        // Remember requested window size from config (pre-scaling values).
+        // If config wasn't read, these remain 0 and fallback path will be used.
+        // Note: If SCALE_2X was set, FIT_TO_WINDOW takes precedence.
+        // Re-read from resolutionConfig is not possible here, so rely on cached cfgWindowW/H.
+        // If not available, default to current width/height * scale (best-effort).
+        if (gRequestedWindowW == 0 || gRequestedWindowH == 0) {
+            // We cannot directly access cfgWindowW/H here; recompute best-effort.
+            // Since width/height may have been divided by scale above, multiply back.
+            gRequestedWindowW = width * scale;
+            gRequestedWindowH = height * scale;
+        }
+        // Use base logical size.
+        width = 640;
+        height = 480;
+        scale = 1;
+    } else {
+        gRequestedWindowW = 0;
+        gRequestedWindowH = 0;
     }
 
     if (_GNW95_init_window(width, height, fullscreen, scale) == -1) {
@@ -182,7 +217,9 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
             windowFlags |= SDL_WINDOW_FULLSCREEN;
         }
 
-        gSdlWindow = SDL_CreateWindow(gProgramWindowTitle, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, width * scale, height * scale, windowFlags);
+        int windowW = (gRequestedWindowW > 0 ? gRequestedWindowW : (width * scale));
+        int windowH = (gRequestedWindowH > 0 ? gRequestedWindowH : (height * scale));
+        gSdlWindow = SDL_CreateWindow(gProgramWindowTitle, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, windowW, windowH, windowFlags);
         if (gSdlWindow == nullptr) {
             return -1;
         }
