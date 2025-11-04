@@ -6,6 +6,7 @@
 #include <algorithm>
 
 #include "art.h"
+#include "art_png_loader.h"
 #include "cycle.h"
 #include "debug.h"
 #include "delay.h"
@@ -569,15 +570,42 @@ static int elevatorWindowInit(int elevator)
     }
 
     gElevatorWindowBuffer = windowGetBuffer(gElevatorWindow);
-    memcpy(gElevatorWindowBuffer, _elevatorBackgroundFrmImage.getData(), _elevatorBackgroundFrmImage.getWidth() * _elevatorBackgroundFrmImage.getHeight());
+    // PNG-first: background
+    {
+        unsigned char* bgPng;
+        int bgW, bgH;
+        if (artPngGetIndexedCached(backgroundFid, &bgPng, &bgW, &bgH)) {
+            blitBufferToBuffer(bgPng,
+                _elevatorBackgroundFrmImage.getWidth(),
+                _elevatorBackgroundFrmImage.getHeight(),
+                bgW,
+                gElevatorWindowBuffer,
+                _elevatorBackgroundFrmImage.getWidth());
+        } else {
+            memcpy(gElevatorWindowBuffer, _elevatorBackgroundFrmImage.getData(), _elevatorBackgroundFrmImage.getWidth() * _elevatorBackgroundFrmImage.getHeight());
+        }
+    }
 
     if (_elevatorPanelFrmImage.isLocked()) {
-        blitBufferToBuffer(_elevatorPanelFrmImage.getData(),
-            _elevatorPanelFrmImage.getWidth(),
-            _elevatorPanelFrmImage.getHeight(),
-            _elevatorPanelFrmImage.getWidth(),
-            gElevatorWindowBuffer + _elevatorBackgroundFrmImage.getWidth() * (_elevatorBackgroundFrmImage.getHeight() - _elevatorPanelFrmImage.getHeight()),
-            _elevatorBackgroundFrmImage.getWidth());
+        // PNG-first: panel
+        unsigned char* panelPng;
+        int panelW, panelH;
+        int panelFid = buildFid(OBJ_TYPE_INTERFACE, elevatorBackground->panelFrmId, 0, 0, 0);
+        if (artPngGetIndexedCached(panelFid, &panelPng, &panelW, &panelH)) {
+            blitBufferToBuffer(panelPng,
+                _elevatorPanelFrmImage.getWidth(),
+                _elevatorPanelFrmImage.getHeight(),
+                panelW,
+                gElevatorWindowBuffer + _elevatorBackgroundFrmImage.getWidth() * (_elevatorBackgroundFrmImage.getHeight() - _elevatorPanelFrmImage.getHeight()),
+                _elevatorBackgroundFrmImage.getWidth());
+        } else {
+            blitBufferToBuffer(_elevatorPanelFrmImage.getData(),
+                _elevatorPanelFrmImage.getWidth(),
+                _elevatorPanelFrmImage.getHeight(),
+                _elevatorPanelFrmImage.getWidth(),
+                gElevatorWindowBuffer + _elevatorBackgroundFrmImage.getWidth() * (_elevatorBackgroundFrmImage.getHeight() - _elevatorPanelFrmImage.getHeight()),
+                _elevatorBackgroundFrmImage.getWidth());
+        }
     }
 
     int y = 40;

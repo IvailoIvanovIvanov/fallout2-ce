@@ -16,6 +16,7 @@
 #include "draw.h"
 #include "game.h"
 #include "game_mouse.h"
+#include "art_png_loader.h"
 #include "game_movie.h"
 #include "game_sound.h"
 #include "input.h"
@@ -453,12 +454,19 @@ static void endgameEndingRenderStaticScene(int fid, const char* narratorFileName
         return;
     }
 
-    unsigned char* backgroundData = artGetFrameData(background, 0, 0);
-    if (backgroundData != nullptr) {
-        blitBufferToBuffer(backgroundData, ENDGAME_ENDING_WINDOW_WIDTH, ENDGAME_ENDING_WINDOW_HEIGHT, ENDGAME_ENDING_WINDOW_WIDTH, gEndgameEndingSlideshowWindowBuffer, ENDGAME_ENDING_WINDOW_WIDTH);
-        windowRefresh(gEndgameEndingSlideshowWindow);
+    // Load target palette first so PNG mapping uses correct colors.
+    endgameEndingLoadPalette(FID_TYPE(fid), fid & 0xFFF);
 
-        endgameEndingLoadPalette(FID_TYPE(fid), fid & 0xFFF);
+    unsigned char* pngData = nullptr;
+    int pngW = 0, pngH = 0;
+    bool usedPng = artPngLoadIndexed(fid, &pngData, &pngW, &pngH);
+
+    // Choose background source: PNG-first, else FRM data.
+    unsigned char* backgroundData = usedPng ? pngData : artGetFrameData(background, 0, 0);
+    int srcPitch = usedPng ? pngW : ENDGAME_ENDING_WINDOW_WIDTH;
+    if (backgroundData != nullptr) {
+        blitBufferToBuffer(backgroundData, ENDGAME_ENDING_WINDOW_WIDTH, ENDGAME_ENDING_WINDOW_HEIGHT, srcPitch, gEndgameEndingSlideshowWindowBuffer, ENDGAME_ENDING_WINDOW_WIDTH);
+        windowRefresh(gEndgameEndingSlideshowWindow);
 
         // CE: Update overlay.
         endgameEndingUpdateOverlay();
@@ -503,7 +511,7 @@ static void endgameEndingRenderStaticScene(int fid, const char* narratorFileName
                 break;
             }
 
-            blitBufferToBuffer(backgroundData, ENDGAME_ENDING_WINDOW_WIDTH, ENDGAME_ENDING_WINDOW_HEIGHT, ENDGAME_ENDING_WINDOW_WIDTH, gEndgameEndingSlideshowWindowBuffer, ENDGAME_ENDING_WINDOW_WIDTH);
+            blitBufferToBuffer(backgroundData, ENDGAME_ENDING_WINDOW_WIDTH, ENDGAME_ENDING_WINDOW_HEIGHT, srcPitch, gEndgameEndingSlideshowWindowBuffer, ENDGAME_ENDING_WINDOW_WIDTH);
             endgameEndingRefreshSubtitles();
             windowRefresh(gEndgameEndingSlideshowWindow);
             soundContinueAll();
@@ -536,6 +544,9 @@ static void endgameEndingRenderStaticScene(int fid, const char* narratorFileName
     }
 
     artUnlock(backgroundHandle);
+    if (usedPng && pngData != nullptr) {
+        internal_free(pngData);
+    }
 }
 
 // 0x43F99C

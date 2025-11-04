@@ -1,6 +1,7 @@
 #include "options.h"
 
 #include "art.h"
+#include "art_png_loader.h"
 #include "color.h"
 #include "cycle.h"
 #include "debug.h"
@@ -249,7 +250,24 @@ static int optionsWindowInit()
     gameMouseSetCursor(MOUSE_CURSOR_ARROW);
 
     gOptionsWindowBuffer = windowGetBuffer(gOptionsWindow);
-    memcpy(gOptionsWindowBuffer, _optionsFrmImages[OPTIONS_WINDOW_FRM_BACKGROUND].getData(), _optionsFrmImages[OPTIONS_WINDOW_FRM_BACKGROUND].getWidth() * _optionsFrmImages[OPTIONS_WINDOW_FRM_BACKGROUND].getHeight());
+    // PNG-first: draw options background from PNG override if present.
+    {
+        int bgFid = buildFid(OBJ_TYPE_INTERFACE, gOptionsWindowFrmIds[OPTIONS_WINDOW_FRM_BACKGROUND], 0, 0, 0);
+        unsigned char* bgPng;
+        int bgW, bgH;
+        if (artPngGetIndexedCached(bgFid, &bgPng, &bgW, &bgH)) {
+            blitBufferToBuffer(bgPng,
+                _optionsFrmImages[OPTIONS_WINDOW_FRM_BACKGROUND].getWidth(),
+                _optionsFrmImages[OPTIONS_WINDOW_FRM_BACKGROUND].getHeight(),
+                bgW,
+                gOptionsWindowBuffer,
+                _optionsFrmImages[OPTIONS_WINDOW_FRM_BACKGROUND].getWidth());
+        } else {
+            memcpy(gOptionsWindowBuffer,
+                _optionsFrmImages[OPTIONS_WINDOW_FRM_BACKGROUND].getData(),
+                _optionsFrmImages[OPTIONS_WINDOW_FRM_BACKGROUND].getWidth() * _optionsFrmImages[OPTIONS_WINDOW_FRM_BACKGROUND].getHeight());
+        }
+    }
 
     fontSetCurrent(103);
 
@@ -385,9 +403,24 @@ int showPause(bool a1)
     }
 
     unsigned char* windowBuffer = windowGetBuffer(window);
-    memcpy(windowBuffer,
-        frmImages[PAUSE_WINDOW_FRM_BACKGROUND].getData(),
-        frmImages[PAUSE_WINDOW_FRM_BACKGROUND].getWidth() * frmImages[PAUSE_WINDOW_FRM_BACKGROUND].getHeight());
+    // PNG-first: draw pause background from PNG override if present.
+    {
+        int bgFid = buildFid(OBJ_TYPE_INTERFACE, gPauseWindowFrmIds[PAUSE_WINDOW_FRM_BACKGROUND], 0, 0, 0);
+        unsigned char* bgPng;
+        int bgW, bgH;
+        if (artPngGetIndexedCached(bgFid, &bgPng, &bgW, &bgH)) {
+            blitBufferToBuffer(bgPng,
+                frmImages[PAUSE_WINDOW_FRM_BACKGROUND].getWidth(),
+                frmImages[PAUSE_WINDOW_FRM_BACKGROUND].getHeight(),
+                bgW,
+                windowBuffer,
+                frmImages[PAUSE_WINDOW_FRM_BACKGROUND].getWidth());
+        } else {
+            memcpy(windowBuffer,
+                frmImages[PAUSE_WINDOW_FRM_BACKGROUND].getData(),
+                frmImages[PAUSE_WINDOW_FRM_BACKGROUND].getWidth() * frmImages[PAUSE_WINDOW_FRM_BACKGROUND].getHeight());
+        }
+    }
 
     blitBufferToBufferTrans(frmImages[PAUSE_WINDOW_FRM_DONE_BOX].getData(),
         frmImages[PAUSE_WINDOW_FRM_DONE_BOX].getWidth(),
