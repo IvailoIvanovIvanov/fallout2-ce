@@ -4932,9 +4932,10 @@ static void _obj_render_object(Object* object, Rect* rect, int light)
     unsigned char* src2 = src;
     int v50 = objectRect.left - object->sx;
     int v49 = objectRect.top - object->sy;
-    // PNG-first for static scenery: if a PNG override exists for this fid and the FRM
-    // has a single frame, use the cached indexed PNG buffer at logical size.
-    if (type == OBJ_TYPE_SCENERY) {
+    // PNG-first for static world objects: scenery, items, and walls (single-frame FRMs only).
+    // If a PNG override exists for this fid and the FRM has a single frame, use the cached
+    // indexed PNG buffer at logical size.
+    if (type == OBJ_TYPE_SCENERY || type == OBJ_TYPE_ITEM || type == OBJ_TYPE_WALL) {
         int fc = artGetFrameCount(art);
         if (fc == 1) {
             unsigned char* pngData = nullptr;

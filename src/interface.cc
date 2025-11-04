@@ -32,6 +32,7 @@
 #include "stat.h"
 #include "svga.h"
 #include "text_font.h"
+#include "art_png_loader.h"
 #include "tile.h"
 #include "window_manager.h"
 
@@ -335,14 +336,22 @@ int interfaceInit()
     if (gInterfaceBarIsCustom) {
         blitBufferToBuffer(customInterfaceBarGetBackgroundImageData(), gInterfaceBarWidth, INTERFACE_BAR_HEIGHT - 1, gInterfaceBarWidth, gInterfaceWindowBuffer, gInterfaceBarWidth);
     } else {
-        FrmImage backgroundFrmImage;
         fid = buildFid(OBJ_TYPE_INTERFACE, 16, 0, 0, 0);
-        if (!backgroundFrmImage.lock(fid)) {
-            return intface_fatal_error(-1);
+        // Try PNG-first for interface bar background
+        unsigned char* pngBuf = nullptr;
+        int pngW = 0, pngH = 0;
+        if (artPngGetIndexedCached(fid, &pngBuf, &pngW, &pngH) && pngBuf != nullptr) {
+            int copyW = pngW < gInterfaceBarWidth ? pngW : gInterfaceBarWidth;
+            int copyH = pngH < (INTERFACE_BAR_HEIGHT - 1) ? pngH : (INTERFACE_BAR_HEIGHT - 1);
+            blitBufferToBuffer(pngBuf, copyW, copyH, pngW, gInterfaceWindowBuffer, gInterfaceBarWidth);
+        } else {
+            FrmImage backgroundFrmImage;
+            if (!backgroundFrmImage.lock(fid)) {
+                return intface_fatal_error(-1);
+            }
+            blitBufferToBuffer(backgroundFrmImage.getData(), gInterfaceBarWidth, INTERFACE_BAR_HEIGHT - 1, gInterfaceBarWidth, gInterfaceWindowBuffer, gInterfaceBarWidth);
+            backgroundFrmImage.unlock();
         }
-
-        blitBufferToBuffer(backgroundFrmImage.getData(), gInterfaceBarWidth, INTERFACE_BAR_HEIGHT - 1, gInterfaceBarWidth, gInterfaceWindowBuffer, gInterfaceBarWidth);
-        backgroundFrmImage.unlock();
     }
 
     fid = buildFid(OBJ_TYPE_INTERFACE, 47, 0, 0, 0);
