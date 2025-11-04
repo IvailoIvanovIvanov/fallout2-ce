@@ -382,13 +382,21 @@ if(FALLOUT_VENDORED)
     add_subdirectory("third_party/sdl2")
 else()
     find_package(ZLIB)
-    find_package(SDL2)
+    find_package(SDL2 CONFIG)
     if(FALLOUT_SDL2_IMAGE)
-        find_package(SDL2_image)
-        if(SDL2_IMAGE_FOUND)
+        # Prefer CONFIG mode so vcpkg's imported target is used.
+        find_package(SDL2_image CONFIG)
+        if(SDL2_image_FOUND OR SDL2_IMAGE_FOUND OR TARGET SDL2_image::SDL2_image)
             target_compile_definitions(${EXECUTABLE_NAME} PUBLIC HAVE_SDL2_IMAGE)
-            target_link_libraries(${EXECUTABLE_NAME} ${SDL2_IMAGE_LIBRARIES})
-            target_include_directories(${EXECUTABLE_NAME} PRIVATE ${SDL2_IMAGE_INCLUDE_DIRS})
+            if(TARGET SDL2_image::SDL2_image)
+                target_link_libraries(${EXECUTABLE_NAME} SDL2_image::SDL2_image)
+            else()
+                # Fallback for FindSDL2_image modules exposing legacy variables
+                target_link_libraries(${EXECUTABLE_NAME} ${SDL2_IMAGE_LIBRARIES})
+                target_include_directories(${EXECUTABLE_NAME} PRIVATE ${SDL2_IMAGE_INCLUDE_DIRS})
+            endif()
+        else()
+            message(WARNING "SDL2_image not found; PNG support disabled (HAVE_SDL2_IMAGE not defined)")
         endif()
     endif()
 endif()
@@ -416,4 +424,55 @@ if(APPLE)
     endif()
 
     include(CPack)
+endif()
+
+# Windows: install/bundle helpers to assemble a runnable folder with the exe and DLLs.
+if(WIN32)
+    include(GNUInstallDirs)
+
+    # Install the executable to the root of the install dir
+    install(TARGETS ${EXECUTABLE_NAME} RUNTIME DESTINATION .)
+
+    # If SDL2_image is used and available as a shared lib, install its DLL
+    if(TARGET SDL2_image::SDL2_image)
+        install(FILES $<TARGET_FILE:SDL2_image::SDL2_image> DESTINATION .)
+    endif()
+
+    # If ZLIB is shared, install its DLL as well (some SDL_image builds depend on it)
+    if(TARGET ZLIB::ZLIB)
+        install(FILES $<TARGET_FILE:ZLIB::ZLIB> DESTINATION .)
+    endif()
+
+    # Optional: create a simple ZIP package of the install tree
+    set(CPACK_GENERATOR "ZIP")
+    set(CPACK_PACKAGE_FILE_NAME "fallout2-ce-win64")
+    include(CPack)
+
+    # Convenience: `bundle` target that copies runtime files to a dist folder next to the build outputs
+    set(DIST_DIR "${CMAKE_BINARY_DIR}/dist/$<CONFIG>")
+    add_custom_target(bundle
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${DIST_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${EXECUTABLE_NAME}> "${DIST_DIR}/"
+        COMMENT "Assembling runnable bundle in ${DIST_DIR}"
+    )
+    add_dependencies(bundle ${EXECUTABLE_NAME})
+
+    if(TARGET SDL2_image::SDL2_image)
+        add_custom_command(TARGET bundle POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL2_image::SDL2_image> "${DIST_DIR}/"
+        )
+    endif()
+    # Copy SDL2 runtime if using shared SDL2 from CONFIG package
+    if(TARGET SDL2::SDL2)
+        add_custom_command(TARGET bundle POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL2::SDL2> "${DIST_DIR}/"
+        )
+    endif()
+    if(TARGET ZLIB::ZLIB)
+        add_custom_command(TARGET bundle POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:ZLIB::ZLIB> "${DIST_DIR}/"
+        )
+    endif()
+
+    # (Readme omitted to avoid Windows shell quoting issues.)
 endif()

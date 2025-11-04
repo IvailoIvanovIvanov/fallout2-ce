@@ -23,6 +23,7 @@
 #include "proto_instance.h"
 #include "scripts.h"
 #include "settings.h"
+#include "art_png_loader.h"
 #include "svga.h"
 #include "text_object.h"
 #include "tile.h"
@@ -4931,7 +4932,21 @@ static void _obj_render_object(Object* object, Rect* rect, int light)
     unsigned char* src2 = src;
     int v50 = objectRect.left - object->sx;
     int v49 = objectRect.top - object->sy;
-    src += frameWidth * v49 + v50;
+    // PNG-first for static scenery: if a PNG override exists for this fid and the FRM
+    // has a single frame, use the cached indexed PNG buffer at logical size.
+    if (type == OBJ_TYPE_SCENERY) {
+        int fc = artGetFrameCount(art);
+        if (fc == 1) {
+            unsigned char* pngData = nullptr;
+            int pngW = 0, pngH = 0;
+            if (artPngGetIndexedCached(object->fid, &pngData, &pngW, &pngH) && pngData != nullptr) {
+                src2 = pngData;
+                frameWidth = pngW;
+                frameHeight = pngH;
+            }
+        }
+    }
+    src = src2 + frameWidth * v49 + v50;
     int objectWidth = objectRect.right - objectRect.left + 1;
     int objectHeight = objectRect.bottom - objectRect.top + 1;
 

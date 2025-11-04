@@ -19,6 +19,7 @@
 #include "platform_compat.h"
 #include "settings.h"
 #include "svga.h"
+#include "art_png_loader.h"
 
 namespace fallout {
 
@@ -1336,6 +1337,15 @@ static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light)
     int tileWidth = artGetWidth(tileFrm, 0, 0);
     int tileHeight = artGetHeight(tileFrm, 0, 0);
 
+    // Try PNG override for tile; use cached indexed buffer if available.
+    unsigned char* tileData = nullptr;
+    int pngW = 0, pngH = 0;
+    if (artPngGetIndexedCached(fid, &tileData, &pngW, &pngH) && tileData != nullptr) {
+        // Adopt PNG logical dimensions (should match FRM logical size for tiles).
+        tileWidth = pngW;
+        tileHeight = pngH;
+    }
+
     Rect tileRect;
     tileRect.left = x;
     tileRect.top = y;
@@ -1343,7 +1353,7 @@ static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light)
     tileRect.bottom = y + tileHeight - 1;
 
     if (rectIntersection(&tileRect, rect, &tileRect) == 0) {
-        unsigned char* tileFrmBuffer = artGetFrameData(tileFrm, 0, 0);
+        unsigned char* tileFrmBuffer = tileData ? tileData : artGetFrameData(tileFrm, 0, 0);
         tileFrmBuffer += tileWidth * (tileRect.top - y) + (tileRect.left - x);
 
         CacheEntry* eggFrmHandle;
@@ -1644,6 +1654,14 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
     frameWidth = artGetWidth(art, 0, 0);
     frameHeight = artGetHeight(art, 0, 0);
 
+    // PNG-first for tiles: use cached indexed PNG data if available.
+    unsigned char* tileBuf = nullptr;
+    int pngW = 0, pngH = 0;
+    if (artPngGetIndexedCached(fid, &tileBuf, &pngW, &pngH) && tileBuf != nullptr) {
+        frameWidth = pngW;
+        frameHeight = pngH;
+    }
+
     if (left < x) {
         v79 = 0;
         int v12 = left + width;
@@ -1691,7 +1709,7 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
         }
 
         if (v23 == 9) {
-            unsigned char* buf = artGetFrameData(art, 0, 0);
+            unsigned char* buf = tileBuf ? tileBuf : artGetFrameData(art, 0, 0);
             _dark_trans_buf_to_buf(buf + frameWidth * v78 + v79, v77, v76, frameWidth, gTileWindowBuffer, x, y, gTileWindowPitch, _verticies[0].intensity);
             goto out;
         }
@@ -1804,8 +1822,8 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
             }
         }
 
-        unsigned char* v66 = gTileWindowBuffer + gTileWindowPitch * y + x;
-        unsigned char* v67 = artGetFrameData(art, 0, 0) + frameWidth * v78 + v79;
+    unsigned char* v66 = gTileWindowBuffer + gTileWindowPitch * y + x;
+    unsigned char* v67 = (tileBuf ? tileBuf : artGetFrameData(art, 0, 0)) + frameWidth * v78 + v79;
         int* v68 = &(_intensity_map[160 + 80 * v78]) + v79;
         int v86 = frameWidth - v77;
         int v85 = gTileWindowPitch - v77;

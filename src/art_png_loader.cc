@@ -3,23 +3,35 @@
 #include "art_texture.h"
 #include "memory.h"
 #include "svga.h"
+#include "db.h"
+#include "color.h"
 
 #ifdef HAVE_SDL2_IMAGE
 #include <SDL.h>
 #include <SDL_image.h>
 #endif
 
+#include <string>
+#include <unordered_map>
+
 namespace fallout {
 
 #ifdef HAVE_SDL2_IMAGE
+// Simple cache for indexed PNG conversions keyed by fid. Lifetime: until artPngIndexedCacheClear.
+struct IndexedCacheEntry {
+    unsigned char* data;
+    int w;
+    int h;
+};
+static std::unordered_map<int, IndexedCacheEntry> g_indexedCache;
 static void getCurrentPaletteRGB(unsigned char* rgbOut768)
 {
-    // directDrawGetPalette returns 6-bit per channel (0-63), convert to 8-bit.
-    unsigned char* pal = directDrawGetPalette();
+    // Use the currently loaded game palette (_cmap). Values are 0-63; convert to 8-bit.
+    unsigned char* pal6 = _cmap;
     for (int i = 0; i < 256; ++i) {
-        rgbOut768[i * 3 + 0] = pal[i * 3 + 0] << 2;
-        rgbOut768[i * 3 + 1] = pal[i * 3 + 1] << 2;
-        rgbOut768[i * 3 + 2] = pal[i * 3 + 2] << 2;
+        rgbOut768[i * 3 + 0] = pal6[i * 3 + 0] << 2;
+        rgbOut768[i * 3 + 1] = pal6[i * 3 + 1] << 2;
+        rgbOut768[i * 3 + 2] = pal6[i * 3 + 2] << 2;
     }
 }
 
@@ -88,7 +100,34 @@ bool artPngLoadIndexed(int fid, unsigned char** outData, int* outWidth, int* out
     size_t dot = pngPath.find_last_of('.');
     if (dot == std::string::npos) pngPath += ".png"; else pngPath.replace(dot, std::string::npos, ".png");
 
-    SDL_Surface* surface = IMG_Load(pngPath.c_str());
+    // Load PNG bytes via game VFS so files under patch dir (e.g. data\...) are found.
+    File* f = fileOpen(pngPath.c_str(), "rb");
+    if (!f) return false;
+    int fsize = fileGetSize(f);
+    if (fsize <= 0) {
+        fileClose(f);
+        return false;
+    }
+    void* bytes = internal_malloc(fsize);
+    if (!bytes) {
+        fileClose(f);
+        return false;
+    }
+    size_t readCount = fileRead(bytes, 1, fsize, f);
+    fileClose(f);
+    if ((int)readCount != fsize) {
+        internal_free(bytes);
+        return false;
+    }
+
+    SDL_RWops* rw = SDL_RWFromMem(bytes, fsize);
+    if (!rw) {
+        internal_free(bytes);
+        return false;
+    }
+    SDL_Surface* surface = IMG_Load_RW(rw, 1 /*freesrc*/);
+    // IMG_Load_RW copies the data into a surface; we can free our buffer now.
+    internal_free(bytes);
     if (!surface) return false;
 
     // Normalize to RGBA32
@@ -133,6 +172,88 @@ bool artPngLoadIndexed(int fid, unsigned char** outData, int* outWidth, int* out
     return true;
 }
 
+SDL_Surface* artPngLoadSurface(int fid)
+{
+    const ArtTextureMeta* meta = artTextureGetMeta(fid);
+    if (!meta || !meta->exists) return nullptr;
+
+    const char* frmPath = artBuildFilePath(fid);
+    if (!frmPath || frmPath[0] == '\0') return nullptr;
+    std::string pngPath = std::string(frmPath);
+    size_t dot = pngPath.find_last_of('.');
+    if (dot == std::string::npos) pngPath += ".png"; else pngPath.replace(dot, std::string::npos, ".png");
+
+    File* f = fileOpen(pngPath.c_str(), "rb");
+    if (!f) return nullptr;
+    int fsize = fileGetSize(f);
+    if (fsize <= 0) {
+        fileClose(f);
+        return nullptr;
+    }
+    void* bytes = internal_malloc(fsize);
+    if (!bytes) {
+        fileClose(f);
+        return nullptr;
+    }
+    size_t readCount = fileRead(bytes, 1, fsize, f);
+    fileClose(f);
+    if ((int)readCount != fsize) {
+        internal_free(bytes);
+        return nullptr;
+    }
+    SDL_RWops* rw = SDL_RWFromMem(bytes, fsize);
+    if (!rw) {
+        internal_free(bytes);
+        return nullptr;
+    }
+    SDL_Surface* surface = IMG_Load_RW(rw, 1 /*freesrc*/);
+    internal_free(bytes);
+    if (!surface) return nullptr;
+    // Convert to a standard truecolor format for predictable blits.
+    SDL_Surface* rgba = SDL_ConvertSurfaceFormat(surface, SDL_PIXELFORMAT_RGBA32, 0);
+    SDL_FreeSurface(surface);
+    return rgba; // may be nullptr if conversion failed
+}
+
+bool artPngGetIndexedCached(int fid, unsigned char** outData, int* outWidth, int* outHeight)
+{
+    *outData = nullptr;
+    *outWidth = 0;
+    *outHeight = 0;
+
+    auto it = g_indexedCache.find(fid);
+    if (it != g_indexedCache.end()) {
+        *outData = it->second.data;
+        *outWidth = it->second.w;
+        *outHeight = it->second.h;
+        return it->second.data != nullptr;
+    }
+
+    unsigned char* data = nullptr;
+    int w = 0, h = 0;
+    if (!artPngLoadIndexed(fid, &data, &w, &h)) {
+        // Cache negative result to avoid repeated attempts.
+        g_indexedCache.emplace(fid, IndexedCacheEntry{ nullptr, 0, 0 });
+        return false;
+    }
+
+    g_indexedCache.emplace(fid, IndexedCacheEntry{ data, w, h });
+    *outData = data;
+    *outWidth = w;
+    *outHeight = h;
+    return true;
+}
+
+void artPngIndexedCacheClear()
+{
+    for (auto& kv : g_indexedCache) {
+        if (kv.second.data) {
+            internal_free(kv.second.data);
+        }
+    }
+    g_indexedCache.clear();
+}
+
 #else
 
 bool artPngLoadIndexed(int fid, unsigned char** outData, int* outWidth, int* outHeight)
@@ -140,6 +261,20 @@ bool artPngLoadIndexed(int fid, unsigned char** outData, int* outWidth, int* out
     (void)fid; (void)outData; (void)outWidth; (void)outHeight;
     return false;
 }
+
+SDL_Surface* artPngLoadSurface(int fid)
+{
+    (void)fid;
+    return nullptr;
+}
+
+bool artPngGetIndexedCached(int fid, unsigned char** outData, int* outWidth, int* outHeight)
+{
+    (void)fid; (void)outData; (void)outWidth; (void)outHeight;
+    return false;
+}
+
+void artPngIndexedCacheClear() {}
 
 #endif
 
