@@ -9,6 +9,7 @@
 #include "actions.h"
 #include "animation.h"
 #include "art.h"
+#include "art_png_loader.h"
 #include "color.h"
 #include "combat.h"
 #include "combat_ai.h"
@@ -762,10 +763,17 @@ static bool _setup_inventory(int inventoryWindowType)
 
         unsigned char* dest = windowGetBuffer(gInventoryWindow);
 
-        FrmImage backgroundFrmImage;
         int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, windowDescription->frmId, 0, 0, 0);
-        if (backgroundFrmImage.lock(backgroundFid)) {
-            blitBufferToBuffer(backgroundFrmImage.getData(), windowDescription->width, windowDescription->height, windowDescription->width, dest, windowDescription->width);
+        unsigned char* bgPngData;
+        int bgPngW, bgPngH;
+        if (artPngGetIndexedCached(backgroundFid, &bgPngData, &bgPngW, &bgPngH)) {
+            // PNG-first: draw background at logical size.
+            blitBufferToBuffer(bgPngData, windowDescription->width, windowDescription->height, bgPngW, dest, windowDescription->width);
+        } else {
+            FrmImage backgroundFrmImage;
+            if (backgroundFrmImage.lock(backgroundFid)) {
+                blitBufferToBuffer(backgroundFrmImage.getData(), windowDescription->width, windowDescription->height, windowDescription->width, dest, windowDescription->width);
+            }
         }
 
         gInventoryPrintItemDescriptionHandler = displayMonitorAddMessage;
@@ -1610,72 +1618,142 @@ static void _display_inventory(int stackOffset, int dragSlotIndex, int inventory
     if (inventoryWindowType == INVENTORY_WINDOW_TYPE_NORMAL) {
         pitch = INVENTORY_WINDOW_WIDTH;
 
-        FrmImage backgroundFrmImage;
         int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 48, 0, 0, 0);
-        if (backgroundFrmImage.lock(backgroundFid)) {
+        unsigned char* bgPng;
+        int bgW, bgH;
+        if (artPngGetIndexedCached(backgroundFid, &bgPng, &bgW, &bgH)) {
             // Clear scroll view background.
-            blitBufferToBuffer(backgroundFrmImage.getData() + pitch * INVENTORY_SCROLLER_Y + INVENTORY_SCROLLER_X,
+            blitBufferToBuffer(bgPng + bgW * INVENTORY_SCROLLER_Y + INVENTORY_SCROLLER_X,
                 INVENTORY_SLOT_WIDTH,
                 gInventorySlotsCount * INVENTORY_SLOT_HEIGHT,
-                pitch,
+                bgW,
                 windowBuffer + pitch * INVENTORY_SCROLLER_Y + INVENTORY_SCROLLER_X,
                 pitch);
 
             // Clear armor button background.
-            blitBufferToBuffer(backgroundFrmImage.getData() + pitch * INVENTORY_ARMOR_SLOT_Y + INVENTORY_ARMOR_SLOT_X,
+            blitBufferToBuffer(bgPng + bgW * INVENTORY_ARMOR_SLOT_Y + INVENTORY_ARMOR_SLOT_X,
                 INVENTORY_LARGE_SLOT_WIDTH,
                 INVENTORY_LARGE_SLOT_HEIGHT,
-                pitch,
+                bgW,
                 windowBuffer + pitch * INVENTORY_ARMOR_SLOT_Y + INVENTORY_ARMOR_SLOT_X,
                 pitch);
 
             if (gInventoryLeftHandItem != nullptr && gInventoryLeftHandItem == gInventoryRightHandItem) {
                 // Clear item1.
-                FrmImage itemBackgroundFrmImage;
                 int itemBackgroundFid = buildFid(OBJ_TYPE_INTERFACE, 32, 0, 0, 0);
-                if (itemBackgroundFrmImage.lock(itemBackgroundFid)) {
-                    unsigned char* data = itemBackgroundFrmImage.getData();
-                    int width = itemBackgroundFrmImage.getWidth();
-                    int height = itemBackgroundFrmImage.getHeight();
-                    blitBufferToBuffer(data, width, height, width, windowBuffer + pitch * 284 + 152, pitch);
+                unsigned char* itemBgPng;
+                int itemBgW, itemBgH;
+                if (artPngGetIndexedCached(itemBackgroundFid, &itemBgPng, &itemBgW, &itemBgH)) {
+                    blitBufferToBuffer(itemBgPng, itemBgW, itemBgH, itemBgW, windowBuffer + pitch * 284 + 152, pitch);
+                } else {
+                    FrmImage itemBackgroundFrmImage;
+                    if (itemBackgroundFrmImage.lock(itemBackgroundFid)) {
+                        unsigned char* data = itemBackgroundFrmImage.getData();
+                        int width = itemBackgroundFrmImage.getWidth();
+                        int height = itemBackgroundFrmImage.getHeight();
+                        blitBufferToBuffer(data, width, height, width, windowBuffer + pitch * 284 + 152, pitch);
+                    }
                 }
             } else {
                 // Clear both items in one go.
-                blitBufferToBuffer(backgroundFrmImage.getData() + pitch * INVENTORY_LEFT_HAND_SLOT_Y + INVENTORY_LEFT_HAND_SLOT_X,
+                blitBufferToBuffer(bgPng + bgW * INVENTORY_LEFT_HAND_SLOT_Y + INVENTORY_LEFT_HAND_SLOT_X,
                     INVENTORY_LARGE_SLOT_WIDTH * 2,
                     INVENTORY_LARGE_SLOT_HEIGHT,
-                    pitch,
+                    bgW,
                     windowBuffer + pitch * INVENTORY_LEFT_HAND_SLOT_Y + INVENTORY_LEFT_HAND_SLOT_X,
                     pitch);
+            }
+        } else {
+            FrmImage backgroundFrmImage;
+            if (backgroundFrmImage.lock(backgroundFid)) {
+                // Clear scroll view background.
+                blitBufferToBuffer(backgroundFrmImage.getData() + pitch * INVENTORY_SCROLLER_Y + INVENTORY_SCROLLER_X,
+                    INVENTORY_SLOT_WIDTH,
+                    gInventorySlotsCount * INVENTORY_SLOT_HEIGHT,
+                    pitch,
+                    windowBuffer + pitch * INVENTORY_SCROLLER_Y + INVENTORY_SCROLLER_X,
+                    pitch);
+
+                // Clear armor button background.
+                blitBufferToBuffer(backgroundFrmImage.getData() + pitch * INVENTORY_ARMOR_SLOT_Y + INVENTORY_ARMOR_SLOT_X,
+                    INVENTORY_LARGE_SLOT_WIDTH,
+                    INVENTORY_LARGE_SLOT_HEIGHT,
+                    pitch,
+                    windowBuffer + pitch * INVENTORY_ARMOR_SLOT_Y + INVENTORY_ARMOR_SLOT_X,
+                    pitch);
+
+                if (gInventoryLeftHandItem != nullptr && gInventoryLeftHandItem == gInventoryRightHandItem) {
+                    // Clear item1.
+                    FrmImage itemBackgroundFrmImage;
+                    int itemBackgroundFid = buildFid(OBJ_TYPE_INTERFACE, 32, 0, 0, 0);
+                    if (itemBackgroundFrmImage.lock(itemBackgroundFid)) {
+                        unsigned char* data = itemBackgroundFrmImage.getData();
+                        int width = itemBackgroundFrmImage.getWidth();
+                        int height = itemBackgroundFrmImage.getHeight();
+                        blitBufferToBuffer(data, width, height, width, windowBuffer + pitch * 284 + 152, pitch);
+                    }
+                } else {
+                    // Clear both items in one go.
+                    blitBufferToBuffer(backgroundFrmImage.getData() + pitch * INVENTORY_LEFT_HAND_SLOT_Y + INVENTORY_LEFT_HAND_SLOT_X,
+                        INVENTORY_LARGE_SLOT_WIDTH * 2,
+                        INVENTORY_LARGE_SLOT_HEIGHT,
+                        pitch,
+                        windowBuffer + pitch * INVENTORY_LEFT_HAND_SLOT_Y + INVENTORY_LEFT_HAND_SLOT_X,
+                        pitch);
+                }
             }
         }
     } else if (inventoryWindowType == INVENTORY_WINDOW_TYPE_USE_ITEM_ON) {
         pitch = INVENTORY_USE_ON_WINDOW_WIDTH;
 
-        FrmImage backgroundFrmImage;
         int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 113, 0, 0, 0);
-        if (backgroundFrmImage.lock(backgroundFid)) {
+        unsigned char* bgPng2;
+        int bgW2, bgH2;
+        if (artPngGetIndexedCached(backgroundFid, &bgPng2, &bgW2, &bgH2)) {
             // Clear scroll view background.
-            blitBufferToBuffer(backgroundFrmImage.getData() + pitch * INVENTORY_SCROLLER_Y + INVENTORY_SCROLLER_X,
+            blitBufferToBuffer(bgPng2 + bgW2 * INVENTORY_SCROLLER_Y + INVENTORY_SCROLLER_X,
                 INVENTORY_SLOT_WIDTH,
                 gInventorySlotsCount * INVENTORY_SLOT_HEIGHT,
-                pitch,
+                bgW2,
                 windowBuffer + pitch * INVENTORY_SCROLLER_Y + INVENTORY_SCROLLER_X,
                 pitch);
+        } else {
+            FrmImage backgroundFrmImage;
+            if (backgroundFrmImage.lock(backgroundFid)) {
+                // Clear scroll view background.
+                blitBufferToBuffer(backgroundFrmImage.getData() + pitch * INVENTORY_SCROLLER_Y + INVENTORY_SCROLLER_X,
+                    INVENTORY_SLOT_WIDTH,
+                    gInventorySlotsCount * INVENTORY_SLOT_HEIGHT,
+                    pitch,
+                    windowBuffer + pitch * INVENTORY_SCROLLER_Y + INVENTORY_SCROLLER_X,
+                    pitch);
+            }
         }
     } else if (inventoryWindowType == INVENTORY_WINDOW_TYPE_LOOT) {
         pitch = INVENTORY_LOOT_WINDOW_WIDTH;
 
-        FrmImage backgroundFrmImage;
         int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 114, 0, 0, 0);
-        if (backgroundFrmImage.lock(backgroundFid)) {
+        unsigned char* bgPng3;
+        int bgW3, bgH3;
+        if (artPngGetIndexedCached(backgroundFid, &bgPng3, &bgW3, &bgH3)) {
             // Clear scroll view background.
-            blitBufferToBuffer(backgroundFrmImage.getData() + pitch * INVENTORY_LOOT_LEFT_SCROLLER_Y + INVENTORY_LOOT_LEFT_SCROLLER_X,
+            blitBufferToBuffer(bgPng3 + bgW3 * INVENTORY_LOOT_LEFT_SCROLLER_Y + INVENTORY_LOOT_LEFT_SCROLLER_X,
                 INVENTORY_SLOT_WIDTH,
                 gInventorySlotsCount * INVENTORY_SLOT_HEIGHT,
-                pitch,
+                bgW3,
                 windowBuffer + pitch * INVENTORY_LOOT_LEFT_SCROLLER_Y + INVENTORY_LOOT_LEFT_SCROLLER_X,
                 pitch);
+        } else {
+            FrmImage backgroundFrmImage;
+            if (backgroundFrmImage.lock(backgroundFid)) {
+                // Clear scroll view background.
+                blitBufferToBuffer(backgroundFrmImage.getData() + pitch * INVENTORY_LOOT_LEFT_SCROLLER_Y + INVENTORY_LOOT_LEFT_SCROLLER_X,
+                    INVENTORY_SLOT_WIDTH,
+                    gInventorySlotsCount * INVENTORY_SLOT_HEIGHT,
+                    pitch,
+                    windowBuffer + pitch * INVENTORY_LOOT_LEFT_SCROLLER_Y + INVENTORY_LOOT_LEFT_SCROLLER_X,
+                    pitch);
+            }
         }
     } else if (inventoryWindowType == INVENTORY_WINDOW_TYPE_TRADE) {
         pitch = INVENTORY_TRADE_WINDOW_WIDTH;
@@ -1765,12 +1843,20 @@ static void _display_inventory(int stackOffset, int dragSlotIndex, int inventory
         int oldFont = fontGetCurrent();
         fontSetCurrent(101);
 
-        FrmImage backgroundFrm;
-        int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 114, 0, 0, 0);
-        if (backgroundFrm.lock(backgroundFid)) {
+        {
+            int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 114, 0, 0, 0);
+            unsigned char* bgPng;
+            int bgW, bgH;
             int x = INVENTORY_LOOT_LEFT_SCROLLER_X;
             int y = INVENTORY_LOOT_LEFT_SCROLLER_Y + gInventorySlotsCount * INVENTORY_SLOT_HEIGHT + 2;
-            blitBufferToBuffer(backgroundFrm.getData() + pitch * y + x, INVENTORY_SLOT_WIDTH, fontGetLineHeight(), pitch, windowBuffer + pitch * y + x, pitch);
+            if (artPngGetIndexedCached(backgroundFid, &bgPng, &bgW, &bgH)) {
+                blitBufferToBuffer(bgPng + bgW * y + x, INVENTORY_SLOT_WIDTH, fontGetLineHeight(), bgW, windowBuffer + pitch * y + x, pitch);
+            } else {
+                FrmImage backgroundFrm;
+                if (backgroundFrm.lock(backgroundFid)) {
+                    blitBufferToBuffer(backgroundFrm.getData() + pitch * y + x, INVENTORY_SLOT_WIDTH, fontGetLineHeight(), pitch, windowBuffer + pitch * y + x, pitch);
+                }
+            }
         }
 
         Object* object = _stack[0];
@@ -1814,15 +1900,28 @@ static void _display_target_inventory(int stackOffset, int dragSlotIndex, Invent
     if (inventoryWindowType == INVENTORY_WINDOW_TYPE_LOOT) {
         pitch = INVENTORY_LOOT_WINDOW_WIDTH;
 
-        FrmImage backgroundFrmImage;
-        int fid = buildFid(OBJ_TYPE_INTERFACE, 114, 0, 0, 0);
-        if (backgroundFrmImage.lock(fid)) {
-            blitBufferToBuffer(backgroundFrmImage.getData() + pitch * INVENTORY_LOOT_RIGHT_SCROLLER_Y + INVENTORY_LOOT_RIGHT_SCROLLER_X,
-                INVENTORY_SLOT_WIDTH,
-                INVENTORY_SLOT_HEIGHT * gInventorySlotsCount,
-                pitch,
-                windowBuffer + pitch * INVENTORY_LOOT_RIGHT_SCROLLER_Y + INVENTORY_LOOT_RIGHT_SCROLLER_X,
-                pitch);
+        {
+            int fid = buildFid(OBJ_TYPE_INTERFACE, 114, 0, 0, 0);
+            unsigned char* bgPng;
+            int bgW, bgH;
+            if (artPngGetIndexedCached(fid, &bgPng, &bgW, &bgH)) {
+                blitBufferToBuffer(bgPng + bgW * INVENTORY_LOOT_RIGHT_SCROLLER_Y + INVENTORY_LOOT_RIGHT_SCROLLER_X,
+                    INVENTORY_SLOT_WIDTH,
+                    INVENTORY_SLOT_HEIGHT * gInventorySlotsCount,
+                    bgW,
+                    windowBuffer + pitch * INVENTORY_LOOT_RIGHT_SCROLLER_Y + INVENTORY_LOOT_RIGHT_SCROLLER_X,
+                    pitch);
+            } else {
+                FrmImage backgroundFrmImage;
+                if (backgroundFrmImage.lock(fid)) {
+                    blitBufferToBuffer(backgroundFrmImage.getData() + pitch * INVENTORY_LOOT_RIGHT_SCROLLER_Y + INVENTORY_LOOT_RIGHT_SCROLLER_X,
+                        INVENTORY_SLOT_WIDTH,
+                        INVENTORY_SLOT_HEIGHT * gInventorySlotsCount,
+                        pitch,
+                        windowBuffer + pitch * INVENTORY_LOOT_RIGHT_SCROLLER_Y + INVENTORY_LOOT_RIGHT_SCROLLER_X,
+                        pitch);
+                }
+            }
         }
     } else if (inventoryWindowType == INVENTORY_WINDOW_TYPE_TRADE) {
         pitch = INVENTORY_TRADE_WINDOW_WIDTH;
@@ -1883,17 +1982,30 @@ static void _display_target_inventory(int stackOffset, int dragSlotIndex, Invent
         int oldFont = fontGetCurrent();
         fontSetCurrent(101);
 
-        FrmImage backgroundFrmImage;
-        int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 114, 0, 0, 0);
-        if (backgroundFrmImage.lock(backgroundFid)) {
+        {
+            int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 114, 0, 0, 0);
+            unsigned char* bgPng;
+            int bgW, bgH;
             int x = INVENTORY_LOOT_RIGHT_SCROLLER_X;
             int y = INVENTORY_LOOT_RIGHT_SCROLLER_Y + INVENTORY_SLOT_HEIGHT * gInventorySlotsCount + 2;
-            blitBufferToBuffer(backgroundFrmImage.getData() + pitch * y + x,
-                INVENTORY_SLOT_WIDTH,
-                fontGetLineHeight(),
-                pitch,
-                windowBuffer + pitch * y + x,
-                pitch);
+            if (artPngGetIndexedCached(backgroundFid, &bgPng, &bgW, &bgH)) {
+                blitBufferToBuffer(bgPng + bgW * y + x,
+                    INVENTORY_SLOT_WIDTH,
+                    fontGetLineHeight(),
+                    bgW,
+                    windowBuffer + pitch * y + x,
+                    pitch);
+            } else {
+                FrmImage backgroundFrmImage;
+                if (backgroundFrmImage.lock(backgroundFid)) {
+                    blitBufferToBuffer(backgroundFrmImage.getData() + pitch * y + x,
+                        INVENTORY_SLOT_WIDTH,
+                        fontGetLineHeight(),
+                        pitch,
+                        windowBuffer + pitch * y + x,
+                        pitch);
+                }
+            }
         }
 
         Object* object = _target_stack[_target_curr_stack];
@@ -2092,15 +2204,28 @@ static void _display_body(int fid, int inventoryWindowType)
             rect.right = rect.left + INVENTORY_BODY_VIEW_WIDTH - 1;
             rect.bottom = rect.top + INVENTORY_BODY_VIEW_HEIGHT - 1;
 
-            FrmImage backgroundFrmImage;
-            int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 114, 0, 0, 0);
-            if (backgroundFrmImage.lock(backgroundFid)) {
-                blitBufferToBuffer(backgroundFrmImage.getData() + INVENTORY_LOOT_WINDOW_WIDTH * rect.top + rect.left,
-                    INVENTORY_BODY_VIEW_WIDTH,
-                    INVENTORY_BODY_VIEW_HEIGHT,
-                    INVENTORY_LOOT_WINDOW_WIDTH,
-                    windowBuffer + windowPitch * rect.top + rect.left,
-                    windowPitch);
+            {
+                int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 114, 0, 0, 0);
+                unsigned char* bgPng;
+                int bgW, bgH;
+                if (artPngGetIndexedCached(backgroundFid, &bgPng, &bgW, &bgH)) {
+                    blitBufferToBuffer(bgPng + bgW * rect.top + rect.left,
+                        INVENTORY_BODY_VIEW_WIDTH,
+                        INVENTORY_BODY_VIEW_HEIGHT,
+                        bgW,
+                        windowBuffer + windowPitch * rect.top + rect.left,
+                        windowPitch);
+                } else {
+                    FrmImage backgroundFrmImage;
+                    if (backgroundFrmImage.lock(backgroundFid)) {
+                        blitBufferToBuffer(backgroundFrmImage.getData() + INVENTORY_LOOT_WINDOW_WIDTH * rect.top + rect.left,
+                            INVENTORY_BODY_VIEW_WIDTH,
+                            INVENTORY_BODY_VIEW_HEIGHT,
+                            INVENTORY_LOOT_WINDOW_WIDTH,
+                            windowBuffer + windowPitch * rect.top + rect.left,
+                            windowPitch);
+                    }
+                }
             }
 
             blitBufferToBufferTrans(frameData, frameWidth, frameHeight, framePitch,
@@ -4555,15 +4680,28 @@ static InventoryMoveResult _move_inventory(Object* item, int slotIndex, Object* 
     if (needRefresh) {
         unsigned char* windowBuffer = windowGetBuffer(gInventoryWindow);
 
-        FrmImage backgroundFrmImage;
-        int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 114, 0, 0, 0);
-        if (backgroundFrmImage.lock(backgroundFid)) {
-            blitBufferToBuffer(backgroundFrmImage.getData() + INVENTORY_LOOT_WINDOW_WIDTH * rect.top + rect.left,
-                INVENTORY_SLOT_WIDTH,
-                INVENTORY_SLOT_HEIGHT,
-                INVENTORY_LOOT_WINDOW_WIDTH,
-                windowBuffer + INVENTORY_LOOT_WINDOW_WIDTH * rect.top + rect.left,
-                INVENTORY_LOOT_WINDOW_WIDTH);
+        {
+            int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 114, 0, 0, 0);
+            unsigned char* bgPng;
+            int bgW, bgH;
+            if (artPngGetIndexedCached(backgroundFid, &bgPng, &bgW, &bgH)) {
+                blitBufferToBuffer(bgPng + bgW * rect.top + rect.left,
+                    INVENTORY_SLOT_WIDTH,
+                    INVENTORY_SLOT_HEIGHT,
+                    bgW,
+                    windowBuffer + INVENTORY_LOOT_WINDOW_WIDTH * rect.top + rect.left,
+                    INVENTORY_LOOT_WINDOW_WIDTH);
+            } else {
+                FrmImage backgroundFrmImage;
+                if (backgroundFrmImage.lock(backgroundFid)) {
+                    blitBufferToBuffer(backgroundFrmImage.getData() + INVENTORY_LOOT_WINDOW_WIDTH * rect.top + rect.left,
+                        INVENTORY_SLOT_WIDTH,
+                        INVENTORY_SLOT_HEIGHT,
+                        INVENTORY_LOOT_WINDOW_WIDTH,
+                        windowBuffer + INVENTORY_LOOT_WINDOW_WIDTH * rect.top + rect.left,
+                        INVENTORY_LOOT_WINDOW_WIDTH);
+                }
+            }
         }
 
         rect.right = rect.left + INVENTORY_SLOT_WIDTH - 1;
