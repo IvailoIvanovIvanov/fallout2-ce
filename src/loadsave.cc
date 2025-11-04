@@ -8,6 +8,7 @@
 #include <algorithm>
 
 #include "art.h"
+#include "art_png_loader.h"
 #include "automap.h"
 #include "character_editor.h"
 #include "color.h"
@@ -1388,7 +1389,22 @@ static int lsgWindowInit(int windowType)
     }
 
     gLoadSaveWindowBuffer = windowGetBuffer(gLoadSaveWindow);
-    memcpy(gLoadSaveWindowBuffer, _loadsaveFrmImages[LOAD_SAVE_FRM_BACKGROUND].getData(), LS_WINDOW_WIDTH * LS_WINDOW_HEIGHT);
+    // PNG-first: draw load/save background from PNG override if present.
+    {
+        int bgFid = buildFid(OBJ_TYPE_INTERFACE, gLoadSaveFrmIds[LOAD_SAVE_FRM_BACKGROUND], 0, 0, 0);
+        unsigned char* bgPng;
+        int bgW, bgH;
+        if (artPngGetIndexedCached(bgFid, &bgPng, &bgW, &bgH)) {
+            blitBufferToBuffer(bgPng,
+                LS_WINDOW_WIDTH,
+                LS_WINDOW_HEIGHT,
+                bgW,
+                gLoadSaveWindowBuffer,
+                LS_WINDOW_WIDTH);
+        } else {
+            memcpy(gLoadSaveWindowBuffer, _loadsaveFrmImages[LOAD_SAVE_FRM_BACKGROUND].getData(), LS_WINDOW_WIDTH * LS_WINDOW_HEIGHT);
+        }
+    }
 
     int messageId;
     switch (windowType) {

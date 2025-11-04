@@ -8,6 +8,8 @@
 #include "game_sound.h"
 #include "input.h"
 #include "svga.h"
+// Clear cached indexed PNGs when the palette changes to avoid stale mappings.
+#include "art_png_loader.h"
 
 namespace fallout {
 
@@ -85,6 +87,9 @@ void paletteFadeTo(unsigned char* palette)
 
     memcpy(gPalette, palette, 768);
 
+    // Palette has changed; clear any cached indexed PNGs so they remap to new colors.
+    artPngIndexedCacheClear();
+
     if (colorCycleWasEnabled) {
         colorCycleEnable();
     }
@@ -95,6 +100,8 @@ void paletteSetEntries(unsigned char* palette)
 {
     memcpy(gPalette, palette, sizeof(gPalette));
     _setSystemPalette(palette);
+    // Palette has changed; clear any cached indexed PNGs so they remap to new colors.
+    artPngIndexedCacheClear();
 }
 
 // 0x493B78
@@ -102,6 +109,8 @@ void paletteSetEntriesInRange(unsigned char* palette, int start, int end)
 {
     memcpy(gPalette + 3 * start, palette, 3 * (end - start + 1));
     _setSystemPaletteEntries(palette, start, end);
+    // Palette has changed; clear any cached indexed PNGs so they remap to new colors.
+    artPngIndexedCacheClear();
 }
 
 } // namespace fallout
