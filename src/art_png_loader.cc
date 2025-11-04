@@ -5,6 +5,7 @@
 #include "svga.h"
 #include "db.h"
 #include "color.h"
+#include "debug.h"
 
 #ifdef HAVE_SDL2_IMAGE
 #include <SDL.h>
@@ -102,7 +103,10 @@ bool artPngLoadIndexed(int fid, unsigned char** outData, int* outWidth, int* out
 
     // Load PNG bytes via game VFS so files under patch dir (e.g. data\...) are found.
     File* f = fileOpen(pngPath.c_str(), "rb");
-    if (!f) return false;
+    if (!f) {
+        debugPrint("PNG: not found for fid=%d path=\"%s\" (falling back to FRM)\n", fid, pngPath.c_str());
+        return false;
+    }
     int fsize = fileGetSize(f);
     if (fsize <= 0) {
         fileClose(f);
@@ -128,7 +132,10 @@ bool artPngLoadIndexed(int fid, unsigned char** outData, int* outWidth, int* out
     SDL_Surface* surface = IMG_Load_RW(rw, 1 /*freesrc*/);
     // IMG_Load_RW copies the data into a surface; we can free our buffer now.
     internal_free(bytes);
-    if (!surface) return false;
+    if (!surface) {
+        debugPrint("PNG: failed to decode for fid=%d path=\"%s\"\n", fid, pngPath.c_str());
+        return false;
+    }
 
     // Normalize to RGBA32
     SDL_Surface* rgba = SDL_ConvertSurfaceFormat(surface, SDL_PIXELFORMAT_RGBA32, 0);
@@ -169,6 +176,7 @@ bool artPngLoadIndexed(int fid, unsigned char** outData, int* outWidth, int* out
     *outData = dst;
     *outWidth = w;
     *outHeight = h;
+    debugPrint("PNG: loaded indexed fid=%d %dx%d from \"%s\"\n", fid, w, h, pngPath.c_str());
     return true;
 }
 
@@ -184,7 +192,10 @@ SDL_Surface* artPngLoadSurface(int fid)
     if (dot == std::string::npos) pngPath += ".png"; else pngPath.replace(dot, std::string::npos, ".png");
 
     File* f = fileOpen(pngPath.c_str(), "rb");
-    if (!f) return nullptr;
+    if (!f) {
+        debugPrint("PNG: not found (surface) for fid=%d path=\"%s\"\n", fid, pngPath.c_str());
+        return nullptr;
+    }
     int fsize = fileGetSize(f);
     if (fsize <= 0) {
         fileClose(f);
@@ -208,10 +219,18 @@ SDL_Surface* artPngLoadSurface(int fid)
     }
     SDL_Surface* surface = IMG_Load_RW(rw, 1 /*freesrc*/);
     internal_free(bytes);
-    if (!surface) return nullptr;
+    if (!surface) {
+        debugPrint("PNG: failed to decode (surface) for fid=%d path=\"%s\"\n", fid, pngPath.c_str());
+        return nullptr;
+    }
     // Convert to a standard truecolor format for predictable blits.
     SDL_Surface* rgba = SDL_ConvertSurfaceFormat(surface, SDL_PIXELFORMAT_RGBA32, 0);
     SDL_FreeSurface(surface);
+    if (!rgba) {
+        debugPrint("PNG: failed to convert to RGBA (surface) for fid=%d path=\"%s\"\n", fid, pngPath.c_str());
+    } else {
+        debugPrint("PNG: loaded surface fid=%d %dx%d from \"%s\"\n", fid, rgba->w, rgba->h, pngPath.c_str());
+    }
     return rgba; // may be nullptr if conversion failed
 }
 
