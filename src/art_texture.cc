@@ -8,6 +8,7 @@
 
 #include "db.h"
 #include "svga.h"
+#include "debug.h"
 
 #ifdef HAVE_SDL2_IMAGE
 #include <SDL_image.h>
@@ -70,20 +71,8 @@ static std::string replaceExtWithPng(const char* path)
     return s;
 }
 
-static int detectScaleFromName(const std::string& pngPath)
-{
-    // Look for suffix like "@2x", "@3x", "@4x" before extension.
-    size_t dot = pngPath.find_last_of('.');
-    size_t at = pngPath.find_last_of('@');
-    if (at != std::string::npos && dot != std::string::npos && at < dot) {
-        std::string tag = pngPath.substr(at + 1, dot - at - 1); // e.g., "2x"
-        if (tag.size() >= 2 && tag.back() == 'x') {
-            int n = atoi(tag.substr(0, tag.size() - 1).c_str());
-            if (n >= 1 && n <= 8) return n;
-        }
-    }
-    return 0;
-}
+// Note: We no longer rely on filename suffixes like "@2x" to detect sourceScale.
+// Scale is inferred purely from PNG vs FRM dimensions.
 
 bool artTextureProbePng(int fid, ArtTextureMeta* outMeta)
 {
@@ -132,17 +121,11 @@ bool artTextureProbePng(int fid, ArtTextureMeta* outMeta)
     int frmH = frm.getHeight();
     frm.unlock();
 
-    // Detect scale factor. Prefer explicit @Nx suffix, else infer from size ratio.
-    int explicitScale = detectScaleFromName(pngPath);
-    int scale;
-    if (explicitScale > 0) {
-        scale = explicitScale;
-    } else {
-        auto nearestInt = [](float v) { return static_cast<int>(v + 0.5f); };
-        int scaleX = frmW > 0 ? std::max(1, nearestInt(static_cast<float>(pngW) / frmW)) : 1;
-        int scaleY = frmH > 0 ? std::max(1, nearestInt(static_cast<float>(pngH) / frmH)) : 1;
-        scale = std::min(scaleX, scaleY);
-    }
+    // Detect scale factor from size ratio (rounded to nearest integer).
+    auto nearestInt = [](float v) { return static_cast<int>(v + 0.5f); };
+    int scaleX = frmW > 0 ? std::max(1, nearestInt(static_cast<float>(pngW) / frmW)) : 1;
+    int scaleY = frmH > 0 ? std::max(1, nearestInt(static_cast<float>(pngH) / frmH)) : 1;
+    int scale = std::min(scaleX, scaleY);
     if (scale < 1) scale = 1;
 
     // Ensure logical size is at least 1x.
@@ -160,6 +143,18 @@ bool artTextureProbePng(int fid, ArtTextureMeta* outMeta)
     outMeta->logicalWidth = logicalW;
     outMeta->logicalHeight = logicalH;
     outMeta->sourceScale = scale;
+    // Debug: log inferred scale and any mismatch with FRM logical.
+    if (frmW > 0 && frmH > 0) {
+        if (logicalW != frmW || logicalH != frmH) {
+            debugPrint("ArtTexture: inferred scale=%dx for fid=%d (PNG=%dx%d, FRM=%dx%d) -> logical=%dx%d\n",
+                scale, fid, pngW, pngH, frmW, frmH, logicalW, logicalH);
+        } else {
+            debugPrint("ArtTexture: inferred scale=%dx for fid=%d (PNG=%dx%d matches FRM=%dx%d)\n",
+                scale, fid, pngW, pngH, frmW, frmH);
+        }
+    } else {
+        debugPrint("ArtTexture: inferred scale=%dx for fid=%d (PNG=%dx%d)\n", scale, fid, pngW, pngH);
+    }
     return true;
 }
 
