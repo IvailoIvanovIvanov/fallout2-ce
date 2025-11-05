@@ -281,7 +281,6 @@ static bool characterSelectorWindowInit()
 
     // Prefer hi-res truecolor PNG for the character selector background; fall back to
     // an upscaled FRM as truecolor if PNG is absent. Otherwise draw original FRM.
-#ifdef HAVE_SDL2_IMAGE
     if (gHiResEnabled) {
         SDL_Surface* bgSurface = artPngLoadSurface(backgroundFid);
         if (bgSurface != nullptr) {
@@ -301,7 +300,6 @@ static bool characterSelectorWindowInit()
             }
         }
     }
-#endif
 
     if (!usedHiResBackground) {
         FrmImage backgroundFrmImage;

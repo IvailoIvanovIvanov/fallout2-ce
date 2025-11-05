@@ -183,7 +183,6 @@ int mainMenuWindowInit()
     }
     bool usedHiResBackground = false;
     bool usedHiResBackgroundFromPng = false;
-#ifdef HAVE_SDL2_IMAGE
     if (gHiResEnabled) {
         SDL_Surface* bgSurface = artPngLoadSurface(backgroundFid);
         if (bgSurface != nullptr) {
@@ -203,7 +202,6 @@ int mainMenuWindowInit()
             }
         }
     }
-#endif
     if (!usedHiResBackground && artPngLoadIndexed(backgroundFid, &bgPng, &bgW, &bgH)) {
         const char* frmPath = artBuildFilePath(backgroundFid);
         if (frmPath && *frmPath) {
@@ -242,11 +240,7 @@ int mainMenuWindowInit()
         if (!usedHiResBackground) {
             const ArtTextureMeta* meta = artTextureGetMeta(backgroundFid);
             if (meta && meta->exists) {
-#ifdef HAVE_SDL2_IMAGE
-                debugPrint("MM: PNG override present but failed to load via SDL2_image. Falling back to FRM.\n");
-#else
-                debugPrint("MM: PNG override present but SDL2_image support is not compiled. Falling back to FRM.\n");
-#endif
+                debugPrint("MM: PNG override present but failed to load. Falling back to FRM.\n");
             }
         }
         if (!usedHiResBackground && !_mainMenuBackgroundFrmImage.lock(backgroundFid)) {

@@ -10,6 +10,8 @@
 #ifdef HAVE_SDL2_IMAGE
 #include <SDL.h>
 #include <SDL_image.h>
+#else
+#include <SDL.h>
 #endif
 
 #include <string>
@@ -277,6 +279,7 @@ void artPngIndexedCacheClear()
 
 #include <vector>
 #include <unordered_map>
+#include "third_party/stb/stb_image.h"
 
 // Fallback helpers (duplicated from SDL2_image path)
 static void getCurrentPaletteRGB(unsigned char* rgbOut768)
@@ -342,83 +345,15 @@ struct IndexedCacheEntry {
     int h;
 };
 
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <objidl.h>
-#include <gdiplus.h>
-
-static bool gdiPlusInitialized = false;
-static ULONG_PTR gdiPlusToken = 0;
-
-static void ensureGdiPlus()
+static bool decodePngStb(const void* data, int size, std::vector<unsigned char>& outRgba, int& w, int& h)
 {
-    if (!gdiPlusInitialized) {
-        Gdiplus::GdiplusStartupInput input;
-        if (Gdiplus::GdiplusStartup(&gdiPlusToken, &input, nullptr) == Gdiplus::Ok) {
-            gdiPlusInitialized = true;
-        }
-    }
-}
-
-static bool decodePngGdiPlus(const void* data, int size, std::vector<unsigned char>& outRgba, int& w, int& h)
-{
-    ensureGdiPlus();
-    if (!gdiPlusInitialized) return false;
-
-    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, size);
-    if (!hMem) return false;
-    void* pMem = GlobalLock(hMem);
-    if (!pMem) { GlobalFree(hMem); return false; }
-    memcpy(pMem, data, size);
-    GlobalUnlock(hMem);
-
-    IStream* pStream = nullptr;
-    if (CreateStreamOnHGlobal(hMem, TRUE /*fDeleteOnRelease*/, &pStream) != S_OK) {
-        GlobalFree(hMem);
-        return false;
-    }
-
-    Gdiplus::Bitmap bmp(pStream);
-    pStream->Release();
-
-    if (bmp.GetLastStatus() != Gdiplus::Ok) {
-        return false;
-    }
-
-    w = bmp.GetWidth();
-    h = bmp.GetHeight();
-    if (w <= 0 || h <= 0) return false;
-
-    Gdiplus::Rect rect(0, 0, w, h);
-    Gdiplus::BitmapData locked = {};
-    if (bmp.LockBits(&rect, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &locked) != Gdiplus::Ok) {
-        return false;
-    }
-
-    outRgba.resize((size_t)w * (size_t)h * 4);
-    // Convert from GDI+ ARGB (premultiplied, memory order BGRA on little endian) to RGBA.
-    const unsigned char* src = static_cast<const unsigned char*>(locked.Scan0);
-    for (int y = 0; y < h; ++y) {
-        const unsigned char* srow = src + y * locked.Stride;
-        unsigned char* drow = outRgba.data() + (size_t)y * (size_t)w * 4;
-        for (int x = 0; x < w; ++x) {
-            unsigned char b = srow[x * 4 + 0];
-            unsigned char g = srow[x * 4 + 1];
-            unsigned char r = srow[x * 4 + 2];
-            unsigned char a = srow[x * 4 + 3];
-            drow[x * 4 + 0] = r;
-            drow[x * 4 + 1] = g;
-            drow[x * 4 + 2] = b;
-            drow[x * 4 + 3] = a;
-        }
-    }
-
-    bmp.UnlockBits(&locked);
+    int comp = 0;
+    stbi_uc* pixels = stbi_load_from_memory(reinterpret_cast<const stbi_uc*>(data), size, &w, &h, &comp, 4);
+    if (!pixels) return false;
+    outRgba.assign(pixels, pixels + (size_t)w * (size_t)h * 4);
+    stbi_image_free(pixels);
     return true;
 }
-
-#endif // _WIN32
 
 bool artPngLoadIndexed(int fid, unsigned char** outData, int* outWidth, int* outHeight)
 {
@@ -448,10 +383,9 @@ bool artPngLoadIndexed(int fid, unsigned char** outData, int* outWidth, int* out
     fileClose(f);
     if ((int)readCount != fsize) { internal_free(bytes); return false; }
 
-#if defined(_WIN32)
     std::vector<unsigned char> rgba;
     int w = 0, h = 0;
-    if (!decodePngGdiPlus(bytes, fsize, rgba, w, h)) {
+    if (!decodePngStb(bytes, fsize, rgba, w, h)) {
         internal_free(bytes);
         debugPrint("PNG: failed to decode for fid=%d path=\"%s\"\n", fid, pngPath.c_str());
         return false;
@@ -488,14 +422,8 @@ bool artPngLoadIndexed(int fid, unsigned char** outData, int* outWidth, int* out
     *outData = dst;
     *outWidth = w;
     *outHeight = h;
-    debugPrint("PNG: loaded indexed fid=%d %dx%d from \"%s\" (GDI+)\n", fid, w, h, pngPath.c_str());
+    debugPrint("PNG: loaded indexed fid=%d %dx%d from \"%s\"\n", fid, w, h, pngPath.c_str());
     return true;
-#else
-    (void)bytes; // silence unused warning on non-Windows
-    debugPrint("PNG: no decoder available on this platform (no SDL2_image)\n");
-    internal_free(bytes);
-    return false;
-#endif
 }
 
 SDL_Surface* artPngLoadSurface(int fid)
@@ -519,10 +447,9 @@ SDL_Surface* artPngLoadSurface(int fid)
     fileClose(f);
     if ((int)readCount != fsize) { internal_free(bytes); return nullptr; }
 
-#if defined(_WIN32)
     std::vector<unsigned char> rgba;
     int w = 0, h = 0;
-    if (!decodePngGdiPlus(bytes, fsize, rgba, w, h)) {
+    if (!decodePngStb(bytes, fsize, rgba, w, h)) {
         internal_free(bytes);
         debugPrint("PNG: failed to decode (surface) for fid=%d path=\"%s\"\n", fid, pngPath.c_str());
         return nullptr;
@@ -534,13 +461,8 @@ SDL_Surface* artPngLoadSurface(int fid)
     for (int y = 0; y < h; ++y) {
         memcpy((Uint8*)surf->pixels + y * surf->pitch, rgba.data() + (size_t)y * (size_t)w * 4, (size_t)w * 4);
     }
-    debugPrint("PNG: loaded surface fid=%d %dx%d from \"%s\" (GDI+)\n", fid, w, h, pngPath.c_str());
+    debugPrint("PNG: loaded surface fid=%d %dx%d from \"%s\"\n", fid, w, h, pngPath.c_str());
     return surf;
-#else
-    internal_free(bytes);
-    debugPrint("PNG: no decoder available on this platform (no SDL2_image)\n");
-    return nullptr;
-#endif
 }
 
 bool artPngGetIndexedCached(int fid, unsigned char** outData, int* outWidth, int* outHeight)

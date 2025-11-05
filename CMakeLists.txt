@@ -320,7 +320,8 @@ endif()
 if(WIN32)
     target_link_libraries(${EXECUTABLE_NAME}
         winmm
-        gdiplus
+        ole32
+        windowscodecs
     )
 endif()
 
@@ -330,6 +331,14 @@ if(WIN32)
         "os/windows/fallout2-ce.rc"
     )
 endif()
+
+    # Ensure project root is on the include path so third_party headers resolve from src/
+    target_include_directories(${EXECUTABLE_NAME} PRIVATE ${CMAKE_SOURCE_DIR})
+
+# stb_image minimal implementation unit
+target_sources(${EXECUTABLE_NAME} PRIVATE
+    "src/stb_image_impl.c"
+)
 
 if(APPLE)
     if(IOS)
@@ -462,6 +471,18 @@ if(WIN32)
     )
     add_dependencies(bundle ${EXECUTABLE_NAME})
 
+    # Also include MSVC runtime libraries so the bundle runs on fresh machines.
+    if(MSVC)
+        include(InstallRequiredSystemLibraries)
+        if(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
+            foreach(RTLIB ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS})
+                add_custom_command(TARGET bundle POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${RTLIB}" "${DIST_DIR}/"
+                )
+            endforeach()
+        endif()
+    endif()
+
     if(TARGET SDL2_image::SDL2_image)
         add_custom_command(TARGET bundle POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL2_image::SDL2_image> "${DIST_DIR}/"
@@ -491,12 +512,7 @@ if(WIN32)
         )
     endif()
 
-    # Copy optional game config and data overrides if present at source dir.
-    if(EXISTS "${CMAKE_SOURCE_DIR}/fallout2.cfg")
-        add_custom_command(TARGET bundle POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/fallout2.cfg" "${DIST_DIR}/"
-        )
-    endif()
+    # Copy optional data overrides if present at source dir (but do not copy fallout2.cfg by default).
     if(EXISTS "${CMAKE_SOURCE_DIR}/data")
         add_custom_command(TARGET bundle POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/data" "${DIST_DIR}/data"

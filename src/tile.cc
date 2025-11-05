@@ -1517,13 +1517,19 @@ bool _square_roof_intersect(int x, int y, int elevation)
             CacheEntry* handle;
             Art* art = artLock(fid, &handle);
             if (art != nullptr) {
-                unsigned char* data = artGetFrameData(art, 0, 0);
+                // Prefer PNG override mask if available for accurate hit-testing
+                // when roof tiles are replaced by PNGs.
+                unsigned char* data = nullptr;
+                int pngW = 0, pngH = 0;
+                if (!artPngGetIndexedCached(fid, &data, &pngW, &pngH) || data == nullptr) {
+                    data = artGetFrameData(art, 0, 0);
+                }
                 if (data != nullptr) {
                     int v18;
                     int v17;
                     squareTileToRoofScreenXY(idx, &v18, &v17, elevation);
 
-                    int width = artGetWidth(art, 0, 0);
+                    int width = (pngW > 0 ? pngW : artGetWidth(art, 0, 0));
                     if (data[width * (y - v17) + x - v18] != 0) {
                         result = true;
                     }

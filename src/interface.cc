@@ -290,6 +290,22 @@ static FrmImage _greenLightFrmImage;
 static FrmImage _yellowLightFrmImage;
 static FrmImage _redLightFrmImage;
 
+// Optional PNG overrides for static interface button images (kept alive while interface is active).
+static unsigned char* _inventoryButtonNormalPng = nullptr;
+static unsigned char* _inventoryButtonPressedPng = nullptr;
+static unsigned char* _optionsButtonNormalPng = nullptr;
+static unsigned char* _optionsButtonPressedPng = nullptr;
+static unsigned char* _skilldexButtonNormalPng = nullptr;
+static unsigned char* _skilldexButtonPressedPng = nullptr;
+static unsigned char* _mapButtonNormalPng = nullptr;
+static unsigned char* _mapButtonPressedPng = nullptr;
+static unsigned char* _pipboyButtonNormalPng = nullptr;
+static unsigned char* _pipboyButtonPressedPng = nullptr;
+static unsigned char* _characterButtonNormalPng = nullptr;
+static unsigned char* _characterButtonPressedPng = nullptr;
+static unsigned char* _changeHandsButtonNormalPng = nullptr;
+static unsigned char* _changeHandsButtonPressedPng = nullptr;
+
 int gInterfaceBarContentOffset = 0;
 int gInterfaceBarWidth = -1;
 bool gInterfaceBarIsCustom = false;
@@ -359,14 +375,28 @@ int interfaceInit()
         // NOTE: Uninline.
         return intface_fatal_error(-1);
     }
+    // Try PNG override for Inventory button (normal)
+    {
+        int tw = 0, th = 0;
+        artPngLoadIndexed(fid, &_inventoryButtonNormalPng, &tw, &th);
+    }
 
     fid = buildFid(OBJ_TYPE_INTERFACE, 46, 0, 0, 0);
     if (!_inventoryButtonPressedFrmImage.lock(fid)) {
         // NOTE: Uninline.
         return intface_fatal_error(-1);
     }
+    // Try PNG override for Inventory button (pressed)
+    {
+        int tw = 0, th = 0;
+        artPngLoadIndexed(fid, &_inventoryButtonPressedPng, &tw, &th);
+    }
 
-    gInventoryButton = buttonCreate(gInterfaceBarWindow, 211 + gInterfaceBarContentOffset, 40, 32, 21, -1, -1, -1, KEY_LOWERCASE_I, _inventoryButtonNormalFrmImage.getData(), _inventoryButtonPressedFrmImage.getData(), nullptr, 0);
+    {
+        unsigned char* upImg = _inventoryButtonNormalPng ? _inventoryButtonNormalPng : _inventoryButtonNormalFrmImage.getData();
+        unsigned char* dnImg = _inventoryButtonPressedPng ? _inventoryButtonPressedPng : _inventoryButtonPressedFrmImage.getData();
+        gInventoryButton = buttonCreate(gInterfaceBarWindow, 211 + gInterfaceBarContentOffset, 40, 32, 21, -1, -1, -1, KEY_LOWERCASE_I, upImg, dnImg, nullptr, 0);
+    }
     if (gInventoryButton == -1) {
         // NOTE: Uninline.
         return intface_fatal_error(-1);
@@ -379,14 +409,28 @@ int interfaceInit()
         // NOTE: Uninline.
         return intface_fatal_error(-1);
     }
+    // Try PNG override for Options button (normal)
+    {
+        int tw = 0, th = 0;
+        artPngLoadIndexed(fid, &_optionsButtonNormalPng, &tw, &th);
+    }
 
     fid = buildFid(OBJ_TYPE_INTERFACE, 17, 0, 0, 0);
     if (!_optionsButtonPressedFrmImage.lock(fid)) {
         // NOTE: Uninline.
         return intface_fatal_error(-1);
     }
+    // Try PNG override for Options button (pressed)
+    {
+        int tw = 0, th = 0;
+        artPngLoadIndexed(fid, &_optionsButtonPressedPng, &tw, &th);
+    }
 
-    gOptionsButton = buttonCreate(gInterfaceBarWindow, 210 + gInterfaceBarContentOffset, 61, 34, 34, -1, -1, -1, KEY_LOWERCASE_O, _optionsButtonNormalFrmImage.getData(), _optionsButtonPressedFrmImage.getData(), nullptr, 0);
+    {
+        unsigned char* upImg = _optionsButtonNormalPng ? _optionsButtonNormalPng : _optionsButtonNormalFrmImage.getData();
+        unsigned char* dnImg = _optionsButtonPressedPng ? _optionsButtonPressedPng : _optionsButtonPressedFrmImage.getData();
+        gOptionsButton = buttonCreate(gInterfaceBarWindow, 210 + gInterfaceBarContentOffset, 61, 34, 34, -1, -1, -1, KEY_LOWERCASE_O, upImg, dnImg, nullptr, 0);
+    }
     if (gOptionsButton == -1) {
         // NOTE: Uninline.
         return intface_fatal_error(-1);
@@ -399,11 +443,21 @@ int interfaceInit()
         // NOTE: Uninline.
         return intface_fatal_error(-1);
     }
+    // Try PNG override for Skilldex button (normal)
+    {
+        int tw = 0, th = 0;
+        artPngLoadIndexed(fid, &_skilldexButtonNormalPng, &tw, &th);
+    }
 
     fid = buildFid(OBJ_TYPE_INTERFACE, 7, 0, 0, 0);
     if (!_skilldexButtonPressedFrmImage.lock(fid)) {
         // NOTE: Uninline.
         return intface_fatal_error(-1);
+    }
+    // Try PNG override for Skilldex button (pressed)
+    {
+        int tw = 0, th = 0;
+        artPngLoadIndexed(fid, &_skilldexButtonPressedPng, &tw, &th);
     }
 
     fid = buildFid(OBJ_TYPE_INTERFACE, 6, 0, 0, 0);
@@ -412,7 +466,11 @@ int interfaceInit()
         return intface_fatal_error(-1);
     }
 
-    gSkilldexButton = buttonCreate(gInterfaceBarWindow, 523 + gInterfaceBarContentOffset, 6, 22, 21, -1, -1, -1, KEY_LOWERCASE_S, _skilldexButtonNormalFrmImage.getData(), _skilldexButtonPressedFrmImage.getData(), nullptr, BUTTON_FLAG_TRANSPARENT);
+    {
+        unsigned char* upImg = _skilldexButtonNormalPng ? _skilldexButtonNormalPng : _skilldexButtonNormalFrmImage.getData();
+        unsigned char* dnImg = _skilldexButtonPressedPng ? _skilldexButtonPressedPng : _skilldexButtonPressedFrmImage.getData();
+        gSkilldexButton = buttonCreate(gInterfaceBarWindow, 523 + gInterfaceBarContentOffset, 6, 22, 21, -1, -1, -1, KEY_LOWERCASE_S, upImg, dnImg, nullptr, BUTTON_FLAG_TRANSPARENT);
+    }
     if (gSkilldexButton == -1) {
         // NOTE: Uninline.
         return intface_fatal_error(-1);
@@ -426,12 +484,16 @@ int interfaceInit()
         // NOTE: Uninline.
         return intface_fatal_error(-1);
     }
+    // Try PNG override for Map button (normal)
+    { int tw = 0, th = 0; artPngLoadIndexed(fid, &_mapButtonNormalPng, &tw, &th); }
 
     fid = buildFid(OBJ_TYPE_INTERFACE, 10, 0, 0, 0);
     if (!_mapButtonPressedFrmImage.lock(fid)) {
         // NOTE: Uninline.
         return intface_fatal_error(-1);
     }
+    // Try PNG override for Map button (pressed)
+    { int tw = 0, th = 0; artPngLoadIndexed(fid, &_mapButtonPressedPng, &tw, &th); }
 
     fid = buildFid(OBJ_TYPE_INTERFACE, 13, 0, 0, 0);
     if (!_mapButtonMaskFrmImage.lock(fid)) {
@@ -439,7 +501,11 @@ int interfaceInit()
         return intface_fatal_error(-1);
     }
 
-    gMapButton = buttonCreate(gInterfaceBarWindow, 526 + gInterfaceBarContentOffset, 39, 41, 19, -1, -1, -1, KEY_TAB, _mapButtonNormalFrmImage.getData(), _mapButtonPressedFrmImage.getData(), nullptr, BUTTON_FLAG_TRANSPARENT);
+    {
+        unsigned char* upImg = _mapButtonNormalPng ? _mapButtonNormalPng : _mapButtonNormalFrmImage.getData();
+        unsigned char* dnImg = _mapButtonPressedPng ? _mapButtonPressedPng : _mapButtonPressedFrmImage.getData();
+        gMapButton = buttonCreate(gInterfaceBarWindow, 526 + gInterfaceBarContentOffset, 39, 41, 19, -1, -1, -1, KEY_TAB, upImg, dnImg, nullptr, BUTTON_FLAG_TRANSPARENT);
+    }
     if (gMapButton == -1) {
         // NOTE: Uninline.
         return intface_fatal_error(-1);
@@ -453,14 +519,22 @@ int interfaceInit()
         // NOTE: Uninline.
         return intface_fatal_error(-1);
     }
+    // Try PNG override for Pip-Boy button (normal)
+    { int tw = 0, th = 0; artPngLoadIndexed(fid, &_pipboyButtonNormalPng, &tw, &th); }
 
     fid = buildFid(OBJ_TYPE_INTERFACE, 58, 0, 0, 0);
     if (!_pipboyButtonPressedFrmImage.lock(fid)) {
         // NOTE: Uninline.
         return intface_fatal_error(-1);
     }
+    // Try PNG override for Pip-Boy button (pressed)
+    { int tw = 0, th = 0; artPngLoadIndexed(fid, &_pipboyButtonPressedPng, &tw, &th); }
 
-    gPipboyButton = buttonCreate(gInterfaceBarWindow, 526 + gInterfaceBarContentOffset, 77, 41, 19, -1, -1, -1, KEY_LOWERCASE_P, _pipboyButtonNormalFrmImage.getData(), _pipboyButtonPressedFrmImage.getData(), nullptr, 0);
+    {
+        unsigned char* upImg = _pipboyButtonNormalPng ? _pipboyButtonNormalPng : _pipboyButtonNormalFrmImage.getData();
+        unsigned char* dnImg = _pipboyButtonPressedPng ? _pipboyButtonPressedPng : _pipboyButtonPressedFrmImage.getData();
+        gPipboyButton = buttonCreate(gInterfaceBarWindow, 526 + gInterfaceBarContentOffset, 77, 41, 19, -1, -1, -1, KEY_LOWERCASE_P, upImg, dnImg, nullptr, 0);
+    }
     if (gPipboyButton == -1) {
         // NOTE: Uninline.
         return intface_fatal_error(-1);
@@ -474,14 +548,22 @@ int interfaceInit()
         // NOTE: Uninline.
         return intface_fatal_error(-1);
     }
+    // Try PNG override for Character button (normal)
+    { int tw = 0, th = 0; artPngLoadIndexed(fid, &_characterButtonNormalPng, &tw, &th); }
 
     fid = buildFid(OBJ_TYPE_INTERFACE, 56, 0, 0, 0);
     if (!_characterButtonPressedFrmImage.lock(fid)) {
         // NOTE: Uninline.
         return intface_fatal_error(-1);
     }
+    // Try PNG override for Character button (pressed)
+    { int tw = 0, th = 0; artPngLoadIndexed(fid, &_characterButtonPressedPng, &tw, &th); }
 
-    gCharacterButton = buttonCreate(gInterfaceBarWindow, 526 + gInterfaceBarContentOffset, 58, 41, 19, -1, -1, -1, KEY_LOWERCASE_C, _characterButtonNormalFrmImage.getData(), _characterButtonPressedFrmImage.getData(), nullptr, 0);
+    {
+        unsigned char* upImg = _characterButtonNormalPng ? _characterButtonNormalPng : _characterButtonNormalFrmImage.getData();
+        unsigned char* dnImg = _characterButtonPressedPng ? _characterButtonPressedPng : _characterButtonPressedFrmImage.getData();
+        gCharacterButton = buttonCreate(gInterfaceBarWindow, 526 + gInterfaceBarContentOffset, 58, 41, 19, -1, -1, -1, KEY_LOWERCASE_C, upImg, dnImg, nullptr, 0);
+    }
     if (gCharacterButton == -1) {
         // NOTE: Uninline.
         return intface_fatal_error(-1);
@@ -508,8 +590,21 @@ int interfaceInit()
         return intface_fatal_error(-1);
     }
 
-    memcpy(_itemButtonUp, _itemButtonNormalFrmImage.getData(), sizeof(_itemButtonUp));
-    memcpy(_itemButtonDown, _itemButtonPressedFrmImage.getData(), sizeof(_itemButtonDown));
+    // Prefer PNG override for main action item button images if available; otherwise copy FRM data.
+    {
+        unsigned char* upSrc = nullptr; int upW=0, upH=0;
+        unsigned char* dnSrc = nullptr; int dnW=0, dnH=0;
+        if (!artPngLoadIndexed(buildFid(OBJ_TYPE_INTERFACE, 32, 0, 0, 0), &upSrc, &upW, &upH) || upSrc == nullptr) {
+            upSrc = _itemButtonNormalFrmImage.getData();
+        }
+        if (!artPngLoadIndexed(buildFid(OBJ_TYPE_INTERFACE, 31, 0, 0, 0), &dnSrc, &dnW, &dnH) || dnSrc == nullptr) {
+            dnSrc = _itemButtonPressedFrmImage.getData();
+        }
+        memcpy(_itemButtonUp, upSrc, sizeof(_itemButtonUp));
+        memcpy(_itemButtonDown, dnSrc, sizeof(_itemButtonDown));
+        if (upSrc && upSrc != _itemButtonNormalFrmImage.getData()) internal_free(upSrc);
+        if (dnSrc && dnSrc != _itemButtonPressedFrmImage.getData()) internal_free(dnSrc);
+    }
 
     gSingleAttackButton = buttonCreate(gInterfaceBarWindow, 267 + gInterfaceBarContentOffset, 26, 188, 67, -1, -1, -1, -20, _itemButtonUp, _itemButtonDown, nullptr, BUTTON_FLAG_TRANSPARENT);
     if (gSingleAttackButton == -1) {
@@ -525,12 +620,16 @@ int interfaceInit()
         // NOTE: Uninline.
         return intface_fatal_error(-1);
     }
+    // Try PNG override for Change Hands button (normal)
+    { int tw = 0, th = 0; artPngLoadIndexed(fid, &_changeHandsButtonNormalPng, &tw, &th); }
 
     fid = buildFid(OBJ_TYPE_INTERFACE, 7, 0, 0, 0);
     if (!_changeHandsButtonPressedFrmImage.lock(fid)) {
         // NOTE: Uninline.
         return intface_fatal_error(-1);
     }
+    // Try PNG override for Change Hands button (pressed)
+    { int tw = 0, th = 0; artPngLoadIndexed(fid, &_changeHandsButtonPressedPng, &tw, &th); }
 
     fid = buildFid(OBJ_TYPE_INTERFACE, 6, 0, 0, 0);
     if (!_changeHandsButtonMaskFrmImage.lock(fid)) {
@@ -539,7 +638,11 @@ int interfaceInit()
     }
 
     // Swap hands button
-    gChangeHandsButton = buttonCreate(gInterfaceBarWindow, 218 + gInterfaceBarContentOffset, 6, 22, 21, -1, -1, -1, KEY_LOWERCASE_B, _changeHandsButtonNormalFrmImage.getData(), _changeHandsButtonPressedFrmImage.getData(), nullptr, BUTTON_FLAG_TRANSPARENT);
+    {
+        unsigned char* upImg = _changeHandsButtonNormalPng ? _changeHandsButtonNormalPng : _changeHandsButtonNormalFrmImage.getData();
+        unsigned char* dnImg = _changeHandsButtonPressedPng ? _changeHandsButtonPressedPng : _changeHandsButtonPressedFrmImage.getData();
+        gChangeHandsButton = buttonCreate(gInterfaceBarWindow, 218 + gInterfaceBarContentOffset, 6, 22, 21, -1, -1, -1, KEY_LOWERCASE_B, upImg, dnImg, nullptr, BUTTON_FLAG_TRANSPARENT);
+    }
     if (gChangeHandsButton == -1) {
         // NOTE: Uninline.
         return intface_fatal_error(-1);
@@ -633,7 +736,23 @@ void interfaceFree()
             gChangeHandsButton = -1;
         }
 
-        _changeHandsButtonMaskFrmImage.unlock();
+    _changeHandsButtonMaskFrmImage.unlock();
+
+    // Free any allocated PNG overrides for interface buttons
+    if (_inventoryButtonNormalPng) { internal_free(_inventoryButtonNormalPng); _inventoryButtonNormalPng = nullptr; }
+    if (_inventoryButtonPressedPng) { internal_free(_inventoryButtonPressedPng); _inventoryButtonPressedPng = nullptr; }
+    if (_optionsButtonNormalPng) { internal_free(_optionsButtonNormalPng); _optionsButtonNormalPng = nullptr; }
+    if (_optionsButtonPressedPng) { internal_free(_optionsButtonPressedPng); _optionsButtonPressedPng = nullptr; }
+    if (_skilldexButtonNormalPng) { internal_free(_skilldexButtonNormalPng); _skilldexButtonNormalPng = nullptr; }
+    if (_skilldexButtonPressedPng) { internal_free(_skilldexButtonPressedPng); _skilldexButtonPressedPng = nullptr; }
+    if (_mapButtonNormalPng) { internal_free(_mapButtonNormalPng); _mapButtonNormalPng = nullptr; }
+    if (_mapButtonPressedPng) { internal_free(_mapButtonPressedPng); _mapButtonPressedPng = nullptr; }
+    if (_pipboyButtonNormalPng) { internal_free(_pipboyButtonNormalPng); _pipboyButtonNormalPng = nullptr; }
+    if (_pipboyButtonPressedPng) { internal_free(_pipboyButtonPressedPng); _pipboyButtonPressedPng = nullptr; }
+    if (_characterButtonNormalPng) { internal_free(_characterButtonNormalPng); _characterButtonNormalPng = nullptr; }
+    if (_characterButtonPressedPng) { internal_free(_characterButtonPressedPng); _characterButtonPressedPng = nullptr; }
+    if (_changeHandsButtonNormalPng) { internal_free(_changeHandsButtonNormalPng); _changeHandsButtonNormalPng = nullptr; }
+    if (_changeHandsButtonPressedPng) { internal_free(_changeHandsButtonPressedPng); _changeHandsButtonPressedPng = nullptr; }
         _changeHandsButtonPressedFrmImage.unlock();
         _changeHandsButtonNormalFrmImage.unlock();
 
