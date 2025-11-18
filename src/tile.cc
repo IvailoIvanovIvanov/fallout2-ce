@@ -1,4 +1,7 @@
 #include "tile.h"
+#include "art_texture.h"
+#include "debug.h"
+#include <unordered_set>
 
 #include <assert.h>
 #include <math.h>
@@ -1328,6 +1331,8 @@ void tile_fill_roof(int x, int y, int elevation, bool on)
 // 0x4B24E0
 static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light)
 {
+    // Log PNG tile usage once per fid for troubleshooting scale expectations.
+    static std::unordered_set<int> s_loggedTilePngRoof;
     CacheEntry* tileFrmHandle;
     Art* tileFrm = artLock(fid, &tileFrmHandle);
     if (tileFrm == nullptr) {
@@ -1344,6 +1349,15 @@ static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light)
         // Adopt PNG logical dimensions (should match FRM logical size for tiles).
         tileWidth = pngW;
         tileHeight = pngH;
+        if (s_loggedTilePngRoof.find(fid) == s_loggedTilePngRoof.end()) {
+            const ArtTextureMeta* meta = artTextureGetMeta(fid);
+            if (meta && meta->exists) {
+                debugPrint("TileRoof: fid=%d PNG=%dx%d logical=%dx%d inferredScale=%dx\n", fid, meta->pngWidth, meta->pngHeight, pngW, pngH, meta->sourceScale);
+            } else {
+                debugPrint("TileRoof: fid=%d PNG logical=%dx%d (meta unavailable)\n", fid, pngW, pngH);
+            }
+            s_loggedTilePngRoof.insert(fid);
+        }
     }
 
     Rect tileRect;
@@ -1613,6 +1627,8 @@ static void _draw_grid(int tile, int elevation, Rect* rect)
 // 0x4B30C4
 static void tileRenderFloor(int fid, int x, int y, Rect* rect)
 {
+    // Log PNG tile usage once per fid for troubleshooting scale expectations.
+    static std::unordered_set<int> s_loggedTilePngFloor;
     if (artIsObjectTypeHidden(FID_TYPE(fid)) != 0) {
         return;
     }
@@ -1666,6 +1682,15 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
     if (artPngGetIndexedCached(fid, &tileBuf, &pngW, &pngH) && tileBuf != nullptr) {
         frameWidth = pngW;
         frameHeight = pngH;
+        if (s_loggedTilePngFloor.find(fid) == s_loggedTilePngFloor.end()) {
+            const ArtTextureMeta* meta = artTextureGetMeta(fid);
+            if (meta && meta->exists) {
+                debugPrint("TileFloor: fid=%d PNG=%dx%d logical=%dx%d inferredScale=%dx\n", fid, meta->pngWidth, meta->pngHeight, pngW, pngH, meta->sourceScale);
+            } else {
+                debugPrint("TileFloor: fid=%d PNG logical=%dx%d (meta unavailable)\n", fid, pngW, pngH);
+            }
+            s_loggedTilePngFloor.insert(fid);
+        }
     }
 
     if (left < x) {
