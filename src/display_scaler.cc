@@ -165,17 +165,28 @@ Point displayScalerPhysicalToLogical(const Point& physicalPoint)
 
 Rect displayScalerLogicalToPhysical(const Rect& logicalRect)
 {
-    Point topLeft = { logicalRect.left, logicalRect.top };
-    Point bottomRight = { logicalRect.right, logicalRect.bottom };
-
-    Point physicalTopLeft = displayScalerLogicalToPhysical(topLeft);
-    Point physicalBottomRight = displayScalerLogicalToPhysical(bottomRight);
+    const double leftEdge = gPhysicalViewport.left + logicalRect.left * gScale;
+    const double topEdge = gPhysicalViewport.top + logicalRect.top * gScale;
+    const double rightEdge = gPhysicalViewport.left + (logicalRect.right + 1) * gScale;
+    const double bottomEdge = gPhysicalViewport.top + (logicalRect.bottom + 1) * gScale;
 
     Rect result;
-    result.left = std::min(physicalTopLeft.x, physicalBottomRight.x);
-    result.top = std::min(physicalTopLeft.y, physicalBottomRight.y);
-    result.right = std::max(physicalTopLeft.x, physicalBottomRight.x);
-    result.bottom = std::max(physicalTopLeft.y, physicalBottomRight.y);
+    const int physicalRightBound = std::max(0, gPhysicalSpace.width - 1);
+    const int physicalBottomBound = std::max(0, gPhysicalSpace.height - 1);
+
+    result.left = std::clamp(static_cast<int>(std::floor(leftEdge)), 0, physicalRightBound);
+    result.top = std::clamp(static_cast<int>(std::floor(topEdge)), 0, physicalBottomBound);
+    result.right = std::clamp(static_cast<int>(std::ceil(rightEdge) - 1), 0, physicalRightBound);
+    result.bottom = std::clamp(static_cast<int>(std::ceil(bottomEdge) - 1), 0, physicalBottomBound);
+
+    if (result.left > result.right) {
+        result.left = result.right;
+    }
+
+    if (result.top > result.bottom) {
+        result.top = result.bottom;
+    }
+
     return result;
 }
 

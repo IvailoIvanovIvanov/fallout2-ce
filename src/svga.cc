@@ -8,6 +8,7 @@
 #include "config.h"
 #include "display_scaler.h"
 #include "draw.h"
+#include "geometry.h"
 #include "interface.h"
 #include "memory.h"
 #include "mouse.h"
@@ -311,18 +312,41 @@ unsigned char* directDrawGetPalette()
 // 0x4CB850
 void _GNW95_ShowRect(unsigned char* src, int srcPitch, int a3, int srcX, int srcY, int srcWidth, int srcHeight, int destX, int destY)
 {
-    blitBufferToBuffer(src + srcPitch * srcY + srcX, srcWidth, srcHeight, srcPitch, (unsigned char*)gSdlSurface->pixels + gSdlSurface->pitch * destY + destX, gSdlSurface->pitch);
+    if (gSdlSurface == nullptr || gSdlTextureSurface == nullptr) {
+        return;
+    }
 
-    SDL_Rect srcRect;
-    srcRect.x = destX;
-    srcRect.y = destY;
-    srcRect.w = srcWidth;
-    srcRect.h = srcHeight;
+    const Rect& logicalBounds = displayScalerGetLogicalBounds();
 
-    SDL_Rect destRect;
-    destRect.x = destX;
-    destRect.y = destY;
-    SDL_BlitSurface(gSdlSurface, &srcRect, gSdlTextureSurface, &destRect);
+    Rect destRect;
+    destRect.left = destX;
+    destRect.top = destY;
+    destRect.right = destX + srcWidth - 1;
+    destRect.bottom = destY + srcHeight - 1;
+
+    if (rectIntersection(&destRect, &logicalBounds, &destRect) == -1) {
+        return;
+    }
+
+    const int clippedWidth = rectGetWidth(&destRect);
+    const int clippedHeight = rectGetHeight(&destRect);
+    if (clippedWidth <= 0 || clippedHeight <= 0) {
+        return;
+    }
+
+    const int srcOffsetX = destRect.left - destX;
+    const int srcOffsetY = destRect.top - destY;
+    unsigned char* srcStart = src + srcPitch * (srcY + srcOffsetY) + (srcX + srcOffsetX);
+
+    blitBufferToBuffer(srcStart, clippedWidth, clippedHeight, srcPitch, (unsigned char*)gSdlSurface->pixels + gSdlSurface->pitch * destRect.top + destRect.left, gSdlSurface->pitch);
+
+    SDL_Rect sdlRect;
+    sdlRect.x = destRect.left;
+    sdlRect.y = destRect.top;
+    sdlRect.w = clippedWidth;
+    sdlRect.h = clippedHeight;
+
+    SDL_BlitSurface(gSdlSurface, &sdlRect, gSdlTextureSurface, &sdlRect);
 }
 
 // Clears drawing surface.
@@ -385,9 +409,6 @@ static bool createRenderer()
     }
 
     LogicalSpace logicalSpace = displayScalerGetLogicalSpace();
-    if (SDL_RenderSetLogicalSize(gSdlRenderer, logicalSpace.width, logicalSpace.height) != 0) {
-        return false;
-    }
 
     gSdlTexture = SDL_CreateTexture(gSdlRenderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, logicalSpace.width, logicalSpace.height);
     if (gSdlTexture == nullptr) {
@@ -443,13 +464,33 @@ void handleWindowSizeChanged()
     rectCopy(&_scr_size, &logical);
 
     createRenderer();
+
+    if (gSdlTextureSurface != nullptr && gSdlSurface != nullptr) {
+        SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+    }
 }
 
 void renderPresent()
 {
+    LogicalSpace logicalSpace = displayScalerGetLogicalSpace();
+    SDL_Rect srcRect;
+    srcRect.x = 0;
+    srcRect.y = 0;
+    srcRect.w = logicalSpace.width;
+    srcRect.h = logicalSpace.height;
+
     SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch);
+    SDL_SetRenderDrawColor(gSdlRenderer, 0, 0, 0, 255);
     SDL_RenderClear(gSdlRenderer);
-    SDL_RenderCopy(gSdlRenderer, gSdlTexture, nullptr, nullptr);
+
+    const Rect& viewport = displayScalerGetPhysicalViewport();
+    SDL_Rect destRect;
+    destRect.x = viewport.left;
+    destRect.y = viewport.top;
+    destRect.w = rectGetWidth(&viewport);
+    destRect.h = rectGetHeight(&viewport);
+
+    SDL_RenderCopy(gSdlRenderer, gSdlTexture, &srcRect, &destRect);
     SDL_RenderPresent(gSdlRenderer);
 }
 
