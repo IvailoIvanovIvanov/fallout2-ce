@@ -6,6 +6,7 @@
 
 #include <SDL.h>
 
+#include "display_scaler.h"
 #include "color.h"
 #include "debug.h"
 #include "dinput.h"
@@ -163,8 +164,11 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
         return WINDOW_MANAGER_ERR_8;
     }
 
+    int screenWidth = screenGetWidth();
+    int screenHeight = screenGetHeight();
+
     if (a3 & 1) {
-        _screen_buffer = (unsigned char*)internal_malloc((_scr_size.bottom - _scr_size.top + 1) * (_scr_size.right - _scr_size.left + 1));
+        _screen_buffer = (unsigned char*)internal_malloc(screenWidth * screenHeight);
         if (_screen_buffer == nullptr) {
             if (gVideoSystemExitProc != nullptr) {
                 gVideoSystemExitProc();
@@ -228,12 +232,12 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
 
     window->id = 0;
     window->flags = 0;
-    window->rect.left = _scr_size.left;
-    window->rect.top = _scr_size.top;
-    window->rect.right = _scr_size.right;
-    window->rect.bottom = _scr_size.bottom;
-    window->width = _scr_size.right - _scr_size.left + 1;
-    window->height = _scr_size.bottom - _scr_size.top + 1;
+    window->rect.left = 0;
+    window->rect.top = 0;
+    window->rect.right = screenWidth - 1;
+    window->rect.bottom = screenHeight - 1;
+    window->width = screenWidth;
+    window->height = screenHeight;
     window->tx = 0;
     window->ty = 0;
     window->buffer = nullptr;
@@ -318,11 +322,14 @@ int windowCreate(int x, int y, int width, int height, int color, int flags)
         return -1;
     }
 
-    if (width > rectGetWidth(&_scr_size)) {
+    int screenWidth = screenGetWidth();
+    int screenHeight = screenGetHeight();
+
+    if (width > screenWidth) {
         return -1;
     }
 
-    if (height > rectGetHeight(&_scr_size)) {
+    if (height > screenHeight) {
         return -1;
     }
 
@@ -730,12 +737,15 @@ void _win_move(int win, int x, int y)
         x += 2;
     }
 
-    if (x + window->width - 1 > _scr_size.right) {
-        x = _scr_size.right - window->width + 1;
+    int screenWidth = screenGetWidth();
+    int screenHeight = screenGetHeight();
+
+    if (x + window->width - 1 > screenWidth - 1) {
+        x = screenWidth - window->width;
     }
 
-    if (y + window->height - 1 > _scr_size.bottom) {
-        y = _scr_size.bottom - window->height + 1;
+    if (y + window->height - 1 > screenHeight - 1) {
+        y = screenHeight - window->height;
     }
 
     if ((window->flags & WINDOW_MANAGED) != 0) {
@@ -802,6 +812,8 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
     // TODO: Get rid of this.
     dest_pitch = 0;
 
+    const int screenWidth = screenGetWidth();
+
     if ((window->flags & WINDOW_HIDDEN) != 0) {
         return;
     }
@@ -858,16 +870,16 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                                     v20->rect.right - v20->rect.left + 1,
                                     v20->rect.bottom - v20->rect.top + 1,
                                     window->width,
-                                    _screen_buffer + v20->rect.top * (_scr_size.right - _scr_size.left + 1) + v20->rect.left,
-                                    _scr_size.right - _scr_size.left + 1);
+                                    _screen_buffer + v20->rect.top * screenWidth + v20->rect.left,
+                                    screenWidth);
                             } else {
                                 blitBufferToBuffer(
                                     window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
                                     v20->rect.right - v20->rect.left + 1,
                                     v20->rect.bottom - v20->rect.top + 1,
                                     window->width,
-                                    _screen_buffer + v20->rect.top * (_scr_size.right - _scr_size.left + 1) + v20->rect.left,
-                                    _scr_size.right - _scr_size.left + 1);
+                                    _screen_buffer + v20->rect.top * screenWidth + v20->rect.left,
+                                    screenWidth);
                             }
                         } else {
                             _scr_blit(
@@ -907,8 +919,8 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                                     width,
                                     height,
                                     width,
-                                    _screen_buffer + v16->rect.top * (_scr_size.right - _scr_size.left + 1) + v16->rect.left,
-                                    _scr_size.right - _scr_size.left + 1);
+                                    _screen_buffer + v16->rect.top * screenWidth + v16->rect.left,
+                                    screenWidth);
                             } else {
                                 _scr_blit(buf, width, height, 0, 0, width, height, v16->rect.left, v16->rect.top);
                             }
@@ -926,8 +938,8 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
 
                 if (_buffering && !a3) {
                     _scr_blit(
-                        _screen_buffer + v23->rect.left + (_scr_size.right - _scr_size.left + 1) * v23->rect.top,
-                        _scr_size.right - _scr_size.left + 1,
+                        _screen_buffer + v23->rect.left + screenWidth * v23->rect.top,
+                        screenWidth,
                         v23->rect.bottom - v23->rect.top + 1,
                         0,
                         0,
@@ -1052,20 +1064,22 @@ void win_drag(int win)
         dx = mx - dx;
         dy = my - dy;
 
-        if (dx + window->rect.left < _scr_size.left) {
-            dx = _scr_size.left - window->rect.left;
+        const Rect& logicalBounds = displayScalerGetLogicalBounds();
+
+        if (dx + window->rect.left < logicalBounds.left) {
+            dx = logicalBounds.left - window->rect.left;
         }
 
-        if (dx + window->rect.right > _scr_size.right) {
-            dx = _scr_size.right - window->rect.right;
+        if (dx + window->rect.right > logicalBounds.right) {
+            dx = logicalBounds.right - window->rect.right;
         }
 
-        if (dy + window->rect.top < _scr_size.top) {
-            dy = _scr_size.top - window->rect.top;
+        if (dy + window->rect.top < logicalBounds.top) {
+            dy = logicalBounds.top - window->rect.top;
         }
 
-        if (dy + window->rect.bottom > _scr_size.bottom) {
-            dy = _scr_size.bottom - window->rect.bottom;
+        if (dy + window->rect.bottom > logicalBounds.bottom) {
+            dy = logicalBounds.bottom - window->rect.bottom;
         }
 
         renderPresent();
