@@ -83,6 +83,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/dinput.h"
     "src/display_monitor.cc"
     "src/display_monitor.h"
+    "src/display_scaler.cc"
+    "src/display_scaler.h"
     "src/draw.cc"
     "src/draw.h"
     "src/elevator.cc"
