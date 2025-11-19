@@ -20,6 +20,7 @@ namespace fallout {
 
 static bool createRenderer();
 static void destroyRenderer();
+static void syncPhysicalSizeWithRenderer();
 
 // Legacy screen rect maintained for existing code. Tracks logical bounds.
 Rect _scr_size;
@@ -191,8 +192,6 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
             return -1;
         }
 
-        displayScalerUpdatePhysicalSize(physicalWidth, physicalHeight);
-
         if (!createRenderer()) {
             destroyRenderer();
 
@@ -201,6 +200,8 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
 
             return -1;
         }
+
+        syncPhysicalSizeWithRenderer();
     } else {
         int physicalWidth;
         int physicalHeight;
@@ -446,6 +447,24 @@ static void destroyRenderer()
     }
 }
 
+static void syncPhysicalSizeWithRenderer()
+{
+    if (gSdlRenderer == nullptr) {
+        return;
+    }
+
+    int outputWidth = 0;
+    int outputHeight = 0;
+    if (SDL_GetRendererOutputSize(gSdlRenderer, &outputWidth, &outputHeight) != 0) {
+        return;
+    }
+
+    PhysicalSpace physicalSpace = displayScalerGetPhysicalSpace();
+    if (physicalSpace.width != outputWidth || physicalSpace.height != outputHeight) {
+        displayScalerUpdatePhysicalSize(outputWidth, outputHeight);
+    }
+}
+
 void handleWindowSizeChanged()
 {
     if (gSdlWindow == nullptr) {
@@ -468,10 +487,14 @@ void handleWindowSizeChanged()
     if (gSdlTextureSurface != nullptr && gSdlSurface != nullptr) {
         SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
     }
+
+    syncPhysicalSizeWithRenderer();
 }
 
 void renderPresent()
 {
+    syncPhysicalSizeWithRenderer();
+
     LogicalSpace logicalSpace = displayScalerGetLogicalSpace();
     SDL_Rect srcRect;
     srcRect.x = 0;
