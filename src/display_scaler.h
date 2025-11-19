@@ -17,6 +17,7 @@ struct PhysicalSpace {
 
 void displayScalerInit(int logicalWidth, int logicalHeight);
 void displayScalerSetLogicalSize(int logicalWidth, int logicalHeight);
+void displayScalerSetIntegerScaling(bool enabled);
 void displayScalerUpdatePhysicalSize(int physicalWidth, int physicalHeight);
 const Rect& displayScalerGetLogicalBounds();
 const Rect& displayScalerGetPhysicalViewport();

@@ -17,6 +17,7 @@ Rect gPhysicalViewport = { 0, 0, kDefaultLogicalWidth - 1, kDefaultLogicalHeight
 Point gLetterboxOffset = { 0, 0 };
 double gScale = 1.0;
 double gInvScale = 1.0;
+bool gUseIntegerScaling = false;
 
 static void updateViewport()
 {
@@ -37,6 +38,9 @@ static void updateViewport()
     const double scaleY = static_cast<double>(gPhysicalSpace.height) / static_cast<double>(gLogicalSpace.height);
 
     gScale = std::min(scaleX, scaleY);
+    if (gUseIntegerScaling) {
+        gScale = std::floor(gScale);
+    }
     if (gScale <= 0.0) {
         gScale = 1.0;
     }
@@ -99,6 +103,12 @@ void displayScalerSetLogicalSize(int logicalWidth, int logicalHeight)
 {
     gLogicalSpace.width = std::max(1, logicalWidth);
     gLogicalSpace.height = std::max(1, logicalHeight);
+    updateViewport();
+}
+
+void displayScalerSetIntegerScaling(bool enabled)
+{
+    gUseIntegerScaling = enabled;
     updateViewport();
 }
 

@@ -1,5 +1,6 @@
 #include "svga.h"
 
+#include <algorithm>
 #include <limits.h>
 #include <string.h>
 
@@ -106,6 +107,9 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
 {
     bool fullscreen = true;
     int scale = 1;
+    int logicalWidth = width;
+    int logicalHeight = height;
+    bool integerScaling = false;
 
     Config resolutionConfig;
     if (configInit(&resolutionConfig)) {
@@ -141,17 +145,30 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
             configGetInt(&resolutionConfig, "IFACE", "IFACE_BAR_WIDTH", &gInterfaceBarWidth);
             configGetInt(&resolutionConfig, "IFACE", "IFACE_BAR_SIDE_ART", &gInterfaceSidePanelsImageId);
             configGetBool(&resolutionConfig, "IFACE", "IFACE_BAR_SIDES_ORI", &gInterfaceSidePanelsExtendFromScreenEdge);
+
+            int logicalWidthOverride;
+            if (configGetInt(&resolutionConfig, "SCALER", "LOGICAL_WIDTH", &logicalWidthOverride)) {
+                logicalWidth = std::max(1, logicalWidthOverride);
+            }
+
+            int logicalHeightOverride;
+            if (configGetInt(&resolutionConfig, "SCALER", "LOGICAL_HEIGHT", &logicalHeightOverride)) {
+                logicalHeight = std::max(1, logicalHeightOverride);
+            }
+
+            configGetBool(&resolutionConfig, "SCALER", "INTEGER_SCALING", &integerScaling);
         }
         configFree(&resolutionConfig);
     }
 
-    displayScalerInit(width, height);
+    displayScalerInit(logicalWidth, logicalHeight);
+    displayScalerSetIntegerScaling(integerScaling);
 
     if (_GNW95_init_window(width, height, fullscreen, scale) == -1) {
         return -1;
     }
 
-    if (directDrawInit(width, height, bpp) == -1) {
+    if (directDrawInit(logicalWidth, logicalHeight, bpp) == -1) {
         return -1;
     }
 
