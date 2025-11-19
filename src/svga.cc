@@ -503,15 +503,56 @@ void renderPresent()
     srcRect.h = logicalSpace.height;
 
     SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch);
-    SDL_SetRenderDrawColor(gSdlRenderer, 0, 0, 0, 255);
-    SDL_RenderClear(gSdlRenderer);
-
     const Rect& viewport = displayScalerGetPhysicalViewport();
     SDL_Rect destRect;
     destRect.x = viewport.left;
     destRect.y = viewport.top;
     destRect.w = rectGetWidth(&viewport);
     destRect.h = rectGetHeight(&viewport);
+
+    SDL_Rect letterboxRects[4];
+    int rectCount = 0;
+
+    if (destRect.y > 0) {
+        SDL_Rect& topRect = letterboxRects[rectCount++];
+        topRect.x = 0;
+        topRect.y = 0;
+        topRect.w = screenGetPhysicalWidth();
+        topRect.h = destRect.y;
+    }
+
+    const int bottomStart = destRect.y + destRect.h;
+    const int physicalHeight = screenGetPhysicalHeight();
+    if (bottomStart < physicalHeight) {
+        SDL_Rect& bottomRect = letterboxRects[rectCount++];
+        bottomRect.x = 0;
+        bottomRect.y = bottomStart;
+        bottomRect.w = screenGetPhysicalWidth();
+        bottomRect.h = physicalHeight - bottomStart;
+    }
+
+    if (destRect.x > 0) {
+        SDL_Rect& leftRect = letterboxRects[rectCount++];
+        leftRect.x = 0;
+        leftRect.y = destRect.y;
+        leftRect.w = destRect.x;
+        leftRect.h = destRect.h;
+    }
+
+    const int rightStart = destRect.x + destRect.w;
+    const int physicalWidth = screenGetPhysicalWidth();
+    if (rightStart < physicalWidth) {
+        SDL_Rect& rightRect = letterboxRects[rectCount++];
+        rightRect.x = rightStart;
+        rightRect.y = destRect.y;
+        rightRect.w = physicalWidth - rightStart;
+        rightRect.h = destRect.h;
+    }
+
+    SDL_SetRenderDrawColor(gSdlRenderer, 0, 0, 0, 255);
+    if (rectCount > 0) {
+        SDL_RenderFillRects(gSdlRenderer, letterboxRects, rectCount);
+    }
 
     SDL_RenderCopy(gSdlRenderer, gSdlTexture, &srcRect, &destRect);
     SDL_RenderPresent(gSdlRenderer);
