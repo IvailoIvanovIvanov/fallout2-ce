@@ -1,9 +1,15 @@
 #include "dinput.h"
 
+#include <cmath>
+
+#include "display_scaler.h"
+
 namespace fallout {
 
 static int gMouseWheelDeltaX = 0;
 static int gMouseWheelDeltaY = 0;
+static double gMouseDeltaAccumulatorX = 0.0;
+static double gMouseDeltaAccumulatorY = 0.0;
 
 // 0x4E0400
 bool directInputInit()
@@ -54,6 +60,19 @@ bool mouseDeviceGetData(MouseData* mouseState)
     SDL_PumpEvents();
 
     Uint32 buttons = SDL_GetRelativeMouseState(&(mouseState->x), &(mouseState->y));
+
+    double inverseScale = displayScalerGetInverseScale();
+    double logicalDeltaX = gMouseDeltaAccumulatorX + inverseScale * mouseState->x;
+    double logicalDeltaY = gMouseDeltaAccumulatorY + inverseScale * mouseState->y;
+
+    int convertedX = static_cast<int>(std::round(logicalDeltaX));
+    int convertedY = static_cast<int>(std::round(logicalDeltaY));
+
+    gMouseDeltaAccumulatorX = logicalDeltaX - convertedX;
+    gMouseDeltaAccumulatorY = logicalDeltaY - convertedY;
+
+    mouseState->x = convertedX;
+    mouseState->y = convertedY;
     mouseState->buttons[0] = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
     mouseState->buttons[1] = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
     mouseState->wheelX = gMouseWheelDeltaX;
