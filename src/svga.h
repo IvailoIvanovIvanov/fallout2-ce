@@ -43,6 +43,8 @@ void _GNW95_zero_vid_mem();
 int screenGetWidth();
 int screenGetHeight();
 int screenGetVisibleHeight();
+int screenGetPhysicalWidth();
+int screenGetPhysicalHeight();
 void handleWindowSizeChanged();
 void renderPresent();
 

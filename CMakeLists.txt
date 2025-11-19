@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.5)
 
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
 
@@ -14,6 +14,7 @@ if(APPLE)
     endif()
 endif()
 
+cmake_policy(SET CMP0076 NEW)
 project(${EXECUTABLE_NAME})
 
 set(CMAKE_CXX_STANDARD 17)

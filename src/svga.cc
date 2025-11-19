@@ -6,6 +6,7 @@
 #include <SDL.h>
 
 #include "config.h"
+#include "display_scaler.h"
 #include "draw.h"
 #include "interface.h"
 #include "memory.h"
@@ -16,10 +17,10 @@
 
 namespace fallout {
 
-static bool createRenderer(int width, int height);
+static bool createRenderer();
 static void destroyRenderer();
 
-// screen rect
+// Legacy screen rect maintained for existing code. Tracks logical bounds.
 Rect _scr_size;
 
 // 0x6ACA18
@@ -142,6 +143,8 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
         configFree(&resolutionConfig);
     }
 
+    displayScalerInit(width, height);
+
     if (_GNW95_init_window(width, height, fullscreen, scale) == -1) {
         return -1;
     }
@@ -150,10 +153,8 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
         return -1;
     }
 
-    _scr_size.left = 0;
-    _scr_size.top = 0;
-    _scr_size.right = width - 1;
-    _scr_size.bottom = height - 1;
+    const Rect& logical = displayScalerGetLogicalBounds();
+    rectCopy(&_scr_size, &logical);
 
     _mouse_blit_trans = nullptr;
     _scr_blit = _GNW95_ShowRect;
@@ -181,12 +182,17 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
             windowFlags |= SDL_WINDOW_FULLSCREEN;
         }
 
-        gSdlWindow = SDL_CreateWindow(gProgramWindowTitle, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, width * scale, height * scale, windowFlags);
+        const int physicalWidth = width * scale;
+        const int physicalHeight = height * scale;
+
+        gSdlWindow = SDL_CreateWindow(gProgramWindowTitle, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, physicalWidth, physicalHeight, windowFlags);
         if (gSdlWindow == nullptr) {
             return -1;
         }
 
-        if (!createRenderer(width, height)) {
+        displayScalerUpdatePhysicalSize(physicalWidth, physicalHeight);
+
+        if (!createRenderer()) {
             destroyRenderer();
 
             SDL_DestroyWindow(gSdlWindow);
@@ -194,6 +200,11 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
 
             return -1;
         }
+    } else {
+        int physicalWidth;
+        int physicalHeight;
+        SDL_GetWindowSize(gSdlWindow, &physicalWidth, &physicalHeight);
+        displayScalerUpdatePhysicalSize(physicalWidth, physicalHeight);
     }
 
     return 0;
@@ -334,14 +345,14 @@ void _GNW95_zero_vid_mem()
 
 int screenGetWidth()
 {
-    // TODO: Make it on par with _xres;
-    return rectGetWidth(&_scr_size);
+    LogicalSpace logicalSpace = displayScalerGetLogicalSpace();
+    return logicalSpace.width;
 }
 
 int screenGetHeight()
 {
-    // TODO: Make it on par with _yres.
-    return rectGetHeight(&_scr_size);
+    LogicalSpace logicalSpace = displayScalerGetLogicalSpace();
+    return logicalSpace.height;
 }
 
 int screenGetVisibleHeight()
@@ -354,18 +365,31 @@ int screenGetVisibleHeight()
     return screenGetHeight() - windowBottomMargin;
 }
 
-static bool createRenderer(int width, int height)
+int screenGetPhysicalWidth()
+{
+    PhysicalSpace physicalSpace = displayScalerGetPhysicalSpace();
+    return physicalSpace.width;
+}
+
+int screenGetPhysicalHeight()
+{
+    PhysicalSpace physicalSpace = displayScalerGetPhysicalSpace();
+    return physicalSpace.height;
+}
+
+static bool createRenderer()
 {
     gSdlRenderer = SDL_CreateRenderer(gSdlWindow, -1, 0);
     if (gSdlRenderer == nullptr) {
         return false;
     }
 
-    if (SDL_RenderSetLogicalSize(gSdlRenderer, width, height) != 0) {
+    LogicalSpace logicalSpace = displayScalerGetLogicalSpace();
+    if (SDL_RenderSetLogicalSize(gSdlRenderer, logicalSpace.width, logicalSpace.height) != 0) {
         return false;
     }
 
-    gSdlTexture = SDL_CreateTexture(gSdlRenderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, width, height);
+    gSdlTexture = SDL_CreateTexture(gSdlRenderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, logicalSpace.width, logicalSpace.height);
     if (gSdlTexture == nullptr) {
         return false;
     }
@@ -375,7 +399,7 @@ static bool createRenderer(int width, int height)
         return false;
     }
 
-    gSdlTextureSurface = SDL_CreateRGBSurfaceWithFormat(0, width, height, SDL_BITSPERPIXEL(format), format);
+    gSdlTextureSurface = SDL_CreateRGBSurfaceWithFormat(0, logicalSpace.width, logicalSpace.height, SDL_BITSPERPIXEL(format), format);
     if (gSdlTextureSurface == nullptr) {
         return false;
     }
@@ -403,8 +427,22 @@ static void destroyRenderer()
 
 void handleWindowSizeChanged()
 {
+    if (gSdlWindow == nullptr) {
+        return;
+    }
+
+    int physicalWidth;
+    int physicalHeight;
+    SDL_GetWindowSize(gSdlWindow, &physicalWidth, &physicalHeight);
+
+    displayScalerUpdatePhysicalSize(physicalWidth, physicalHeight);
+
     destroyRenderer();
-    createRenderer(screenGetWidth(), screenGetHeight());
+
+    const Rect& logical = displayScalerGetLogicalBounds();
+    rectCopy(&_scr_size, &logical);
+
+    createRenderer();
 }
 
 void renderPresent()
