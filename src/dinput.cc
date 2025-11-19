@@ -1,15 +1,18 @@
 #include "dinput.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "display_scaler.h"
+#include "svga.h"
 
 namespace fallout {
 
 static int gMouseWheelDeltaX = 0;
 static int gMouseWheelDeltaY = 0;
-static double gMouseDeltaAccumulatorX = 0.0;
-static double gMouseDeltaAccumulatorY = 0.0;
+static bool gMouseHasPosition = false;
+static int gMouseLastLogicalX = 0;
+static int gMouseLastLogicalY = 0;
 
 // 0x4E0400
 bool directInputInit()
@@ -39,12 +42,14 @@ void directInputFree()
 // 0x4E04E8
 bool mouseDeviceAcquire()
 {
+    gMouseHasPosition = false;
     return true;
 }
 
 // 0x4E0514
 bool mouseDeviceUnacquire()
 {
+    gMouseHasPosition = false;
     return true;
 }
 
@@ -59,20 +64,48 @@ bool mouseDeviceGetData(MouseData* mouseState)
     // update mouse position manually.
     SDL_PumpEvents();
 
-    Uint32 buttons = SDL_GetRelativeMouseState(&(mouseState->x), &(mouseState->y));
+    int windowX;
+    int windowY;
+    Uint32 buttons = SDL_GetMouseState(&windowX, &windowY);
 
-    double inverseScale = displayScalerGetInverseScale();
-    double logicalDeltaX = gMouseDeltaAccumulatorX + inverseScale * mouseState->x;
-    double logicalDeltaY = gMouseDeltaAccumulatorY + inverseScale * mouseState->y;
+    int windowWidth = 0;
+    int windowHeight = 0;
+    if (gSdlWindow != nullptr) {
+        SDL_GetWindowSize(gSdlWindow, &windowWidth, &windowHeight);
+    }
 
-    int convertedX = static_cast<int>(std::round(logicalDeltaX));
-    int convertedY = static_cast<int>(std::round(logicalDeltaY));
+    PhysicalSpace physicalSpace = displayScalerGetPhysicalSpace();
 
-    gMouseDeltaAccumulatorX = logicalDeltaX - convertedX;
-    gMouseDeltaAccumulatorY = logicalDeltaY - convertedY;
+    double scaleX = 1.0;
+    double scaleY = 1.0;
+    if (windowWidth > 0) {
+        scaleX = static_cast<double>(physicalSpace.width) / static_cast<double>(windowWidth);
+    }
+    if (windowHeight > 0) {
+        scaleY = static_cast<double>(physicalSpace.height) / static_cast<double>(windowHeight);
+    }
 
-    mouseState->x = convertedX;
-    mouseState->y = convertedY;
+    int physicalX = static_cast<int>(std::round(windowX * scaleX));
+    int physicalY = static_cast<int>(std::round(windowY * scaleY));
+
+    physicalX = std::clamp(physicalX, 0, std::max(0, physicalSpace.width - 1));
+    physicalY = std::clamp(physicalY, 0, std::max(0, physicalSpace.height - 1));
+
+    Point physicalPoint = { physicalX, physicalY };
+    Point logicalPoint = displayScalerPhysicalToLogical(physicalPoint);
+
+    if (!gMouseHasPosition) {
+        gMouseLastLogicalX = logicalPoint.x;
+        gMouseLastLogicalY = logicalPoint.y;
+        gMouseHasPosition = true;
+    }
+
+    mouseState->x = logicalPoint.x - gMouseLastLogicalX;
+    mouseState->y = logicalPoint.y - gMouseLastLogicalY;
+
+    gMouseLastLogicalX = logicalPoint.x;
+    gMouseLastLogicalY = logicalPoint.y;
+
     mouseState->buttons[0] = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
     mouseState->buttons[1] = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
     mouseState->wheelX = gMouseWheelDeltaX;
@@ -112,12 +145,31 @@ bool keyboardDeviceGetData(KeyboardData* keyboardData)
 // 0x4E070C
 bool mouseDeviceInit()
 {
-    return SDL_SetRelativeMouseMode(SDL_TRUE) == 0;
+    if (SDL_SetRelativeMouseMode(SDL_FALSE) != 0) {
+        return false;
+    }
+
+    SDL_ShowCursor(SDL_DISABLE);
+
+    if (gSdlWindow != nullptr) {
+        SDL_SetWindowGrab(gSdlWindow, SDL_TRUE);
+    }
+
+    gMouseHasPosition = false;
+
+    return true;
 }
 
 // 0x4E078C
 void mouseDeviceFree()
 {
+    SDL_ShowCursor(SDL_ENABLE);
+
+    if (gSdlWindow != nullptr) {
+        SDL_SetWindowGrab(gSdlWindow, SDL_FALSE);
+    }
+
+    gMouseHasPosition = false;
 }
 
 // 0x4E07B8
@@ -133,8 +185,8 @@ void keyboardDeviceFree()
 
 void handleMouseEvent(SDL_Event* event)
 {
-    // Mouse movement and buttons are accumulated in SDL itself and will be
-    // processed later in `mouseDeviceGetData` via `SDL_GetRelativeMouseState`.
+    // Mouse wheel events are accumulated here; absolute position is read in
+    // `mouseDeviceGetData` via `SDL_GetMouseState` each frame.
 
     if (event->type == SDL_MOUSEWHEEL) {
         gMouseWheelDeltaX += event->wheel.x;

@@ -38,7 +38,7 @@ static void updateViewport()
     const double scaleY = static_cast<double>(gPhysicalSpace.height) / static_cast<double>(gLogicalSpace.height);
 
     gScale = std::min(scaleX, scaleY);
-    if (gUseIntegerScaling) {
+    if (gUseIntegerScaling && gScale >= 1.0) {
         gScale = std::floor(gScale);
     }
     if (gScale <= 0.0) {
