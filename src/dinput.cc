@@ -68,21 +68,28 @@ bool mouseDeviceGetData(MouseData* mouseState)
     int windowY;
     Uint32 buttons = SDL_GetMouseState(&windowX, &windowY);
 
-    int windowWidth = 0;
-    int windowHeight = 0;
-    if (gSdlWindow != nullptr) {
-        SDL_GetWindowSize(gSdlWindow, &windowWidth, &windowHeight);
+    int outputW = 0;
+    int outputH = 0;
+    if (gSdlRenderer != nullptr) {
+        SDL_GetRendererOutputSize(gSdlRenderer, &outputW, &outputH);
+    }
+
+    if (outputW == 0 || outputH == 0) {
+        // Fallback to window size if renderer not available.
+        if (gSdlWindow != nullptr) {
+            SDL_GetWindowSize(gSdlWindow, &outputW, &outputH);
+        }
     }
 
     PhysicalSpace physicalSpace = displayScalerGetPhysicalSpace();
 
     double scaleX = 1.0;
     double scaleY = 1.0;
-    if (windowWidth > 0) {
-        scaleX = static_cast<double>(physicalSpace.width) / static_cast<double>(windowWidth);
+    if (outputW > 0) {
+        scaleX = static_cast<double>(physicalSpace.width) / static_cast<double>(outputW);
     }
-    if (windowHeight > 0) {
-        scaleY = static_cast<double>(physicalSpace.height) / static_cast<double>(windowHeight);
+    if (outputH > 0) {
+        scaleY = static_cast<double>(physicalSpace.height) / static_cast<double>(outputH);
     }
 
     int physicalX = static_cast<int>(std::round(windowX * scaleX));
