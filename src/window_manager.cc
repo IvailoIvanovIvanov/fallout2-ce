@@ -15,6 +15,7 @@
 #include "memory.h"
 #include "mouse.h"
 #include "palette.h"
+#include "settings.h"
 #include "svga.h"
 #include "text_font.h"
 #include "win32.h"
@@ -110,6 +111,8 @@ static void* _GNW_texture;
 // 0x6ADF40
 static ButtonGroup gButtonGroups[BUTTON_GROUP_LIST_CAPACITY];
 
+static PixelFormat gWindowPixelFormat = PixelFormat::Indexed8;
+
 // 0x4D5C30
 int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitProc* videoSystemExitProc, int a3)
 {
@@ -150,6 +153,12 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
 
     gVideoSystemInitProc = videoSystemInitProc;
     gVideoSystemExitProc = directInputFree;
+
+    if (settings.system.use_true_color_renderer) {
+        debugPrint("True color renderer requested but not yet implemented; falling back to indexed mode.\n");
+    }
+
+    gWindowPixelFormat = PixelFormat::Indexed8;
 
     int rc = videoSystemInitProc();
     if (rc == -1) {
@@ -241,6 +250,8 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
     window->tx = 0;
     window->ty = 0;
     window->buffer = nullptr;
+    window->pitch = window->width;
+    window->pixelFormat = gWindowPixelFormat;
     window->buttonListHead = nullptr;
     window->hoveredButton = nullptr;
     window->clickedButton = nullptr;
@@ -360,6 +371,8 @@ int windowCreate(int x, int y, int width, int height, int color, int flags)
     window->flags = flags;
     window->tx = rand() & 0xFFFE;
     window->ty = rand() & 0xFFFE;
+    window->pitch = window->width;
+    window->pixelFormat = gWindowPixelFormat;
 
     if (color == 256) {
         if (_GNW_texture == nullptr) {
@@ -1149,6 +1162,32 @@ unsigned char* windowGetBuffer(int win)
     }
 
     return window->buffer;
+}
+
+int windowGetPitch(int win)
+{
+    Window* window = windowGetWindow(win);
+
+    if (!gWindowSystemInitialized) {
+        return 0;
+    }
+
+    if (window == nullptr) {
+        return 0;
+    }
+
+    return window->pitch;
+}
+
+PixelFormat windowGetPixelFormat(int win)
+{
+    Window* window = windowGetWindow(win);
+
+    if (!gWindowSystemInitialized || window == nullptr) {
+        return gWindowPixelFormat;
+    }
+
+    return window->pixelFormat;
 }
 
 // 0x4D78CC

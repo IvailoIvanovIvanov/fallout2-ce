@@ -251,6 +251,7 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/worldmap.h"
     "src/xfile.cc"
     "src/xfile.h"
+    "third_party/stb/stb_image_impl.cc"
 )
 
 target_sources(${EXECUTABLE_NAME} PUBLIC
@@ -379,6 +380,7 @@ target_include_directories(${EXECUTABLE_NAME} PRIVATE ${ZLIB_INCLUDE_DIRS})
 
 target_link_libraries(${EXECUTABLE_NAME} ${SDL2_LIBRARIES})
 target_include_directories(${EXECUTABLE_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
+target_include_directories(${EXECUTABLE_NAME} PRIVATE "${CMAKE_SOURCE_DIR}/third_party/stb")
 
 if(APPLE)
     if(IOS)

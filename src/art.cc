@@ -4,7 +4,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
+#include <limits>
+#include <string>
+#include <unordered_map>
+
 #include "animation.h"
+#include "color.h"
+#include "diagnostics.h"
 #include "debug.h"
 #include "draw.h"
 #include "game.h"
@@ -12,6 +19,7 @@
 #include "object.h"
 #include "proto.h"
 #include "settings.h"
+#include "stb_image.h"
 #include "sfall_config.h"
 
 namespace fallout {
@@ -38,6 +46,30 @@ static int artReadFrameData(unsigned char* data, File* stream, int count, int* p
 static int artReadHeader(Art* art, File* stream);
 static int artGetDataSize(Art* art);
 static int paddingForSize(int size);
+
+struct HdArtInfo {
+    std::string path;
+    int width;
+    int height;
+};
+
+struct HdPngStream {
+    File* stream;
+};
+
+static std::unordered_map<int, HdArtInfo> gHdArtInfoCache;
+
+static bool hdArtSupportedType(int type);
+static bool hdArtBuildPngFilePath(int fid, char* path, size_t size);
+static bool hdArtProbe(int fid, HdArtInfo& info);
+static int hdArtComputeDataSize(int width, int height);
+static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* data, int* sizePtr);
+static void hdArtConvertRgbaToPalette(const stbi_uc* rgba, int width, int height, unsigned char* dest);
+static unsigned char hdArtFindNearestPaletteColor(const unsigned char* palette, int r, int g, int b, std::unordered_map<int, unsigned char>& cache);
+static int hdArtPngRead(void* user, char* data, int size);
+static void hdArtPngSkip(void* user, int n);
+static int hdArtPngEof(void* user);
+static bool hdArtValidateDimensions(int fid, int width, int height);
 
 // 0x5002D8
 static char gDefaultJumpsuitMaleFileName[] = "hmjmps";
@@ -324,11 +356,14 @@ int artInit()
 // 0x418EB8
 void artReset()
 {
+    gHdArtInfoCache.clear();
 }
 
 // 0x418EBC
 void artExit()
 {
+    gHdArtInfoCache.clear();
+
     cacheFree(&gArtCache);
 
     internal_free(_anon_alias);
@@ -924,10 +959,360 @@ int artAliasFid(int fid)
     return -1;
 }
 
+static bool hdArtSupportedType(int type)
+{
+    return type == OBJ_TYPE_ITEM || type == OBJ_TYPE_TILE;
+}
+
+static bool hdArtBuildPngFilePath(int fid, char* path, size_t size)
+{
+    int type = FID_TYPE(fid);
+    if (!hdArtSupportedType(type)) {
+        return false;
+    }
+
+    if (type < 0 || type >= OBJ_TYPE_COUNT) {
+        return false;
+    }
+
+    int fileIndex = fid & 0xFFF;
+    if (fileIndex < 0 || fileIndex >= gArtListDescriptions[type].fileNamesLength) {
+        return false;
+    }
+
+    if (gArtListDescriptions[type].fileNames == nullptr) {
+        return false;
+    }
+
+    const char* fileName = gArtListDescriptions[type].fileNames + fileIndex * 13;
+    if (fileName == nullptr || fileName[0] == '\0') {
+        return false;
+    }
+
+    char baseName[16];
+    strncpy(baseName, fileName, sizeof(baseName) - 1);
+    baseName[sizeof(baseName) - 1] = '\0';
+
+    char* ext = strrchr(baseName, '.');
+    if (ext != nullptr) {
+        *ext = '\0';
+    }
+
+    std::string root = settings.system.hd_art_path;
+    if (root.empty()) {
+        root = "art";
+    }
+    std::replace(root.begin(), root.end(), '/', '\\');
+
+    bool isAbsolute = false;
+    if (root.size() > 1) {
+        if (root[1] == ':') {
+            isAbsolute = true;
+        } else if (root.size() > 2 && root[0] == '\\' && root[1] == '\\') {
+            isAbsolute = true;
+        }
+    }
+
+    while (root.size() > 1 && (root.back() == '\\' || root.back() == '/')) {
+        root.pop_back();
+    }
+
+    const char* prefix = isAbsolute ? "" : _cd_path_base;
+    if (snprintf(path, size, "%s%s\\%s\\%s.png", prefix, root.c_str(), gArtListDescriptions[type].name, baseName) >= (int)size) {
+        return false;
+    }
+
+    return true;
+}
+
+static int hdArtPngRead(void* user, char* data, int size)
+{
+    HdPngStream* context = reinterpret_cast<HdPngStream*>(user);
+    return (int)fileRead(data, 1, size, context->stream);
+}
+
+static void hdArtPngSkip(void* user, int n)
+{
+    HdPngStream* context = reinterpret_cast<HdPngStream*>(user);
+    fileSeek(context->stream, n, SEEK_CUR);
+}
+
+static int hdArtPngEof(void* user)
+{
+    HdPngStream* context = reinterpret_cast<HdPngStream*>(user);
+    return fileEof(context->stream);
+}
+
+static bool hdArtProbe(int fid, HdArtInfo& info)
+{
+    if (!settings.system.use_hd_art) {
+        return false;
+    }
+
+    auto cached = gHdArtInfoCache.find(fid);
+    if (cached != gHdArtInfoCache.end()) {
+        info = cached->second;
+        return true;
+    }
+
+    char path[COMPAT_MAX_PATH];
+    if (!hdArtBuildPngFilePath(fid, path, sizeof(path))) {
+        return false;
+    }
+
+    File* stream = fileOpen(path, "rb");
+    if (stream == nullptr) {
+        return false;
+    }
+
+    HdPngStream pngStream = { stream };
+    stbi_io_callbacks callbacks;
+    callbacks.read = hdArtPngRead;
+    callbacks.skip = hdArtPngSkip;
+    callbacks.eof = hdArtPngEof;
+
+    int width;
+    int height;
+    int components;
+    int status = stbi_info_from_callbacks(&callbacks, &pngStream, &width, &height, &components);
+    fileClose(stream);
+
+    if (status == 0) {
+        return false;
+    }
+
+    if (!hdArtValidateDimensions(fid, width, height)) {
+        return false;
+    }
+
+    info.path = path;
+    info.width = width;
+    info.height = height;
+    gHdArtInfoCache[fid] = info;
+    return true;
+}
+
+static int hdArtComputeDataSize(int width, int height)
+{
+    Art temp = {};
+    temp.frameCount = 1;
+    temp.dataOffsets[0] = 0;
+    temp.dataSize = sizeof(ArtFrame) + width * height;
+    return artGetDataSize(&temp);
+}
+
+static inline int hdArtPaletteComponentToRgb(unsigned char component)
+{
+    // Palette components are stored in 6-bit precision (0-63). Scale them to
+    // 0-255 range so distance calculations match PNG RGB data.
+    return (component << 2) | (component >> 4);
+}
+
+static unsigned char hdArtFindNearestPaletteColor(const unsigned char* palette, int r, int g, int b, std::unordered_map<int, unsigned char>& cache)
+{
+    int key = (r << 16) | (g << 8) | b;
+    auto it = cache.find(key);
+    if (it != cache.end()) {
+        return it->second;
+    }
+
+    int bestIndex = 0;
+    int bestDistance = std::numeric_limits<int>::max();
+
+    for (int index = 0; index < 256; index++) {
+        int pr = hdArtPaletteComponentToRgb(palette[index * 3]);
+        int pg = hdArtPaletteComponentToRgb(palette[index * 3 + 1]);
+        int pb = hdArtPaletteComponentToRgb(palette[index * 3 + 2]);
+
+        int dr = pr - r;
+        int dg = pg - g;
+        int db = pb - b;
+        int distance = dr * dr + dg * dg + db * db;
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestIndex = index;
+            if (distance == 0) {
+                break;
+            }
+        }
+    }
+
+    unsigned char result = static_cast<unsigned char>(bestIndex);
+    cache.emplace(key, result);
+    return result;
+}
+
+static void hdArtConvertRgbaToPalette(const stbi_uc* rgba, int width, int height, unsigned char* dest)
+{
+    const unsigned char* palette = _getSystemPalette();
+    std::unordered_map<int, unsigned char> colorCache;
+    colorCache.reserve(256);
+
+    int pixelCount = width * height;
+    for (int index = 0; index < pixelCount; index++) {
+        const stbi_uc* pixel = rgba + index * 4;
+        stbi_uc a = pixel[3];
+        if (a < 16) {
+            dest[index] = 0;
+            continue;
+        }
+
+        stbi_uc r = pixel[0];
+        stbi_uc g = pixel[1];
+        stbi_uc b = pixel[2];
+        dest[index] = hdArtFindNearestPaletteColor(palette, r, g, b, colorCache);
+    }
+}
+
+static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* data, int* sizePtr)
+{
+    File* stream = fileOpen(info.path.c_str(), "rb");
+    if (stream == nullptr) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+            diagnosticsLog(DiagnosticsLevel::Trace, "ART", "Unable to open HD PNG '%s' for fid %08X", info.path.c_str(), fid);
+        }
+        return false;
+    }
+
+    HdPngStream pngStream = { stream };
+    stbi_io_callbacks callbacks;
+    callbacks.read = hdArtPngRead;
+    callbacks.skip = hdArtPngSkip;
+    callbacks.eof = hdArtPngEof;
+
+    int width;
+    int height;
+    int components;
+    stbi_uc* pixels = stbi_load_from_callbacks(&callbacks, &pngStream, &width, &height, &components, STBI_rgb_alpha);
+    fileClose(stream);
+
+    if (pixels == nullptr) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+            diagnosticsLog(
+                DiagnosticsLevel::Trace,
+                "ART",
+                "Failed to decode HD PNG '%s' for fid %08X: %s",
+                info.path.c_str(),
+                fid,
+                stbi_failure_reason());
+        }
+        return false;
+    }
+
+    if (!hdArtValidateDimensions(fid, width, height)) {
+        stbi_image_free(pixels);
+        return false;
+    }
+
+    int totalSize = hdArtComputeDataSize(width, height);
+    memset(data, 0, totalSize);
+
+    Art* art = reinterpret_cast<Art*>(data);
+    art->framesPerSecond = 10;
+    art->actionFrame = 0;
+    art->frameCount = 1;
+
+    int headerPadding = paddingForSize(sizeof(Art));
+    for (int rotation = 0; rotation < ROTATION_COUNT; rotation++) {
+        art->dataOffsets[rotation] = 0;
+        art->padding[rotation] = headerPadding;
+        art->xOffsets[rotation] = 0;
+        art->yOffsets[rotation] = 0;
+    }
+
+    int frameSize = width * height;
+    art->dataSize = sizeof(ArtFrame) + frameSize;
+
+    unsigned char* frameStart = reinterpret_cast<unsigned char*>(art) + sizeof(Art) + art->padding[0];
+    ArtFrame* frame = reinterpret_cast<ArtFrame*>(frameStart);
+    frame->width = static_cast<short>(width);
+    frame->height = static_cast<short>(height);
+    frame->size = frameSize;
+    frame->x = 0;
+    frame->y = 0;
+
+    unsigned char* frameData = reinterpret_cast<unsigned char*>(frame + 1);
+    hdArtConvertRgbaToPalette(pixels, width, height, frameData);
+    int framePadding = paddingForSize(frameSize);
+    if (framePadding > 0) {
+        memset(frameData + frameSize, 0, framePadding);
+    }
+    stbi_image_free(pixels);
+
+    if (sizePtr != nullptr) {
+        *sizePtr = totalSize;
+    }
+
+    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        diagnosticsLog(
+            DiagnosticsLevel::Info,
+            "ART",
+            "Loaded HD PNG override '%s' (%dx%d) for fid %08X",
+            info.path.c_str(),
+            width,
+            height,
+            fid);
+    }
+
+    return true;
+}
+
+static bool hdArtValidateDimensions(int fid, int width, int height)
+{
+    if (width <= 0 || height <= 0) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(
+                DiagnosticsLevel::Info,
+                "ART",
+                "Ignoring HD PNG for fid %08X due to non-positive dimensions %dx%d",
+                fid,
+                width,
+                height);
+        }
+        return false;
+    }
+
+    if (width > std::numeric_limits<short>::max() || height > std::numeric_limits<short>::max()) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(
+                DiagnosticsLevel::Info,
+                "ART",
+                "Ignoring HD PNG for fid %08X because dimensions exceed 16-bit limit (%dx%d)",
+                fid,
+                width,
+                height);
+        }
+        return false;
+    }
+
+    long long pixelCount = 1LL * width * height;
+    if (pixelCount <= 0 || pixelCount > std::numeric_limits<int>::max()) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(
+                DiagnosticsLevel::Info,
+                "ART",
+                "Ignoring HD PNG for fid %08X because total pixel count %lld exceeds engine limits",
+                fid,
+                pixelCount);
+        }
+        return false;
+    }
+
+    return true;
+}
+
 // 0x419A78
 static int artCacheGetFileSizeImpl(int fid, int* sizePtr)
 {
     int result = -1;
+
+    if (sizePtr != nullptr) {
+        HdArtInfo hdInfo;
+        if (hdArtProbe(fid, hdInfo)) {
+            *sizePtr = hdArtComputeDataSize(hdInfo.width, hdInfo.height);
+            return 0;
+        }
+    }
 
     char* artFilePath = artBuildFilePath(fid);
     if (artFilePath != nullptr) {
@@ -967,6 +1352,17 @@ static int artCacheGetFileSizeImpl(int fid, int* sizePtr)
 static int artCacheReadDataImpl(int fid, int* sizePtr, unsigned char* data)
 {
     int result = -1;
+
+    if (sizePtr != nullptr && data != nullptr) {
+        HdArtInfo hdInfo;
+        if (hdArtProbe(fid, hdInfo)) {
+            if (hdArtLoadIntoCache(fid, hdInfo, data, sizePtr)) {
+                return 0;
+            }
+
+            gHdArtInfoCache.erase(fid);
+        }
+    }
 
     char* artFileName = artBuildFilePath(fid);
     if (artFileName != nullptr) {
