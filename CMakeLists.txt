@@ -74,6 +74,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/dbox.h"
     "src/debug.cc"
     "src/debug.h"
+    "src/diagnostics.cc"
+    "src/diagnostics.h"
     "src/dfile.cc"
     "src/dfile.h"
     "src/dialog.cc"

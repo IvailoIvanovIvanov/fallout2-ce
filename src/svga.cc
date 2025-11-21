@@ -7,6 +7,7 @@
 #include <SDL.h>
 
 #include "config.h"
+#include "diagnostics.h"
 #include "display_scaler.h"
 #include "draw.h"
 #include "geometry.h"
@@ -22,6 +23,11 @@ namespace fallout {
 static bool createRenderer();
 static void destroyRenderer();
 static void syncPhysicalSizeWithRenderer();
+static bool rectEquals(const Rect& a, const Rect& b);
+static void logViewportIfChanged(const Rect& viewport);
+
+static Rect gLastRenderViewport = { 0, 0, -1, -1 };
+static bool gHasRenderViewport = false;
 
 // Legacy screen rect maintained for existing code. Tracks logical bounds.
 Rect _scr_size;
@@ -110,6 +116,9 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
     int logicalWidth = width;
     int logicalHeight = height;
     bool integerScaling = false;
+    bool diagnosticsEnabled = false;
+    DiagnosticsLevel diagnosticsLevel = DiagnosticsLevel::Info;
+    char* diagnosticsLogFileValue = nullptr;
 
     Config resolutionConfig;
     if (configInit(&resolutionConfig)) {
@@ -157,12 +166,48 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
             }
 
             configGetBool(&resolutionConfig, "SCALER", "INTEGER_SCALING", &integerScaling);
+
+            configGetBool(&resolutionConfig, "DIAGNOSTICS", "ENABLE", &diagnosticsEnabled);
+
+            char* diagnosticsVerbosityValue;
+            if (configGetString(&resolutionConfig, "DIAGNOSTICS", "VERBOSITY", &diagnosticsVerbosityValue)) {
+                diagnosticsLevel = diagnosticsParseLevel(diagnosticsVerbosityValue);
+            }
+
+            if (!configGetString(&resolutionConfig, "DIAGNOSTICS", "LOG_FILE", &diagnosticsLogFileValue)) {
+                diagnosticsLogFileValue = nullptr;
+            }
         }
+        diagnosticsInit(diagnosticsEnabled, diagnosticsLevel, diagnosticsLogFileValue);
         configFree(&resolutionConfig);
+    } else {
+        diagnosticsInit(false, DiagnosticsLevel::Info, nullptr);
+    }
+
+    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        diagnosticsLog(
+            DiagnosticsLevel::Info,
+            "BOOT",
+            "diagnostics enabled=%d level=%s log=%s",
+            diagnosticsEnabled ? 1 : 0,
+            diagnosticsLevelToString(diagnosticsLevel),
+            diagnosticsGetLogPath());
     }
 
     displayScalerInit(logicalWidth, logicalHeight);
     displayScalerSetIntegerScaling(integerScaling);
+
+    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        diagnosticsLog(
+            DiagnosticsLevel::Info,
+            "BOOT",
+            "init logical=%dx%d fullscreen=%d scale=%d integerScaling=%d",
+            logicalWidth,
+            logicalHeight,
+            fullscreen ? 1 : 0,
+            scale,
+            integerScaling ? 1 : 0);
+    }
 
     if (_GNW95_init_window(width, height, fullscreen, scale) == -1) {
         return -1;
@@ -478,8 +523,51 @@ static void syncPhysicalSizeWithRenderer()
 
     PhysicalSpace physicalSpace = displayScalerGetPhysicalSpace();
     if (physicalSpace.width != outputWidth || physicalSpace.height != outputHeight) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(
+                DiagnosticsLevel::Info,
+                "RENDERER",
+                "renderer output resized %dx%d -> %dx%d",
+                physicalSpace.width,
+                physicalSpace.height,
+                outputWidth,
+                outputHeight);
+        }
         displayScalerUpdatePhysicalSize(outputWidth, outputHeight);
     }
+}
+
+static bool rectEquals(const Rect& a, const Rect& b)
+{
+    return a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom;
+}
+
+static void logViewportIfChanged(const Rect& viewport)
+{
+    if (!diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        return;
+    }
+
+    if (gHasRenderViewport && rectEquals(gLastRenderViewport, viewport)) {
+        return;
+    }
+
+    gLastRenderViewport = viewport;
+    gHasRenderViewport = true;
+
+    const int width = rectGetWidth(&viewport);
+    const int height = rectGetHeight(&viewport);
+
+    diagnosticsLog(
+        DiagnosticsLevel::Info,
+        "RENDERER",
+        "viewport (%d,%d)-(%d,%d) size=%dx%d",
+        viewport.left,
+        viewport.top,
+        viewport.right,
+        viewport.bottom,
+        width,
+        height);
 }
 
 void handleWindowSizeChanged()
@@ -491,6 +579,15 @@ void handleWindowSizeChanged()
     int physicalWidth;
     int physicalHeight;
     SDL_GetWindowSize(gSdlWindow, &physicalWidth, &physicalHeight);
+
+    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        diagnosticsLog(
+            DiagnosticsLevel::Info,
+            "WINDOW",
+            "window size changed to %dx%d",
+            physicalWidth,
+            physicalHeight);
+    }
 
     displayScalerUpdatePhysicalSize(physicalWidth, physicalHeight);
 
@@ -521,6 +618,7 @@ void renderPresent()
 
     SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch);
     const Rect& viewport = displayScalerGetPhysicalViewport();
+    logViewportIfChanged(viewport);
     SDL_Rect destRect;
     destRect.x = viewport.left;
     destRect.y = viewport.top;
@@ -564,6 +662,18 @@ void renderPresent()
         rightRect.y = destRect.y;
         rightRect.w = physicalWidth - rightStart;
         rightRect.h = destRect.h;
+    }
+
+    if (rectCount > 0 && diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        diagnosticsLog(
+            DiagnosticsLevel::Trace,
+            "RENDERER",
+            "letterbox count=%d dest=(%d,%d %dx%d)",
+            rectCount,
+            destRect.x,
+            destRect.y,
+            destRect.w,
+            destRect.h);
     }
 
     SDL_SetRenderDrawColor(gSdlRenderer, 0, 0, 0, 255);

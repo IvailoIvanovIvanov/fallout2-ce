@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "display_scaler.h"
+#include "diagnostics.h"
 #include "svga.h"
 
 namespace fallout {
@@ -15,6 +16,97 @@ static double gMouseLogicalExactX = 0.0;
 static double gMouseLogicalExactY = 0.0;
 static double gMouseLogicalRemainderX = 0.0;
 static double gMouseLogicalRemainderY = 0.0;
+
+namespace {
+
+struct MouseMetricsSnapshot {
+    int windowWidth;
+    int windowHeight;
+    int drawableWidth;
+    int drawableHeight;
+    int physicalWidth;
+    int physicalHeight;
+};
+
+struct MouseClampSnapshot {
+    bool lowX;
+    bool highX;
+    bool lowY;
+    bool highY;
+};
+
+MouseMetricsSnapshot gLastMouseMetrics = {};
+bool gHasMouseMetrics = false;
+MouseClampSnapshot gLastClampSnapshot = {};
+bool gHasClampSnapshot = false;
+
+void logMouseMetricsChange(const MouseMetricsSnapshot& snapshot)
+{
+    if (!diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        return;
+    }
+
+    if (gHasMouseMetrics && gLastMouseMetrics.windowWidth == snapshot.windowWidth && gLastMouseMetrics.windowHeight == snapshot.windowHeight && gLastMouseMetrics.drawableWidth == snapshot.drawableWidth && gLastMouseMetrics.drawableHeight == snapshot.drawableHeight && gLastMouseMetrics.physicalWidth == snapshot.physicalWidth && gLastMouseMetrics.physicalHeight == snapshot.physicalHeight) {
+        return;
+    }
+
+    gLastMouseMetrics = snapshot;
+    gHasMouseMetrics = true;
+
+    diagnosticsLog(
+        DiagnosticsLevel::Info,
+        "MOUSE",
+        "metrics window=%dx%d drawable=%dx%d physical=%dx%d",
+        snapshot.windowWidth,
+        snapshot.windowHeight,
+        snapshot.drawableWidth,
+        snapshot.drawableHeight,
+        snapshot.physicalWidth,
+        snapshot.physicalHeight);
+}
+
+void logMouseClampChange(const MouseClampSnapshot& snapshot, double logicalX, double logicalY)
+{
+    if (!diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        return;
+    }
+
+    if (gHasClampSnapshot && gLastClampSnapshot.lowX == snapshot.lowX && gLastClampSnapshot.highX == snapshot.highX && gLastClampSnapshot.lowY == snapshot.lowY && gLastClampSnapshot.highY == snapshot.highY) {
+        return;
+    }
+
+    gLastClampSnapshot = snapshot;
+    gHasClampSnapshot = true;
+
+    diagnosticsLog(
+        DiagnosticsLevel::Info,
+        "MOUSE",
+        "clamp lowX=%d highX=%d lowY=%d highY=%d logical=(%.2f,%.2f)",
+        snapshot.lowX ? 1 : 0,
+        snapshot.highX ? 1 : 0,
+        snapshot.lowY ? 1 : 0,
+        snapshot.highY ? 1 : 0,
+        logicalX,
+        logicalY);
+}
+
+void logMousePrimed(double logicalX, double logicalY, int physicalX, int physicalY)
+{
+    if (!diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        return;
+    }
+
+    diagnosticsLog(
+        DiagnosticsLevel::Info,
+        "MOUSE",
+        "primed logical=(%.2f,%.2f) physical=(%d,%d)",
+        logicalX,
+        logicalY,
+        physicalX,
+        physicalY);
+}
+
+} // namespace
 
 // 0x4E0400
 bool directInputInit()
@@ -49,6 +141,8 @@ bool mouseDeviceAcquire()
     gMouseLogicalExactY = 0.0;
     gMouseLogicalRemainderX = 0.0;
     gMouseLogicalRemainderY = 0.0;
+    gHasMouseMetrics = false;
+    gHasClampSnapshot = false;
     return true;
 }
 
@@ -60,6 +154,8 @@ bool mouseDeviceUnacquire()
     gMouseLogicalExactY = 0.0;
     gMouseLogicalRemainderX = 0.0;
     gMouseLogicalRemainderY = 0.0;
+    gHasMouseMetrics = false;
+    gHasClampSnapshot = false;
     return true;
 }
 
@@ -109,6 +205,16 @@ bool mouseDeviceGetData(MouseData* mouseState)
     if (windowHeight <= 0) {
         windowHeight = drawableHeight;
     }
+
+    MouseMetricsSnapshot metricsSnapshot = {
+        windowWidth,
+        windowHeight,
+        drawableWidth,
+        drawableHeight,
+        physicalSpace.width,
+        physicalSpace.height,
+    };
+    logMouseMetricsChange(metricsSnapshot);
 
     const int clampedWindowX = (windowWidth > 0) ? std::clamp(windowX, 0, windowWidth) : 0;
     const int clampedWindowY = (windowHeight > 0) ? std::clamp(windowY, 0, windowHeight) : 0;
@@ -184,6 +290,7 @@ bool mouseDeviceGetData(MouseData* mouseState)
         gMouseHasPosition = true;
         mouseState->x = 0;
         mouseState->y = 0;
+        logMousePrimed(logicalExactX, logicalExactY, physicalX, physicalY);
     } else {
         if (clampedLowX || clampedHighX) {
             gMouseLogicalRemainderX = 0.0;
@@ -208,6 +315,9 @@ bool mouseDeviceGetData(MouseData* mouseState)
         mouseState->x = deltaX;
         mouseState->y = deltaY;
     }
+
+    MouseClampSnapshot clampSnapshot = { clampedLowX, clampedHighX, clampedLowY, clampedHighY };
+    logMouseClampChange(clampSnapshot, logicalExactX, logicalExactY);
 
     mouseState->buttons[0] = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
     mouseState->buttons[1] = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
@@ -260,6 +370,21 @@ bool mouseDeviceInit()
 
     gMouseHasPosition = false;
 
+    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        int windowWidth = 0;
+        int windowHeight = 0;
+        if (gSdlWindow != nullptr) {
+            SDL_GetWindowSize(gSdlWindow, &windowWidth, &windowHeight);
+        }
+        diagnosticsLog(
+            DiagnosticsLevel::Info,
+            "MOUSE",
+            "mouseDeviceInit window=%dx%d grabbed=%d",
+            windowWidth,
+            windowHeight,
+            gSdlWindow != nullptr ? 1 : 0);
+    }
+
     return true;
 }
 
@@ -273,6 +398,10 @@ void mouseDeviceFree()
     }
 
     gMouseHasPosition = false;
+
+    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        diagnosticsLog(DiagnosticsLevel::Info, "MOUSE", "mouseDeviceFree");
+    }
 }
 
 // 0x4E07B8

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+
+#include "diagnostics.h"
 #include <fstream>
 #include <iomanip>
 
@@ -21,26 +23,33 @@ double gScale = 1.0;
 double gInvScale = 1.0;
 bool gUseIntegerScaling = false;
 
-static void writeScalerLog()
+static void logScalerState(const char* reason)
 {
-    std::ofstream log("display_scaler.log", std::ios::app);
-    if (!log.is_open()) {
+    if (!diagnosticsWouldLog(DiagnosticsLevel::Info)) {
         return;
     }
 
     const int viewportWidth = gPhysicalViewport.right - gPhysicalViewport.left + 1;
     const int viewportHeight = gPhysicalViewport.bottom - gPhysicalViewport.top + 1;
 
-    log << std::fixed << std::setprecision(4)
-        << "logical=" << gLogicalSpace.width << "x" << gLogicalSpace.height
-        << " physical=" << gPhysicalSpace.width << "x" << gPhysicalSpace.height
-        << " viewport=" << gPhysicalViewport.left << "," << gPhysicalViewport.top
-        << " " << viewportWidth << "x" << viewportHeight
-        << " letterbox=" << gLetterboxOffset.x << "," << gLetterboxOffset.y
-        << " scale=" << gScale
-        << " invScale=" << gInvScale
-        << " integerScaling=" << (gUseIntegerScaling ? 1 : 0)
-        << std::endl;
+    diagnosticsLog(
+        DiagnosticsLevel::Info,
+        "SCALER",
+        "%s logical=%dx%d physical=%dx%d viewport=(%d,%d %dx%d) letterbox=%d,%d scale=%.4f invScale=%.4f integer=%d",
+        reason != nullptr ? reason : "update",
+        gLogicalSpace.width,
+        gLogicalSpace.height,
+        gPhysicalSpace.width,
+        gPhysicalSpace.height,
+        gPhysicalViewport.left,
+        gPhysicalViewport.top,
+        viewportWidth,
+        viewportHeight,
+        gLetterboxOffset.x,
+        gLetterboxOffset.y,
+        gScale,
+        gInvScale,
+        gUseIntegerScaling ? 1 : 0);
 }
 
 static void updateViewport()
@@ -87,7 +96,7 @@ static void updateViewport()
     gLogicalBounds.right = gLogicalSpace.width - 1;
     gLogicalBounds.bottom = gLogicalSpace.height - 1;
 
-    writeScalerLog();
+    logScalerState("viewport");
 }
 
 static int clampToLogicalX(double value)
