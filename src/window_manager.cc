@@ -113,6 +113,26 @@ static ButtonGroup gButtonGroups[BUTTON_GROUP_LIST_CAPACITY];
 
 static PixelFormat gWindowPixelFormat = PixelFormat::Indexed8;
 
+static inline int windowBytesPerPixel(const Window* window)
+{
+    return pixelFormatBytesPerPixel(window->pixelFormat);
+}
+
+static inline unsigned char* windowBufferAt(Window* window, int x, int y)
+{
+    return window->buffer + window->pitch * y + x * windowBytesPerPixel(window);
+}
+
+static inline const unsigned char* windowBufferAtConst(const Window* window, int x, int y)
+{
+    return window->buffer + window->pitch * y + x * windowBytesPerPixel(window);
+}
+
+static inline unsigned char* screenBufferAt(int x, int y)
+{
+    return _screen_buffer + (screenGetWidth() * y + x) * pixelFormatBytesPerPixel(gWindowPixelFormat);
+}
+
 // 0x4D5C30
 int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitProc* videoSystemExitProc, int a3)
 {
@@ -176,8 +196,10 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
     int screenWidth = screenGetWidth();
     int screenHeight = screenGetHeight();
 
+    int screenBytesPerPixel = pixelFormatBytesPerPixel(gWindowPixelFormat);
+
     if (a3 & 1) {
-        _screen_buffer = (unsigned char*)internal_malloc(screenWidth * screenHeight);
+        _screen_buffer = (unsigned char*)internal_malloc(screenWidth * screenHeight * screenBytesPerPixel);
         if (_screen_buffer == nullptr) {
             if (gVideoSystemExitProc != nullptr) {
                 gVideoSystemExitProc();
@@ -250,8 +272,8 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
     window->tx = 0;
     window->ty = 0;
     window->buffer = nullptr;
-    window->pitch = window->width;
     window->pixelFormat = gWindowPixelFormat;
+    window->pitch = window->width * pixelFormatBytesPerPixel(window->pixelFormat);
     window->buttonListHead = nullptr;
     window->hoveredButton = nullptr;
     window->clickedButton = nullptr;
@@ -349,7 +371,11 @@ int windowCreate(int x, int y, int width, int height, int color, int flags)
         return -1;
     }
 
-    window->buffer = (unsigned char*)internal_malloc(width * height);
+    int bytesPerPixel = pixelFormatBytesPerPixel(gWindowPixelFormat);
+    window->pitch = width * bytesPerPixel;
+    window->pixelFormat = gWindowPixelFormat;
+
+    window->buffer = (unsigned char*)internal_malloc(window->pitch * height);
     if (window->buffer == nullptr) {
         internal_free(window);
         return -1;
@@ -371,8 +397,6 @@ int windowCreate(int x, int y, int width, int height, int color, int flags)
     window->flags = flags;
     window->tx = rand() & 0xFFFE;
     window->ty = rand() & 0xFFFE;
-    window->pitch = window->width;
-    window->pixelFormat = gWindowPixelFormat;
 
     if (color == 256) {
         if (_GNW_texture == nullptr) {
@@ -504,15 +528,22 @@ void windowDrawBorder(int win)
         return;
     }
 
-    _lighten_buf(window->buffer + 5, window->width - 10, 5, window->width);
-    _lighten_buf(window->buffer, 5, window->height, window->width);
-    _lighten_buf(window->buffer + window->width - 5, 5, window->height, window->width);
-    _lighten_buf(window->buffer + window->width * (window->height - 5) + 5, window->width - 10, 5, window->width);
+    if (windowBytesPerPixel(window) != 1) {
+        // TODO: Implement true color window borders.
+        return;
+    }
 
-    bufferDrawRect(window->buffer, window->width, 0, 0, window->width - 1, window->height - 1, _colorTable[0]);
+    int pitch = window->pitch;
 
-    bufferDrawRectShadowed(window->buffer, window->width, 1, 1, window->width - 2, window->height - 2, _colorTable[_GNW_wcolor[1]], _colorTable[_GNW_wcolor[2]]);
-    bufferDrawRectShadowed(window->buffer, window->width, 5, 5, window->width - 6, window->height - 6, _colorTable[_GNW_wcolor[2]], _colorTable[_GNW_wcolor[1]]);
+    _lighten_buf(windowBufferAt(window, 5, 0), window->width - 10, 5, pitch);
+    _lighten_buf(windowBufferAt(window, 0, 0), 5, window->height, pitch);
+    _lighten_buf(windowBufferAt(window, window->width - 5, 0), 5, window->height, pitch);
+    _lighten_buf(windowBufferAt(window, 5, window->height - 5), window->width - 10, 5, pitch);
+
+    bufferDrawRect(window->buffer, pitch, 0, 0, window->width - 1, window->height - 1, _colorTable[0]);
+
+    bufferDrawRectShadowed(window->buffer, pitch, 1, 1, window->width - 2, window->height - 2, _colorTable[_GNW_wcolor[1]], _colorTable[_GNW_wcolor[2]]);
+    bufferDrawRectShadowed(window->buffer, pitch, 5, 5, window->width - 6, window->height - 6, _colorTable[_GNW_wcolor[2]], _colorTable[_GNW_wcolor[1]]);
 }
 
 // 0x4D684C
@@ -528,6 +559,11 @@ void windowDrawText(int win, const char* str, int width, int x, int y, int color
     }
 
     if (window == nullptr) {
+        return;
+    }
+
+    if (windowBytesPerPixel(window) != 1) {
+        // TODO: Implement true color text rendering.
         return;
     }
 
@@ -547,7 +583,8 @@ void windowDrawText(int win, const char* str, int width, int x, int y, int color
         width = window->width - x;
     }
 
-    buf = window->buffer + x + y * window->width;
+    buf = windowBufferAt(window, x, y);
+    int pitch = window->pitch;
 
     if (fontGetLineHeight() + y > window->height) {
         return;
@@ -555,9 +592,9 @@ void windowDrawText(int win, const char* str, int width, int x, int y, int color
 
     if (!(color & 0x02000000)) {
         if (window->color == 256 && _GNW_texture != nullptr) {
-            _buf_texture(buf, width, fontGetLineHeight(), window->width, _GNW_texture, window->tx + x, window->ty + y);
+            _buf_texture(buf, width, fontGetLineHeight(), pitch, _GNW_texture, window->tx + x, window->ty + y);
         } else {
-            bufferFill(buf, width, fontGetLineHeight(), window->width, window->color);
+            bufferFill(buf, width, fontGetLineHeight(), pitch, window->color);
         }
     }
 
@@ -568,7 +605,7 @@ void windowDrawText(int win, const char* str, int width, int x, int y, int color
         textColor = color;
     }
 
-    fontDrawText(buf, str, width, window->width, textColor);
+    fontDrawText(buf, str, width, pitch, textColor);
 
     if (color & 0x01000000) {
         // TODO: Check.
@@ -594,12 +631,17 @@ void windowDrawLine(int win, int left, int top, int right, int bottom, int color
         return;
     }
 
+    if (windowBytesPerPixel(window) != 1) {
+        // TODO: Implement true color line drawing.
+        return;
+    }
+
     if ((color & 0xFF00) != 0) {
         int colorIndex = (color & 0xFF) - 1;
         color = (color & ~0xFFFF) | _colorTable[_GNW_wcolor[colorIndex]];
     }
 
-    bufferDrawLine(window->buffer, window->width, left, top, right, bottom, color);
+    bufferDrawLine(window->buffer, window->pitch, left, top, right, bottom, color);
 }
 
 // 0x4D6B88
@@ -612,6 +654,11 @@ void windowDrawRect(int win, int left, int top, int right, int bottom, int color
     }
 
     if (window == nullptr) {
+        return;
+    }
+
+    if (windowBytesPerPixel(window) != 1) {
+        // TODO: Implement true color rect drawing.
         return;
     }
 
@@ -632,7 +679,7 @@ void windowDrawRect(int win, int left, int top, int right, int bottom, int color
         bottom = tmp;
     }
 
-    bufferDrawRect(window->buffer, window->width, left, top, right, bottom, color);
+    bufferDrawRect(window->buffer, window->pitch, left, top, right, bottom, color);
 }
 
 // 0x4D6CC8
@@ -648,9 +695,12 @@ void windowFill(int win, int x, int y, int width, int height, int color)
         return;
     }
 
+    int bytesPerPixel = windowBytesPerPixel(window);
+    unsigned char* dest = windowBufferAt(window, x, y);
+
     if (color == 256) {
         if (_GNW_texture != nullptr) {
-            _buf_texture(window->buffer + window->width * y + x, width, height, window->width, _GNW_texture, x + window->tx, y + window->ty);
+            _buf_texture(dest, width, height, window->pitch, _GNW_texture, x + window->tx, y + window->ty);
         } else {
             color = _colorTable[_GNW_wcolor[0]] & 0xFF;
         }
@@ -659,8 +709,8 @@ void windowFill(int win, int x, int y, int width, int height, int color)
         color = (color & ~0xFFFF) | _colorTable[_GNW_wcolor[colorIndex]];
     }
 
-    if (color < 256) {
-        bufferFill(window->buffer + window->width * y + x, width, height, window->width, color);
+    if (color < 256 && bytesPerPixel == 1) {
+        bufferFill(dest, width, height, window->pitch, color);
     }
 }
 
@@ -826,6 +876,7 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
     dest_pitch = 0;
 
     const int screenWidth = screenGetWidth();
+    const int screenPitch = screenWidth * pixelFormatBytesPerPixel(gWindowPixelFormat);
 
     if ((window->flags & WINDOW_HIDDEN) != 0) {
         return;
@@ -841,10 +892,10 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
 
         v26->next = nullptr;
 
-        v26->rect.left = std::max(window->rect.left, rect->left);
-        v26->rect.top = std::max(window->rect.top, rect->top);
-        v26->rect.right = std::min(window->rect.right, rect->right);
-        v26->rect.bottom = std::min(window->rect.bottom, rect->bottom);
+        v26->rect.left = window->rect.left >= rect->left ? window->rect.left : rect->left;
+        v26->rect.top = window->rect.top >= rect->top ? window->rect.top : rect->top;
+        v26->rect.right = window->rect.right <= rect->right ? window->rect.right : rect->right;
+        v26->rect.bottom = window->rect.bottom <= rect->bottom ? window->rect.bottom : rect->bottom;
 
         if (v26->rect.right >= v26->rect.left && v26->rect.bottom >= v26->rect.top) {
             if (a3) {
@@ -858,20 +909,24 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                 while (v20) {
                     _GNW_button_refresh(window, &(v20->rect));
 
+                    int srcX = v20->rect.left - window->rect.left;
+                    int srcY = v20->rect.top - window->rect.top;
+                    unsigned char* srcPtr = windowBufferAt(window, srcX, srcY);
+
                     if (a3) {
                         if (_buffering && (window->flags & WINDOW_TRANSPARENT)) {
-                            window->blitProc(window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
+                            window->blitProc(srcPtr,
                                 v20->rect.right - v20->rect.left + 1,
                                 v20->rect.bottom - v20->rect.top + 1,
-                                window->width,
+                                window->pitch,
                                 a3 + dest_pitch * (v20->rect.top - rect->top) + v20->rect.left - rect->left,
                                 dest_pitch);
                         } else {
                             blitBufferToBuffer(
-                                window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
+                                srcPtr,
                                 v20->rect.right - v20->rect.left + 1,
                                 v20->rect.bottom - v20->rect.top + 1,
-                                window->width,
+                                window->pitch,
                                 a3 + dest_pitch * (v20->rect.top - rect->top) + v20->rect.left - rect->left,
                                 dest_pitch);
                         }
@@ -879,25 +934,25 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                         if (_buffering) {
                             if (window->flags & WINDOW_TRANSPARENT) {
                                 window->blitProc(
-                                    window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
+                                    srcPtr,
                                     v20->rect.right - v20->rect.left + 1,
                                     v20->rect.bottom - v20->rect.top + 1,
-                                    window->width,
-                                    _screen_buffer + v20->rect.top * screenWidth + v20->rect.left,
-                                    screenWidth);
+                                    window->pitch,
+                                    screenBufferAt(v20->rect.left, v20->rect.top),
+                                    screenPitch);
                             } else {
                                 blitBufferToBuffer(
-                                    window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
+                                    srcPtr,
                                     v20->rect.right - v20->rect.left + 1,
                                     v20->rect.bottom - v20->rect.top + 1,
-                                    window->width,
-                                    _screen_buffer + v20->rect.top * screenWidth + v20->rect.left,
-                                    screenWidth);
+                                    window->pitch,
+                                    screenBufferAt(v20->rect.left, v20->rect.top),
+                                    screenPitch);
                             }
                         } else {
                             _scr_blit(
-                                window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
-                                window->width,
+                                srcPtr,
+                                window->pitch,
                                 v20->rect.bottom - v20->rect.top + 1,
                                 0,
                                 0,
@@ -932,8 +987,8 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                                     width,
                                     height,
                                     width,
-                                    _screen_buffer + v16->rect.top * screenWidth + v16->rect.left,
-                                    screenWidth);
+                                    screenBufferAt(v16->rect.left, v16->rect.top),
+                                    screenPitch);
                             } else {
                                 _scr_blit(buf, width, height, 0, 0, width, height, v16->rect.left, v16->rect.top);
                             }
@@ -951,8 +1006,8 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
 
                 if (_buffering && !a3) {
                     _scr_blit(
-                        _screen_buffer + v23->rect.left + screenWidth * v23->rect.top,
-                        screenWidth,
+                        screenBufferAt(v23->rect.left, v23->rect.top),
+                        screenPitch,
                         v23->rect.bottom - v23->rect.top + 1,
                         0,
                         0,
@@ -1336,11 +1391,16 @@ void _win_text(int win, char** fileNameList, int fileNameListLength, int maxWidt
         return;
     }
 
-    int width = window->width;
-    unsigned char* ptr = window->buffer + y * width + x;
+    if (windowBytesPerPixel(window) != 1) {
+        // TODO: Implement true color text list rendering.
+        return;
+    }
+
+    int pitch = window->pitch;
+    unsigned char* ptr = windowBufferAt(window, x, y);
     int lineHeight = fontGetLineHeight();
 
-    int step = width * lineHeight;
+    int step = pitch * lineHeight;
     int v1 = lineHeight / 2;
     int v2 = v1 + 1;
     int v3 = maxWidth - 1;
@@ -1351,8 +1411,8 @@ void _win_text(int win, char** fileNameList, int fileNameListLength, int maxWidt
             windowDrawText(win, fileName, maxWidth, x, y, flags);
         } else {
             if (maxWidth != 0) {
-                bufferDrawLine(ptr, width, 0, v1, v3, v1, _colorTable[_GNW_wcolor[2]]);
-                bufferDrawLine(ptr, width, 0, v2, v3, v2, _colorTable[_GNW_wcolor[1]]);
+                bufferDrawLine(ptr, pitch, 0, v1, v3, v1, _colorTable[_GNW_wcolor[2]]);
+                bufferDrawLine(ptr, pitch, 0, v2, v3, v2, _colorTable[_GNW_wcolor[1]]);
             }
         }
 
