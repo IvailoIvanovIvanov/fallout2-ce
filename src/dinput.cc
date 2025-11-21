@@ -11,8 +11,10 @@ namespace fallout {
 static int gMouseWheelDeltaX = 0;
 static int gMouseWheelDeltaY = 0;
 static bool gMouseHasPosition = false;
-static int gMouseLastLogicalX = 0;
-static int gMouseLastLogicalY = 0;
+static double gMouseLogicalExactX = 0.0;
+static double gMouseLogicalExactY = 0.0;
+static double gMouseLogicalRemainderX = 0.0;
+static double gMouseLogicalRemainderY = 0.0;
 
 // 0x4E0400
 bool directInputInit()
@@ -43,6 +45,10 @@ void directInputFree()
 bool mouseDeviceAcquire()
 {
     gMouseHasPosition = false;
+    gMouseLogicalExactX = 0.0;
+    gMouseLogicalExactY = 0.0;
+    gMouseLogicalRemainderX = 0.0;
+    gMouseLogicalRemainderY = 0.0;
     return true;
 }
 
@@ -50,6 +56,10 @@ bool mouseDeviceAcquire()
 bool mouseDeviceUnacquire()
 {
     gMouseHasPosition = false;
+    gMouseLogicalExactX = 0.0;
+    gMouseLogicalExactY = 0.0;
+    gMouseLogicalRemainderX = 0.0;
+    gMouseLogicalRemainderY = 0.0;
     return true;
 }
 
@@ -98,20 +108,46 @@ bool mouseDeviceGetData(MouseData* mouseState)
     physicalX = std::clamp(physicalX, 0, std::max(0, physicalSpace.width - 1));
     physicalY = std::clamp(physicalY, 0, std::max(0, physicalSpace.height - 1));
 
-    Point physicalPoint = { physicalX, physicalY };
-    Point logicalPoint = displayScalerPhysicalToLogical(physicalPoint);
+    const Rect& viewport = displayScalerGetPhysicalViewport();
+    LogicalSpace logicalSpace = displayScalerGetLogicalSpace();
+    double inverseScale = displayScalerGetInverseScale();
+
+    double localX = static_cast<double>(physicalX - viewport.left);
+    double localY = static_cast<double>(physicalY - viewport.top);
+
+    double logicalExactX = localX * inverseScale;
+    double logicalExactY = localY * inverseScale;
+
+    double logicalMaxX = static_cast<double>(logicalSpace.width - 1);
+    double logicalMaxY = static_cast<double>(logicalSpace.height - 1);
+
+    logicalExactX = std::clamp(logicalExactX, 0.0, logicalMaxX);
+    logicalExactY = std::clamp(logicalExactY, 0.0, logicalMaxY);
 
     if (!gMouseHasPosition) {
-        gMouseLastLogicalX = logicalPoint.x;
-        gMouseLastLogicalY = logicalPoint.y;
+        gMouseLogicalExactX = logicalExactX;
+        gMouseLogicalExactY = logicalExactY;
+        gMouseLogicalRemainderX = 0.0;
+        gMouseLogicalRemainderY = 0.0;
         gMouseHasPosition = true;
+        mouseState->x = 0;
+        mouseState->y = 0;
+    } else {
+        double deltaXExact = logicalExactX - gMouseLogicalExactX + gMouseLogicalRemainderX;
+        double deltaYExact = logicalExactY - gMouseLogicalExactY + gMouseLogicalRemainderY;
+
+        int deltaX = static_cast<int>(std::round(deltaXExact));
+        int deltaY = static_cast<int>(std::round(deltaYExact));
+
+        gMouseLogicalRemainderX = deltaXExact - deltaX;
+        gMouseLogicalRemainderY = deltaYExact - deltaY;
+
+        gMouseLogicalExactX = logicalExactX;
+        gMouseLogicalExactY = logicalExactY;
+
+        mouseState->x = deltaX;
+        mouseState->y = deltaY;
     }
-
-    mouseState->x = logicalPoint.x - gMouseLastLogicalX;
-    mouseState->y = logicalPoint.y - gMouseLastLogicalY;
-
-    gMouseLastLogicalX = logicalPoint.x;
-    gMouseLastLogicalY = logicalPoint.y;
 
     mouseState->buttons[0] = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
     mouseState->buttons[1] = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
