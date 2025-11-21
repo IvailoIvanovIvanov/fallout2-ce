@@ -78,32 +78,54 @@ bool mouseDeviceGetData(MouseData* mouseState)
     int windowY;
     Uint32 buttons = SDL_GetMouseState(&windowX, &windowY);
 
-    int outputW = 0;
-    int outputH = 0;
-    if (gSdlRenderer != nullptr) {
-        SDL_GetRendererOutputSize(gSdlRenderer, &outputW, &outputH);
+    int windowWidth = 0;
+    int windowHeight = 0;
+    if (gSdlWindow != nullptr) {
+        SDL_GetWindowSize(gSdlWindow, &windowWidth, &windowHeight);
     }
 
-    if (outputW == 0 || outputH == 0) {
-        // Fallback to window size if renderer not available.
-        if (gSdlWindow != nullptr) {
-            SDL_GetWindowSize(gSdlWindow, &outputW, &outputH);
-        }
+    int drawableWidth = 0;
+    int drawableHeight = 0;
+    if (gSdlRenderer != nullptr) {
+        SDL_GetRendererOutputSize(gSdlRenderer, &drawableWidth, &drawableHeight);
     }
 
     PhysicalSpace physicalSpace = displayScalerGetPhysicalSpace();
 
-    double scaleX = 1.0;
-    double scaleY = 1.0;
-    if (outputW > 0) {
-        scaleX = static_cast<double>(physicalSpace.width) / static_cast<double>(outputW);
-    }
-    if (outputH > 0) {
-        scaleY = static_cast<double>(physicalSpace.height) / static_cast<double>(outputH);
+    if (drawableWidth <= 0 || drawableHeight <= 0) {
+        drawableWidth = windowWidth;
+        drawableHeight = windowHeight;
     }
 
-    int physicalX = static_cast<int>(std::round(windowX * scaleX));
-    int physicalY = static_cast<int>(std::round(windowY * scaleY));
+    if (drawableWidth <= 0 || drawableHeight <= 0) {
+        drawableWidth = physicalSpace.width;
+        drawableHeight = physicalSpace.height;
+    }
+
+    if (windowWidth <= 0) {
+        windowWidth = drawableWidth;
+    }
+
+    if (windowHeight <= 0) {
+        windowHeight = drawableHeight;
+    }
+
+    const int clampedWindowX = (windowWidth > 0) ? std::clamp(windowX, 0, windowWidth) : 0;
+    const int clampedWindowY = (windowHeight > 0) ? std::clamp(windowY, 0, windowHeight) : 0;
+
+    double pixelRatioX = 1.0;
+    double pixelRatioY = 1.0;
+
+    if (windowWidth > 0) {
+        pixelRatioX = static_cast<double>(drawableWidth) / static_cast<double>(windowWidth);
+    }
+
+    if (windowHeight > 0) {
+        pixelRatioY = static_cast<double>(drawableHeight) / static_cast<double>(windowHeight);
+    }
+
+    int physicalX = static_cast<int>(std::round(clampedWindowX * pixelRatioX));
+    int physicalY = static_cast<int>(std::round(clampedWindowY * pixelRatioY));
 
     physicalX = std::clamp(physicalX, 0, std::max(0, physicalSpace.width - 1));
     physicalY = std::clamp(physicalY, 0, std::max(0, physicalSpace.height - 1));
@@ -115,14 +137,44 @@ bool mouseDeviceGetData(MouseData* mouseState)
     double localX = static_cast<double>(physicalX - viewport.left);
     double localY = static_cast<double>(physicalY - viewport.top);
 
-    double logicalExactX = localX * inverseScale;
-    double logicalExactY = localY * inverseScale;
+    double rawLogicalExactX = localX * inverseScale;
+    double rawLogicalExactY = localY * inverseScale;
 
     double logicalMaxX = static_cast<double>(logicalSpace.width - 1);
     double logicalMaxY = static_cast<double>(logicalSpace.height - 1);
 
-    logicalExactX = std::clamp(logicalExactX, 0.0, logicalMaxX);
-    logicalExactY = std::clamp(logicalExactY, 0.0, logicalMaxY);
+    bool clampedLowX = rawLogicalExactX <= 0.0;
+    bool clampedHighX = rawLogicalExactX >= logicalMaxX;
+    bool clampedLowY = rawLogicalExactY <= 0.0;
+    bool clampedHighY = rawLogicalExactY >= logicalMaxY;
+
+    bool hitViewportLeft = physicalX <= viewport.left;
+    bool hitViewportRight = physicalX >= viewport.right;
+    bool hitViewportTop = physicalY <= viewport.top;
+    bool hitViewportBottom = physicalY >= viewport.bottom;
+
+    double logicalExactX = std::clamp(rawLogicalExactX, 0.0, logicalMaxX);
+    double logicalExactY = std::clamp(rawLogicalExactY, 0.0, logicalMaxY);
+
+    if (hitViewportLeft) {
+        logicalExactX = 0.0;
+        clampedLowX = true;
+        clampedHighX = false;
+    } else if (hitViewportRight) {
+        logicalExactX = logicalMaxX;
+        clampedHighX = true;
+        clampedLowX = false;
+    }
+
+    if (hitViewportTop) {
+        logicalExactY = 0.0;
+        clampedLowY = true;
+        clampedHighY = false;
+    } else if (hitViewportBottom) {
+        logicalExactY = logicalMaxY;
+        clampedHighY = true;
+        clampedLowY = false;
+    }
 
     if (!gMouseHasPosition) {
         gMouseLogicalExactX = logicalExactX;
@@ -133,14 +185,22 @@ bool mouseDeviceGetData(MouseData* mouseState)
         mouseState->x = 0;
         mouseState->y = 0;
     } else {
+        if (clampedLowX || clampedHighX) {
+            gMouseLogicalRemainderX = 0.0;
+        }
+
+        if (clampedLowY || clampedHighY) {
+            gMouseLogicalRemainderY = 0.0;
+        }
+
         double deltaXExact = logicalExactX - gMouseLogicalExactX + gMouseLogicalRemainderX;
         double deltaYExact = logicalExactY - gMouseLogicalExactY + gMouseLogicalRemainderY;
 
         int deltaX = static_cast<int>(std::round(deltaXExact));
         int deltaY = static_cast<int>(std::round(deltaYExact));
 
-        gMouseLogicalRemainderX = deltaXExact - deltaX;
-        gMouseLogicalRemainderY = deltaYExact - deltaY;
+        gMouseLogicalRemainderX = (clampedLowX || clampedHighX) ? 0.0 : (deltaXExact - deltaX);
+        gMouseLogicalRemainderY = (clampedLowY || clampedHighY) ? 0.0 : (deltaYExact - deltaY);
 
         gMouseLogicalExactX = logicalExactX;
         gMouseLogicalExactY = logicalExactY;

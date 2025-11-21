@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <iomanip>
 
 namespace fallout {
 
@@ -18,6 +20,28 @@ Point gLetterboxOffset = { 0, 0 };
 double gScale = 1.0;
 double gInvScale = 1.0;
 bool gUseIntegerScaling = false;
+
+static void writeScalerLog()
+{
+    std::ofstream log("display_scaler.log", std::ios::app);
+    if (!log.is_open()) {
+        return;
+    }
+
+    const int viewportWidth = gPhysicalViewport.right - gPhysicalViewport.left + 1;
+    const int viewportHeight = gPhysicalViewport.bottom - gPhysicalViewport.top + 1;
+
+    log << std::fixed << std::setprecision(4)
+        << "logical=" << gLogicalSpace.width << "x" << gLogicalSpace.height
+        << " physical=" << gPhysicalSpace.width << "x" << gPhysicalSpace.height
+        << " viewport=" << gPhysicalViewport.left << "," << gPhysicalViewport.top
+        << " " << viewportWidth << "x" << viewportHeight
+        << " letterbox=" << gLetterboxOffset.x << "," << gLetterboxOffset.y
+        << " scale=" << gScale
+        << " invScale=" << gInvScale
+        << " integerScaling=" << (gUseIntegerScaling ? 1 : 0)
+        << std::endl;
+}
 
 static void updateViewport()
 {
@@ -62,6 +86,8 @@ static void updateViewport()
     gLogicalBounds.top = 0;
     gLogicalBounds.right = gLogicalSpace.width - 1;
     gLogicalBounds.bottom = gLogicalSpace.height - 1;
+
+    writeScalerLog();
 }
 
 static int clampToLogicalX(double value)
