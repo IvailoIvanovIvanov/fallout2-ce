@@ -1891,11 +1891,23 @@ int _gdProcess()
             break;
         }
 
-        if (keyCode == KEY_CTRL_B && !_mouse_click_in(135, 225, 514, 283)) {
+        if (keyCode == KEY_CTRL_B) {
+            Rect replyRect;
+            bool insideReply = false;
+            if (gGameDialogReplyWindow != -1) {
+                windowGetRect(gGameDialogReplyWindow, &replyRect);
+                insideReply = _mouse_click_in(replyRect.left, replyRect.top, replyRect.right, replyRect.bottom);
+            }
+
+            if (!insideReply) {
             if (gameMouseGetCursor() != MOUSE_CURSOR_ARROW) {
                 gameMouseSetCursor(MOUSE_CURSOR_ARROW);
             }
-        } else {
+                continue;
+            }
+        }
+
+        {
             if (_dialogue_switch_mode == 3) {
                 _dialogue_state = 4;
 

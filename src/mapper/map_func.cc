@@ -4,6 +4,7 @@
 #include "color.h"
 #include "game_mouse.h"
 #include "input.h"
+#include "interface.h"
 #include "map.h"
 #include "memory.h"
 #include "mouse.h"
@@ -41,7 +42,26 @@ void place_entrance_hex()
     }
 
     if ((mouseGetEvent() & MOUSE_EVENT_LEFT_BUTTON_DOWN) != 0) {
-        if (_mouse_click_in(0, 0, _scr_size.right - _scr_size.left, _scr_size.bottom - _scr_size.top - 100)) {
+        int playfieldLeft = 0;
+        int playfieldTop = 0;
+        int playfieldRight = screenGetWidth() - 1;
+        int playfieldBottom = screenGetHeight() - 1;
+
+        if (gInterfaceBarWindow != -1) {
+            Rect interfaceRect;
+            windowGetRect(gInterfaceBarWindow, &interfaceRect);
+
+            int interfaceTop = interfaceRect.top - 1;
+            if (interfaceTop < playfieldBottom) {
+                playfieldBottom = interfaceTop;
+            }
+        }
+
+        if (playfieldBottom < playfieldTop) {
+            playfieldBottom = playfieldTop;
+        }
+
+        if (_mouse_click_in(playfieldLeft, playfieldTop, playfieldRight, playfieldBottom)) {
             mouseGetPosition(&x, &y);
 
             tile = tileFromScreenXY(x, y, gElevation);
