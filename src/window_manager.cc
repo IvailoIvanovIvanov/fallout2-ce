@@ -3,6 +3,8 @@
 #include <string.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <initializer_list>
 
 #include <SDL.h>
 
@@ -20,6 +22,14 @@
 #include "text_font.h"
 #include "win32.h"
 #include "window_manager_private.h"
+
+#ifdef max
+#undef max
+#endif
+
+#ifdef min
+#undef min
+#endif
 
 namespace fallout {
 
@@ -118,6 +128,11 @@ static inline int windowBytesPerPixel(const Window* window)
     return pixelFormatBytesPerPixel(window->pixelFormat);
 }
 
+static inline bool windowIsIndexed(const Window* window)
+{
+    return window->pixelFormat == PixelFormat::Indexed8;
+}
+
 static inline unsigned char* windowBufferAt(Window* window, int x, int y)
 {
     return window->buffer + window->pitch * y + x * windowBytesPerPixel(window);
@@ -131,6 +146,263 @@ static inline const unsigned char* windowBufferAtConst(const Window* window, int
 static inline unsigned char* screenBufferAt(int x, int y)
 {
     return _screen_buffer + (screenGetWidth() * y + x) * pixelFormatBytesPerPixel(gWindowPixelFormat);
+}
+
+static inline uint32_t paletteIndexToArgb(unsigned char index)
+{
+    unsigned char r6 = _cmap[index * 3 + 0];
+    unsigned char g6 = _cmap[index * 3 + 1];
+    unsigned char b6 = _cmap[index * 3 + 2];
+
+    unsigned char r = static_cast<unsigned char>((r6 << 2) | (r6 >> 4));
+    unsigned char g = static_cast<unsigned char>((g6 << 2) | (g6 >> 4));
+    unsigned char b = static_cast<unsigned char>((b6 << 2) | (b6 >> 4));
+
+    return 0xFF000000 | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | b;
+}
+
+static inline uint32_t* windowRowAt(Window* window, int y)
+{
+    return reinterpret_cast<uint32_t*>(window->buffer + window->pitch * y);
+}
+
+static inline unsigned char pickSentinel(std::initializer_list<unsigned char> disallowed)
+{
+    for (int value = 0; value < 256; value++) {
+        bool ok = true;
+        for (unsigned char banned : disallowed) {
+            if (value == banned) {
+                ok = false;
+                break;
+            }
+        }
+
+        if (ok) {
+            return static_cast<unsigned char>(value);
+        }
+    }
+
+    return 0;
+}
+
+static inline uint32_t lightenArgb(uint32_t color)
+{
+    uint8_t a = static_cast<uint8_t>(color >> 24);
+    uint8_t r = static_cast<uint8_t>((color >> 16) & 0xFF);
+    uint8_t g = static_cast<uint8_t>((color >> 8) & 0xFF);
+    uint8_t b = static_cast<uint8_t>(color & 0xFF);
+
+    auto lightenChannel = [](uint8_t channel) {
+        return static_cast<uint8_t>(channel + ((255 - channel) >> 2));
+    };
+
+    r = lightenChannel(r);
+    g = lightenChannel(g);
+    b = lightenChannel(b);
+
+    return (static_cast<uint32_t>(a) << 24) | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | b;
+}
+
+static void lightenRect(Window* window, int left, int top, int width, int height)
+{
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    int startX = std::max(left, 0);
+    int startY = std::max(top, 0);
+    int endX = std::min(left + width, window->width);
+    int endY = std::min(top + height, window->height);
+
+    for (int y = startY; y < endY; y++) {
+        uint32_t* row = windowRowAt(window, y);
+        for (int x = startX; x < endX; x++) {
+            row[x] = lightenArgb(row[x]);
+        }
+    }
+}
+
+static void fillRectArgb(Window* window, int left, int top, int width, int height, uint32_t color)
+{
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    int startX = std::max(left, 0);
+    int startY = std::max(top, 0);
+    int endX = std::min(left + width, window->width);
+    int endY = std::min(top + height, window->height);
+
+    for (int y = startY; y < endY; y++) {
+        uint32_t* row = windowRowAt(window, y);
+        for (int x = startX; x < endX; x++) {
+            row[x] = color;
+        }
+    }
+}
+
+static void drawHorizontalLineTrueColor(Window* window, int x1, int x2, int y, uint32_t color)
+{
+    if (y < 0 || y >= window->height) {
+        return;
+    }
+
+    if (x1 > x2) {
+        std::swap(x1, x2);
+    }
+
+    x1 = std::max(x1, 0);
+    x2 = std::min(x2, window->width - 1);
+    if (x1 > x2) {
+        return;
+    }
+
+    uint32_t* row = windowRowAt(window, y);
+    for (int x = x1; x <= x2; x++) {
+        row[x] = color;
+    }
+}
+
+static void drawVerticalLineTrueColor(Window* window, int y1, int y2, int x, uint32_t color)
+{
+    if (x < 0 || x >= window->width) {
+        return;
+    }
+
+    if (y1 > y2) {
+        std::swap(y1, y2);
+    }
+
+    y1 = std::max(y1, 0);
+    y2 = std::min(y2, window->height - 1);
+    if (y1 > y2) {
+        return;
+    }
+
+    for (int y = y1; y <= y2; y++) {
+        uint32_t* row = windowRowAt(window, y);
+        row[x] = color;
+    }
+}
+
+static void drawLineTrueColor(Window* window, int x0, int y0, int x1, int y1, uint32_t color)
+{
+    int dx = std::abs(x1 - x0);
+    int sx = x0 < x1 ? 1 : -1;
+    int dy = -std::abs(y1 - y0);
+    int sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+
+    while (true) {
+        if (x0 >= 0 && x0 < window->width && y0 >= 0 && y0 < window->height) {
+            uint32_t* row = windowRowAt(window, y0);
+            row[x0] = color;
+        }
+
+        if (x0 == x1 && y0 == y1) {
+            break;
+        }
+
+        int e2 = 2 * err;
+        if (e2 >= dy) {
+            err += dy;
+            x0 += sx;
+        }
+
+        if (e2 <= dx) {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
+
+static void drawRectTrueColor(Window* window, int left, int top, int right, int bottom, uint32_t color)
+{
+    drawHorizontalLineTrueColor(window, left, right, top, color);
+    drawHorizontalLineTrueColor(window, left, right, bottom, color);
+    drawVerticalLineTrueColor(window, top, bottom, left, color);
+    drawVerticalLineTrueColor(window, top, bottom, right, color);
+}
+
+static void drawRectShadowedTrueColor(Window* window, int left, int top, int right, int bottom, uint32_t ltColor, uint32_t rbColor)
+{
+    drawHorizontalLineTrueColor(window, left, right, top, ltColor);
+    drawVerticalLineTrueColor(window, top, bottom, left, ltColor);
+    drawHorizontalLineTrueColor(window, left, right, bottom, rbColor);
+    drawVerticalLineTrueColor(window, top, bottom, right, rbColor);
+}
+
+static void blitIndexedToTrueColor(const unsigned char* src, int srcPitch, int width, int height, Window* window, int destX, int destY)
+{
+    for (int row = 0; row < height; row++) {
+        int targetY = destY + row;
+        if (targetY < 0 || targetY >= window->height) {
+            continue;
+        }
+
+        const unsigned char* srcRow = src + srcPitch * row;
+        uint32_t* destRow = windowRowAt(window, targetY);
+        for (int col = 0; col < width; col++) {
+            int targetX = destX + col;
+            if (targetX < 0 || targetX >= window->width) {
+                continue;
+            }
+
+            destRow[targetX] = paletteIndexToArgb(srcRow[col]);
+        }
+    }
+}
+
+static void blitIndexedMaskToTrueColor(const unsigned char* src, int srcPitch, int width, int height, unsigned char transparentIndex, Window* window, int destX, int destY)
+{
+    for (int row = 0; row < height; row++) {
+        int targetY = destY + row;
+        if (targetY < 0 || targetY >= window->height) {
+            continue;
+        }
+
+        const unsigned char* srcRow = src + srcPitch * row;
+        uint32_t* destRow = windowRowAt(window, targetY);
+        for (int col = 0; col < width; col++) {
+            int targetX = destX + col;
+            if (targetX < 0 || targetX >= window->width) {
+                continue;
+            }
+
+            unsigned char index = srcRow[col];
+            if (index == transparentIndex) {
+                continue;
+            }
+
+            destRow[targetX] = paletteIndexToArgb(index);
+        }
+    }
+}
+
+static void blitIndexedImageToTrueColor(Window* window, const unsigned char* src, int srcPitch, int width, int height, int destX, int destY, bool transparent)
+{
+    for (int row = 0; row < height; row++) {
+        int targetY = destY + row;
+        if (targetY < 0 || targetY >= window->height) {
+            continue;
+        }
+
+        const unsigned char* srcRow = src + srcPitch * row;
+        uint32_t* destRow = windowRowAt(window, targetY);
+        for (int col = 0; col < width; col++) {
+            unsigned char index = srcRow[col];
+            if (transparent && index == 0) {
+                continue;
+            }
+
+            int targetX = destX + col;
+            if (targetX < 0 || targetX >= window->width) {
+                continue;
+            }
+
+            destRow[targetX] = paletteIndexToArgb(index);
+        }
+    }
 }
 
 // 0x4D5C30
@@ -2571,24 +2843,24 @@ void _button_draw(Button* button, Window* window, unsigned char* data, bool draw
         }
 
         if (data) {
-            if (!draw) {
-                int width = button->rect.right - button->rect.left + 1;
-                if ((button->flags & BUTTON_FLAG_TRANSPARENT) != 0) {
-                    blitBufferToBufferTrans(
-                        data + (v3.top - button->rect.top) * width + v3.left - button->rect.left,
-                        v3.right - v3.left + 1,
-                        v3.bottom - v3.top + 1,
-                        width,
-                        window->buffer + window->width * v3.top + v3.left,
-                        window->width);
+            int buttonWidth = button->rect.right - button->rect.left + 1;
+            int srcX = v3.left - button->rect.left;
+            int srcY = v3.top - button->rect.top;
+            int blitWidth = v3.right - v3.left + 1;
+            int blitHeight = v3.bottom - v3.top + 1;
+            unsigned char* src = data + srcY * buttonWidth + srcX;
+
+            if (blitWidth > 0 && blitHeight > 0) {
+                if (windowIsIndexed(window)) {
+                    unsigned char* dest = windowBufferAt(window, v3.left, v3.top);
+                    if ((button->flags & BUTTON_FLAG_TRANSPARENT) != 0) {
+                        blitBufferToBufferTrans(src, blitWidth, blitHeight, buttonWidth, dest, window->pitch);
+                    } else {
+                        blitBufferToBuffer(src, blitWidth, blitHeight, buttonWidth, dest, window->pitch);
+                    }
                 } else {
-                    blitBufferToBuffer(
-                        data + (v3.top - button->rect.top) * width + v3.left - button->rect.left,
-                        v3.right - v3.left + 1,
-                        v3.bottom - v3.top + 1,
-                        width,
-                        window->buffer + window->width * v3.top + v3.left,
-                        window->width);
+                    bool transparent = (button->flags & BUTTON_FLAG_TRANSPARENT) != 0;
+                    blitIndexedImageToTrueColor(window, src, buttonWidth, blitWidth, blitHeight, v3.left, v3.top, transparent);
                 }
             }
 
