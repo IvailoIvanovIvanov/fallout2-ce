@@ -64,6 +64,7 @@ static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light);
 static void _draw_grid(int tile, int elevation, Rect* rect);
 static void tileRenderFloor(int fid, int x, int y, Rect* rect);
 static int _tile_make_line(int currentCenterTile, int newCenterTile, int* tiles, int tilesCapacity);
+static void tileUpdatePixelScale(int windowWidth, int windowHeight);
 
 // 0x50E7C7
 static double const dbl_50E7C7 = -4.0;
@@ -286,6 +287,48 @@ static int gTileWindowWidth;
 // 0x66BE34
 int gCenterTile;
 
+static int gTilePixelScale = 1;
+
+static inline int tileScaleValue(int value)
+{
+    return value * gTilePixelScale;
+}
+
+static inline int tileFloorDiv(int value, int divisor)
+{
+    if (divisor == 0) {
+        return 0;
+    }
+
+    if (value >= 0) {
+        return value / divisor;
+    }
+
+    return -((-value + divisor - 1) / divisor);
+}
+
+static inline int tileScaleDown(int value)
+{
+    return tileFloorDiv(value, gTilePixelScale);
+}
+
+static void tileUpdatePixelScale(int windowWidth, int windowHeight)
+{
+    double scaleX = static_cast<double>(windowWidth) / static_cast<double>(ORIGINAL_ISO_WINDOW_WIDTH);
+    double scaleY = static_cast<double>(windowHeight) / static_cast<double>(ORIGINAL_ISO_WINDOW_HEIGHT);
+    double scale = std::min(scaleX, scaleY);
+    if (scale < 1.0) {
+        scale = 1.0;
+    }
+
+    int rounded = static_cast<int>(scale + 0.5);
+    if (rounded <= 0) {
+        rounded = 1;
+    }
+
+    gTilePixelScale = rounded;
+}
+
 // 0x4B0C40
 int tileInit(TileData** a1, int squareGridWidth, int squareGridHeight, int hexGridWidth, int hexGridHeight, unsigned char* buf, int windowWidth, int windowHeight, int windowPitch, TileWindowRefreshProc* windowRefreshProc)
 {
@@ -324,6 +367,7 @@ int tileInit(TileData** a1, int squareGridWidth, int squareGridHeight, int hexGr
     gTileWindowRect.left = 0;
     gTileWindowRefreshProc = windowRefreshProc;
     gTileWindowRect.top = 0;
+    tileUpdatePixelScale(windowWidth, windowHeight);
     _dir_tile[0][1] = hexGridWidth - 1;
     _dir_tile[0][2] = hexGridWidth;
     gTileGridIsVisible = 0;
@@ -434,22 +478,8 @@ int tileInit(TileData** a1, int squareGridWidth, int squareGridHeight, int hexGr
         bufferDrawLine(_tile_grid_blocked, 32, v25, v20, v22, v20, _colorTable[31744]);
     }
 
-    // In order to calculate scroll borders correctly we need to pretend we're
-    // at original resolution. Since border is calculated only once at start,
-    // there is not need to change it all the time.
-    gTileWindowWidth = ORIGINAL_ISO_WINDOW_WIDTH;
-    gTileWindowHeight = ORIGINAL_ISO_WINDOW_HEIGHT;
-
     tileSetCenter(hexGridWidth * (hexGridHeight / 2) + hexGridWidth / 2, TILE_SET_CENTER_FLAG_IGNORE_SCROLL_RESTRICTIONS);
     tileSetBorder(windowWidth, windowHeight, hexGridWidth, hexGridHeight);
-
-    // Restore actual window size and set center one more time to calculate
-    // correct screen offsets, which are required for subsequent object update
-    // area calculations.
-    gTileWindowWidth = windowWidth;
-    gTileWindowHeight = windowHeight;
-
-    tileSetCenter(hexGridWidth * (hexGridHeight / 2) + hexGridWidth / 2, TILE_SET_CENTER_FLAG_IGNORE_SCROLL_RESTRICTIONS);
 
     if (compat_stricmp(settings.system.executable.c_str(), "mapper") == 0) {
         gTileWindowRefreshElevationProc = tileRefreshMapper;
@@ -461,12 +491,11 @@ int tileInit(TileData** a1, int squareGridWidth, int squareGridHeight, int hexGr
 // 0x4B11E4
 static void tileSetBorder(int windowWidth, int windowHeight, int hexGridWidth, int hexGridHeight)
 {
-    // TODO: Borders, scroll blockers and tile system overall were designed
-    // with 640x480 in mind, so using windowWidth and windowHeight is
-    // meaningless for calculating borders. For now keep borders for original
-    // resolution.
-    int v1 = tileFromScreenXY(-320, -240, 0);
-    int v2 = tileFromScreenXY(-320, ORIGINAL_ISO_WINDOW_HEIGHT + 240, 0);
+    (void)windowWidth;
+    (void)windowHeight;
+
+    int v1 = tileFromScreenXY(-tileScaleValue(320), -tileScaleValue(240), 0);
+    int v2 = tileFromScreenXY(-tileScaleValue(320), tileScaleValue(ORIGINAL_ISO_WINDOW_HEIGHT + 240), 0);
 
     gTileBorderMinX = abs(hexGridWidth - 1 - v2 % hexGridWidth - _tile_x) + 6;
     gTileBorderMinY = abs(_tile_y - v1 / hexGridWidth) + 7;
@@ -555,7 +584,7 @@ int tileSetCenter(int tile, int flags)
 
             if (dx > abs(dudeScreenX - _tile_offx)
                 || dy > abs(dudeScreenY - _tile_offy)) {
-                if (dx >= 480 || dy >= 400) {
+                if (dx >= tileScaleValue(480) || dy >= tileScaleValue(400)) {
                     return -1;
                 }
             }
@@ -578,23 +607,25 @@ int tileSetCenter(int tile, int flags)
     }
 
     _tile_y = tile_y;
-    _tile_offx = (gTileWindowWidth - 32) / 2;
+    const int scaledTileWidth = tileScaleValue(32);
+    const int scaledTileHeight = tileScaleValue(16);
+    _tile_offx = (gTileWindowWidth - scaledTileWidth) / 2;
     _tile_x = tile_x;
-    _tile_offy = (gTileWindowHeight - 16) / 2;
+    _tile_offy = (gTileWindowHeight - scaledTileHeight) / 2;
 
     if (tile_x & 1) {
         _tile_x -= 1;
-        _tile_offx -= 32;
+        _tile_offx -= tileScaleValue(32);
     }
 
     _square_x = _tile_x / 2;
     _square_y = _tile_y / 2;
-    _square_offx = _tile_offx - 16;
-    _square_offy = _tile_offy - 2;
+    _square_offx = _tile_offx - tileScaleValue(16);
+    _square_offy = _tile_offy - tileScaleValue(2);
 
     if (_tile_y & 1) {
-        _square_offy -= 12;
-        _square_offx -= 16;
+        _square_offy -= tileScaleValue(12);
+        _square_offx -= tileScaleValue(16);
     }
 
     gCenterTile = tile;
@@ -690,21 +721,21 @@ int tileToScreenXY(int tile, int* screenX, int* screenY, int elevation)
     *screenY = _tile_offy;
 
     v5 = (v3 - _tile_x) / -2;
-    *screenX += 48 * ((v3 - _tile_x) / 2);
-    *screenY += 12 * v5;
+    *screenX += tileScaleValue(48) * ((v3 - _tile_x) / 2);
+    *screenY += tileScaleValue(12) * v5;
 
     if (v3 & 1) {
         if (v3 <= _tile_x) {
-            *screenX -= 16;
-            *screenY += 12;
+            *screenX -= tileScaleValue(16);
+            *screenY += tileScaleValue(12);
         } else {
-            *screenX += 32;
+            *screenX += tileScaleValue(32);
         }
     }
 
     v6 = v4 - _tile_y;
-    *screenX += 16 * v6;
-    *screenY += 12 * v6;
+    *screenX += tileScaleValue(16) * v6;
+    *screenY += tileScaleValue(12) * v6;
 
     return 0;
 }
@@ -729,35 +760,46 @@ int tileFromScreenXY(int screenX, int screenY, int elevation, bool ignoreBounds)
     int v11;
     int v12;
 
+    const int scaled12 = tileScaleValue(12);
+    const int scaled16 = tileScaleValue(16);
+    const int scaled32 = tileScaleValue(32);
+    const int scaled64 = tileScaleValue(64);
+
     v2 = screenY - _tile_offy;
-    if (v2 >= 0) {
-        v3 = v2 / 12;
-    } else {
-        v3 = (v2 + 1) / 12 - 1;
-    }
+    v3 = tileFloorDiv(v2, scaled12);
 
-    v4 = screenX - _tile_offx - 16 * v3;
-    v5 = v2 - 12 * v3;
+    v4 = screenX - _tile_offx - scaled16 * v3;
+    v5 = v2 - scaled12 * v3;
 
-    if (v4 >= 0) {
-        v6 = v4 / 64;
-    } else {
-        v6 = (v4 + 1) / 64 - 1;
-    }
+    v6 = tileFloorDiv(v4, scaled64);
 
     v7 = v6 + v3;
-    v8 = v4 - (v6 * 64);
+    v8 = v4 - (v6 * scaled64);
     v9 = 2 * v6;
 
-    if (v8 >= 32) {
-        v8 -= 32;
+    if (v8 >= scaled32) {
+        v8 -= scaled32;
         v9++;
     }
 
     v10 = _tile_y + v7;
     v11 = _tile_x + v9;
 
-    switch (_tile_mask[32 * v5 + v8]) {
+    int maskRow = tileScaleDown(v5);
+    if (maskRow < 0) {
+        maskRow = 0;
+    } else if (maskRow > 15) {
+        maskRow = 15;
+    }
+
+    int maskCol = tileScaleDown(v8);
+    if (maskCol < 0) {
+        maskCol = 0;
+    } else if (maskCol > 31) {
+        maskCol = 31;
+    }
+
+    switch (_tile_mask[32 * maskRow + maskCol]) {
     case 2:
         v11++;
         if (v11 & 1) {
@@ -1114,12 +1156,12 @@ int squareTileToScreenXY(int squareTile, int* coordX, int* coordY, int elevation
     *coordY = _square_offy;
 
     v8 = v5 - v7;
-    *coordX += 48 * v8;
-    *coordY -= 12 * v8;
+    *coordX += tileScaleValue(48) * v8;
+    *coordY -= tileScaleValue(12) * v8;
 
     v9 = v6 - _square_y;
-    *coordX += 32 * v9;
-    *coordY += 24 * v9;
+    *coordX += tileScaleValue(32) * v9;
+    *coordY += tileScaleValue(24) * v9;
 
     return 0;
 }
@@ -1145,14 +1187,14 @@ int squareTileToRoofScreenXY(int squareTile, int* screenX, int* screenY, int ele
     *screenY = _square_offy;
 
     v8 = v5 - v7;
-    *screenX += 48 * v8;
-    *screenY -= 12 * v8;
+    *screenX += tileScaleValue(48) * v8;
+    *screenY -= tileScaleValue(12) * v8;
 
     v9 = v6 - _square_y;
-    *screenX += 32 * v9;
-    v10 = 24 * v9 + *screenY;
+    *screenX += tileScaleValue(32) * v9;
+    v10 = tileScaleValue(24) * v9 + *screenY;
     *screenY = v10;
-    *screenY = v10 - 96;
+    *screenY = v10 - tileScaleValue(96);
 
     return 0;
 }
@@ -1180,13 +1222,17 @@ void squareTileScreenToCoord(int screenX, int screenY, int elevation, int* coord
     int v6;
     int v8;
 
+    const int scaled12 = tileScaleValue(12);
+    const int scaled192 = tileScaleValue(192);
+    const int scaled128 = tileScaleValue(128);
+
     v4 = screenX - _square_offx;
-    v5 = screenY - _square_offy - 12;
+    v5 = screenY - _square_offy - scaled12;
     v6 = 3 * v4 - 4 * v5;
-    *coordX = v6 >= 0 ? (v6 / 192) : ((v6 + 1) / 192 - 1);
+    *coordX = tileFloorDiv(v6, scaled192);
 
     v8 = 4 * v5 + v4;
-    *coordY = v8 >= 0 ? (v8 / 128) : ((v8 + 1) / 128 - 1);
+    *coordY = tileFloorDiv(v8, scaled128);
 
     *coordX += _square_x;
     *coordY += _square_y;
@@ -1202,14 +1248,18 @@ void squareTileScreenToCoordRoof(int screenX, int screenY, int elevation, int* c
     int v6;
     int v8;
 
-    v4 = screenX - _square_offx;
-    v5 = screenY + 96 - _square_offy - 12;
-    v6 = 3 * v4 - 4 * v5;
+    const int scaled12 = tileScaleValue(12);
+    const int scaled96 = tileScaleValue(96);
+    const int scaled192 = tileScaleValue(192);
+    const int scaled128 = tileScaleValue(128);
 
-    *coordX = (v6 >= 0) ? (v6 / 192) : ((v6 + 1) / 192 - 1);
+    v4 = screenX - _square_offx;
+    v5 = screenY + scaled96 - _square_offy - scaled12;
+    v6 = 3 * v4 - 4 * v5;
+    *coordX = tileFloorDiv(v6, scaled192);
 
     v8 = 4 * v5 + v4;
-    *coordY = v8 >= 0 ? (v8 / 128) : ((v8 + 1) / 128 - 1);
+    *coordY = tileFloorDiv(v8, scaled128);
 
     *coordX += _square_x;
     *coordY += _square_y;
@@ -1533,8 +1583,18 @@ void _grid_render(Rect* rect, int elevation)
         return;
     }
 
-    for (int y = rect->top - 12; y < rect->bottom + 12; y += 6) {
-        for (int x = rect->left - 32; x < rect->right + 32; x += 16) {
+    if (gTilePixelScale != 1) {
+        // TODO: Grid overlays need a high-resolution reimplementation.
+        return;
+    }
+
+    const int marginY = tileScaleValue(12);
+    const int marginX = tileScaleValue(32);
+    const int stepY = std::max(1, tileScaleValue(6));
+    const int stepX = std::max(1, tileScaleValue(16));
+
+    for (int y = rect->top - marginY; y < rect->bottom + marginY; y += stepY) {
+        for (int x = rect->left - marginX; x < rect->right + marginX; x += stepX) {
             int tile = tileFromScreenXY(x, y, elevation);
             _draw_grid(tile, elevation, rect);
         }
@@ -1672,7 +1732,7 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
 
     if (v77 <= 0 || v76 <= 0) goto out;
 
-    tile = tileFromScreenXY(savedX, savedY + 13, gElevation);
+    tile = tileFromScreenXY(savedX, savedY + tileScaleValue(13), gElevation);
     if (tile != -1) {
         int parity = tile & 1;
         int ambientIntensity = lightGetAmbientIntensity();

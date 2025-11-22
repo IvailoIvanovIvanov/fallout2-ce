@@ -116,6 +116,10 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
     int logicalWidth = width;
     int logicalHeight = height;
     bool integerScaling = false;
+    bool preserveOriginalLogicalSize = false;
+    int logicalScale = 1;
+    bool logicalWidthExplicit = false;
+    bool logicalHeightExplicit = false;
     bool diagnosticsEnabled = false;
     DiagnosticsLevel diagnosticsLevel = DiagnosticsLevel::Info;
     char* diagnosticsLogFileValue = nullptr;
@@ -155,14 +159,27 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
             configGetInt(&resolutionConfig, "IFACE", "IFACE_BAR_SIDE_ART", &gInterfaceSidePanelsImageId);
             configGetBool(&resolutionConfig, "IFACE", "IFACE_BAR_SIDES_ORI", &gInterfaceSidePanelsExtendFromScreenEdge);
 
+            configGetBool(&resolutionConfig, "SCALER", "PRESERVE_ORIGINAL_LOGICAL_SIZE", &preserveOriginalLogicalSize);
+            if (preserveOriginalLogicalSize) {
+                logicalWidth = displayScalerGetDefaultLogicalWidth();
+                logicalHeight = displayScalerGetDefaultLogicalHeight();
+            }
+
+            int logicalScaleValue;
+            if (configGetInt(&resolutionConfig, "SCALER", "LOGICAL_SCALE", &logicalScaleValue)) {
+                logicalScale = std::max(1, logicalScaleValue);
+            }
+
             int logicalWidthOverride;
             if (configGetInt(&resolutionConfig, "SCALER", "LOGICAL_WIDTH", &logicalWidthOverride)) {
                 logicalWidth = std::max(1, logicalWidthOverride);
+                logicalWidthExplicit = true;
             }
 
             int logicalHeightOverride;
             if (configGetInt(&resolutionConfig, "SCALER", "LOGICAL_HEIGHT", &logicalHeightOverride)) {
                 logicalHeight = std::max(1, logicalHeightOverride);
+                logicalHeightExplicit = true;
             }
 
             configGetBool(&resolutionConfig, "SCALER", "INTEGER_SCALING", &integerScaling);
@@ -194,6 +211,24 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
             diagnosticsGetLogPath());
     }
 
+    if (!preserveOriginalLogicalSize && logicalScale > 1) {
+        if (!logicalWidthExplicit) {
+            logicalWidth = displayScalerGetDefaultLogicalWidth() * logicalScale;
+        }
+
+        if (!logicalHeightExplicit) {
+            logicalHeight = displayScalerGetDefaultLogicalHeight() * logicalScale;
+        }
+    }
+
+    logicalWidth = std::max(1, logicalWidth);
+    logicalHeight = std::max(1, logicalHeight);
+
+    const int requiredWindowWidth = (logicalWidth + scale - 1) / scale;
+    const int requiredWindowHeight = (logicalHeight + scale - 1) / scale;
+    width = std::max(width, requiredWindowWidth);
+    height = std::max(height, requiredWindowHeight);
+
     displayScalerInit(logicalWidth, logicalHeight);
     displayScalerSetIntegerScaling(integerScaling);
 
@@ -201,12 +236,14 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
         diagnosticsLog(
             DiagnosticsLevel::Info,
             "BOOT",
-            "init logical=%dx%d fullscreen=%d scale=%d integerScaling=%d",
+            "init logical=%dx%d fullscreen=%d scale=%d integerScaling=%d legacyLogical=%d logicalScale=%d",
             logicalWidth,
             logicalHeight,
             fullscreen ? 1 : 0,
             scale,
-            integerScaling ? 1 : 0);
+            integerScaling ? 1 : 0,
+            preserveOriginalLogicalSize ? 1 : 0,
+            logicalScale);
     }
 
     if (_GNW95_init_window(width, height, fullscreen, scale) == -1) {
