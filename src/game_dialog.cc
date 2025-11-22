@@ -4161,10 +4161,18 @@ int _gdCustomSelect(int a1)
     _gdCustomSelectRedraw(windowBuffer, backgroundFrmWidth, a1, value);
     windowRefresh(win);
 
-    int minX = selectWindowX + 42;
-    int minY = selectWindowY + 42;
-    int maxX = selectWindowX + backgroundFrmWidth - 42;
-    int maxY = selectWindowY + backgroundFrmHeight - 42;
+    int selectionLeft = 42;
+    int selectionTop = 42;
+    int selectionRight = backgroundFrmWidth - 42;
+    int selectionBottom = backgroundFrmHeight - 42;
+
+    if (selectionRight < selectionLeft) {
+        selectionRight = selectionLeft;
+    }
+
+    if (selectionBottom < selectionTop) {
+        selectionBottom = selectionTop;
+    }
 
     bool done = false;
     unsigned int v53 = 0;
@@ -4190,15 +4198,13 @@ int _gdCustomSelect(int a1)
                 done = true;
             } else if (keyCode == -2) {
                 if ((mouseGetEvent() & MOUSE_EVENT_LEFT_BUTTON_UP) != 0) {
-                    // No need to use mouseHitTestInWindow as these values are already
-                    // in screen coordinates.
-                    if (_mouse_click_in(minX, minY, maxX, maxY)) {
+                    if (mouseHitTestInWindow(win, selectionLeft, selectionTop, selectionRight, selectionBottom)) {
                         int mouseX;
                         int mouseY;
-                        mouseGetPosition(&mouseX, &mouseY);
+                        mouseGetPositionInWindow(win, &mouseX, &mouseY);
 
                         int lineHeight = fontGetLineHeight();
-                        int newValue = (mouseY - minY) / lineHeight;
+                        int newValue = (mouseY - selectionTop) / lineHeight;
                         if (newValue < 6) {
                             unsigned int timestamp = getTicks();
                             if (newValue == value) {

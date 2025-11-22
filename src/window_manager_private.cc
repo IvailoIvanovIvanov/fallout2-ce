@@ -1724,9 +1724,15 @@ void _GNW_intr_init()
     tm_persistence = 3000;
     tm_add = 0;
     tm_kill = -1;
-    scr_center_x = _scr_size.right / 2;
 
-    if (_scr_size.bottom >= 479) {
+    int screenWidth = std::max(0, screenGetWidth());
+    int screenHeight = std::max(0, screenGetHeight());
+    int screenRight = std::max(0, screenWidth - 1);
+    int screenBottom = std::max(0, screenHeight - 1);
+
+    scr_center_x = screenRight / 2;
+
+    if (screenHeight >= 480) {
         tm_text_y = 16;
         tm_text_x = 16;
     } else {
@@ -1736,8 +1742,8 @@ void _GNW_intr_init()
 
     tm_h = 2 * tm_text_y + fontGetLineHeight();
 
-    spacing = _scr_size.bottom / 8;
-    top = _scr_size.bottom / 4;
+    spacing = screenBottom / 8;
+    top = screenBottom / 4;
 
     for (index = 0; index < kTimedMsgs; index++) {
         tm_location[index].y = spacing * index + top;

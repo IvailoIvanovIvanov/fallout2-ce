@@ -101,6 +101,7 @@ int gameMouseRenderActionMenuItems(int x, int y, const int* menuItems, int menuI
 int gameMouseHighlightActionMenuItemAtIndex(int menuItemIndex);
 void gameMouseLoadItemHighlight();
 void _gmouse_remove_item_outline(Object* object);
+bool gameMouseIsAtScrollEdge(int x, int y);
 
 void gameMouseRefreshImmediately();
 Object* gmouse_get_outlined_object();

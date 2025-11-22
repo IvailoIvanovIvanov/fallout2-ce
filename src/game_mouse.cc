@@ -12,6 +12,7 @@
 #include "color.h"
 #include "combat.h"
 #include "critter.h"
+#include "display_scaler.h"
 #include "draw.h"
 #include "game.h"
 #include "game_sound.h"
@@ -322,6 +323,8 @@ static int _gmouse_3d_move_to(int x, int y, int elevation, Rect* rect);
 static int gameMouseHandleScrolling(int x, int y, int cursor);
 static int objectIsDoor(Object* object);
 static bool gameMouseClickOnInterfaceBar();
+static void gameMouseGetViewportSize(int* widthPtr, int* heightPtr);
+static bool gameMouseIsAtLogicalEdge(int x, int y);
 
 static void customMouseModeFrmsInit();
 
@@ -457,7 +460,7 @@ int _gmouse_is_scrolling()
         int x;
         int y;
         mouseGetPosition(&x, &y);
-        if (x == _scr_size.left || x == _scr_size.right || y == _scr_size.top || y == _scr_size.bottom) {
+        if (gameMouseIsAtLogicalEdge(x, y)) {
             switch (gGameMouseCursor) {
             case MOUSE_CURSOR_SCROLL_NW:
             case MOUSE_CURSOR_SCROLL_N:
@@ -715,7 +718,11 @@ void gameMouseRefresh()
                     }
 
                     if (primaryAction != -1) {
-                        if (gameMouseRenderPrimaryAction(mouseX, mouseY, primaryAction, _scr_size.right - _scr_size.left + 1, _scr_size.bottom - _scr_size.top - 99) == 0) {
+                        int viewportWidth;
+                        int viewportHeight;
+                        gameMouseGetViewportSize(&viewportWidth, &viewportHeight);
+
+                        if (gameMouseRenderPrimaryAction(mouseX, mouseY, primaryAction, viewportWidth, viewportHeight) == 0) {
                             Rect tmp;
                             int fid = buildFid(OBJ_TYPE_INTERFACE, 282, 0, 0, 0);
                             // NOTE: Uninline.
@@ -878,11 +885,15 @@ void gameMouseRefresh()
 
 bool gameMouseClickOnInterfaceBar()
 {
+    if (gInterfaceBarWindow == -1) {
+        return false;
+    }
+
     Rect interfaceBarWindowRect;
     windowGetRect(gInterfaceBarWindow, &interfaceBarWindowRect);
 
     int interfaceBarWindowRectLeft = 0;
-    int interfaceBarWindowRectRight = _scr_size.right;
+    int interfaceBarWindowRectRight = screenGetWidth() - 1;
 
     if (gInterfaceBarMode) {
         interfaceBarWindowRectLeft = interfaceBarWindowRect.left;
@@ -890,6 +901,43 @@ bool gameMouseClickOnInterfaceBar()
     }
 
     return _mouse_click_in(interfaceBarWindowRectLeft, interfaceBarWindowRect.top, interfaceBarWindowRectRight, interfaceBarWindowRect.bottom);
+}
+
+static void gameMouseGetViewportSize(int* widthPtr, int* heightPtr)
+{
+    int width = screenGetWidth();
+    int height = screenGetHeight();
+
+    if (gInterfaceBarWindow != -1) {
+        Rect interfaceRect;
+        windowGetRect(gInterfaceBarWindow, &interfaceRect);
+
+        if (interfaceRect.top > 0 && interfaceRect.top < height) {
+            height = interfaceRect.top;
+        }
+    }
+
+    if (widthPtr != nullptr) {
+        *widthPtr = width;
+    }
+
+    if (heightPtr != nullptr) {
+        *heightPtr = height;
+    }
+}
+
+static bool gameMouseIsAtLogicalEdge(int x, int y)
+{
+    const Rect& logicalBounds = displayScalerGetLogicalBounds();
+    return x <= logicalBounds.left
+        || x >= logicalBounds.right
+        || y <= logicalBounds.top
+        || y >= logicalBounds.bottom;
+}
+
+bool gameMouseIsAtScrollEdge(int x, int y)
+{
+    return gameMouseIsAtLogicalEdge(x, y);
 }
 
 // 0x44BFA8
@@ -1122,7 +1170,11 @@ void _gmouse_handle_event(int mouseX, int mouseY, int mouseState)
                 break;
             }
 
-            if (gameMouseRenderActionMenuItems(mouseX, mouseY, actionMenuItems, actionMenuItemsCount, _scr_size.right - _scr_size.left + 1, _scr_size.bottom - _scr_size.top - 99) == 0) {
+            int viewportWidth;
+            int viewportHeight;
+            gameMouseGetViewportSize(&viewportWidth, &viewportHeight);
+
+            if (gameMouseRenderActionMenuItems(mouseX, mouseY, actionMenuItems, actionMenuItemsCount, viewportWidth, viewportHeight) == 0) {
                 Rect cursorRect;
                 int fid = buildFid(OBJ_TYPE_INTERFACE, 283, 0, 0, 0);
                 // NOTE: Uninline.
@@ -2339,19 +2391,21 @@ int gameMouseHandleScrolling(int x, int y, int cursor)
 
     int flags = 0;
 
-    if (x <= _scr_size.left) {
+    const Rect& logicalBounds = displayScalerGetLogicalBounds();
+
+    if (x <= logicalBounds.left) {
         flags |= SCROLLABLE_W;
     }
 
-    if (x >= _scr_size.right) {
+    if (x >= logicalBounds.right) {
         flags |= SCROLLABLE_E;
     }
 
-    if (y <= _scr_size.top) {
+    if (y <= logicalBounds.top) {
         flags |= SCROLLABLE_N;
     }
 
-    if (y >= _scr_size.bottom) {
+    if (y >= logicalBounds.bottom) {
         flags |= SCROLLABLE_S;
     }
 
