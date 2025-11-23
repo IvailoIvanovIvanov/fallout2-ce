@@ -52,11 +52,17 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 
 ## Stage 4 – Deploy HD Overlays
 - [ ] **S4.1** Teach the compositor to look up RGBA assets per fid/frame and draw them instead of the scaled buffer patch.
-	- **TODO:** replace the current stubs in `art.cc` with real lookups backed by the HD asset registry and fall back to indexed data when missing.
+	- **Registry rites:** flesh out `artRegisterTrueColorFrameData`, `artUnregisterTrueColorFrameData`, and `artLookupRegisteredTrueColorFrame` in `src/art.cc` so Amira’s HD asset ledger can map `(fid, frame, rotation)` to premultiplied pixel blocks. `artGetTrueColorFrame` should finally lock the fid, validate dimensions, and surface a real `HdTrueColorFrameView`, falling back cleanly when nothing shiny exists.
+	- **Overlay lifeline:** when `system.virtual_adapter=1`, have `window_manager` allocate a 640×480 RGBA overlay plus an 8-bit mask per window so tile rendering (already poking `windowHasTrueColorOverlay`) stops writing into the void. Make sure cache flushes clear registrations so no ghoul hands us stale pointers.
+	- **Presenter swap:** update `windowPresentVirtualScreen()` to blend any mask-covered pixels from the overlay into the SDL texture before present time, then log a `SCALER hd_overlay virtual=(...) pixels_overridden=...` line so Overseer Vega knows the swap actually fired.
 - [ ] **S4.2** Handle transparency/alpha blending so tile seams and critter outlines behave.
-	- **TODO:** evaluate premultiplied alpha vs straight alpha paths; log decisions per asset for modders.
+	- **Premult vs straight showdown:** decide whether to store premultiplied ARGB in the registry by comparing the math inside `applyTileLightingToArgb`/`applyIntensityToChannel`. Document which path wins and tag each HD registration with its alpha mode for later shader work.
+	- **Critter cameos:** extend `_obj_render_pre_roof`, `_obj_render_post_roof`, and the UI helpers in `artRender` to ask `artGetTrueColorFrame` for overlays the same way floors already do. When a swap happens, emit a `RENDERTRACE` note with the fid so the replay hotkey shows where the HD critters landed.
+	- **Lighting sanity:** ensure the compositor respects the per-pixel mask coming out of `tile.cc` so edge pixels don’t halo. Add assertions (or at least fatal logs) if the overlay dimensions ever drift from the indexed frame—they signal broken packs from the surface vaults.
 - [ ] **S4.3** Introduce fallbacks when an HD asset is missing, logging hits/misses for modders.
-	- **TODO:** surface a `SCALER` log line summarizing HD cache hit rate every time we load a new map.
+	- **Cache scorecards:** count HD hits/misses per map load inside the registry and dump a `SCALER hd_cache map=VaultCity hits=42 misses=3` line right after `mapLoadByName` settles. The Neon Archivist can then tell modders exactly which sprites still need repainting.
+	- **Graceful decay:** if a registration vanishes mid-frame (cache eviction, mod reload, feral molerat), auto-disable the overlay for that fid and note it in diagnostics so QA knows why a sprite snapped back to 8-bit.
+	- **Fallback glyphs:** keep a tiny “missing HD” watermark (just a masked debug swatch) that can be toggled via config; scribes testing packs will see instantly when the compositor reverted to indexed art.
 
 ## Stage 5 – Stretch Goals & Polish
 - [ ] **S5.1** Add optional shaders/post-effects (CRT, bloom, whatever the Overseer deems tasteful).
