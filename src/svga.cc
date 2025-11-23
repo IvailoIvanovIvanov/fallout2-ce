@@ -25,9 +25,11 @@ static void destroyRenderer();
 static void syncPhysicalSizeWithRenderer();
 static bool rectEquals(const Rect& a, const Rect& b);
 static void logViewportIfChanged(const Rect& viewport);
+static void updateTexturePaletteRange(int start, int count, const unsigned char* palette);
 
 static Rect gLastRenderViewport = { 0, 0, -1, -1 };
 static bool gHasRenderViewport = false;
+static uint32_t gTexturePalette[256] = {};
 
 // Legacy screen rect maintained for existing code. Tracks logical bounds.
 Rect _scr_size;
@@ -302,6 +304,15 @@ int directDrawInit(int width, int height, int bpp)
 
     SDL_SetPaletteColors(gSdlSurface->format->palette, colors, 0, 256);
 
+    unsigned char palette[256 * 3];
+    for (int index = 0; index < 256; index++) {
+        unsigned char value = static_cast<unsigned char>(index >> 2);
+        palette[index * 3 + 0] = value;
+        palette[index * 3 + 1] = value;
+        palette[index * 3 + 2] = value;
+    }
+    updateTexturePaletteRange(0, 256, palette);
+
     return 0;
 }
 
@@ -331,6 +342,7 @@ void directDrawSetPaletteInRange(unsigned char* palette, int start, int count)
 
         SDL_SetPaletteColors(gSdlSurface->format->palette, colors, start, count);
         SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+        updateTexturePaletteRange(start, count, palette);
     }
 }
 
@@ -349,6 +361,7 @@ void directDrawSetPalette(unsigned char* palette)
 
         SDL_SetPaletteColors(gSdlSurface->format->palette, colors, 0, 256);
         SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+        updateTexturePaletteRange(0, 256, palette);
     }
 }
 
@@ -412,6 +425,35 @@ void _GNW95_ShowRect(unsigned char* src, int srcPitch, int a3, int srcX, int src
     SDL_BlitSurface(gSdlSurface, &sdlRect, gSdlTextureSurface, &sdlRect);
 }
 
+void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect& rect)
+{
+    if (src == nullptr || gSdlTextureSurface == nullptr) {
+        return;
+    }
+
+    const int width = rectGetWidth(&rect);
+    const int height = rectGetHeight(&rect);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    if (gSdlTextureSurface->format == nullptr || gSdlTextureSurface->format->BytesPerPixel != 4) {
+        return;
+    }
+
+    const int bytesPerPixel = gSdlTextureSurface->format->BytesPerPixel;
+    unsigned char* destPixels = static_cast<unsigned char*>(gSdlTextureSurface->pixels);
+
+    for (int row = 0; row < height; row++) {
+        const unsigned char* srcRow = src + (rect.top + row) * srcPitch + rect.left;
+        uint32_t* destRow = reinterpret_cast<uint32_t*>(destPixels + (rect.top + row) * gSdlTextureSurface->pitch + rect.left * bytesPerPixel);
+
+        for (int column = 0; column < width; column++) {
+            destRow[column] = gTexturePalette[srcRow[column]];
+        }
+    }
+}
+
 // Clears drawing surface.
 //
 // 0x4CBBC8
@@ -473,7 +515,7 @@ static bool createRenderer()
 
     LogicalSpace logicalSpace = displayScalerGetLogicalSpace();
 
-    gSdlTexture = SDL_CreateTexture(gSdlRenderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, logicalSpace.width, logicalSpace.height);
+    gSdlTexture = SDL_CreateTexture(gSdlRenderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, logicalSpace.width, logicalSpace.height);
     if (gSdlTexture == nullptr) {
         return false;
     }
@@ -534,6 +576,34 @@ static void syncPhysicalSizeWithRenderer()
                 outputHeight);
         }
         displayScalerUpdatePhysicalSize(outputWidth, outputHeight);
+    }
+}
+
+static void updateTexturePaletteRange(int start, int count, const unsigned char* palette)
+{
+    if (palette == nullptr || count <= 0 || gSdlTextureSurface == nullptr || gSdlTextureSurface->format == nullptr) {
+        return;
+    }
+
+    SDL_PixelFormat* format = gSdlTextureSurface->format;
+    auto expand = [](uint8_t value) {
+        if (value > 63) {
+            return value;
+        }
+        return static_cast<uint8_t>((value << 2) | (value >> 4));
+    };
+    for (int index = 0; index < count; index++) {
+        int paletteIndex = start + index;
+        if (paletteIndex < 0 || paletteIndex >= 256) {
+            continue;
+        }
+
+        int paletteOffset = index * 3;
+        uint8_t r = expand(palette[paletteOffset + 0]);
+        uint8_t g = expand(palette[paletteOffset + 1]);
+        uint8_t b = expand(palette[paletteOffset + 2]);
+
+        gTexturePalette[paletteIndex] = SDL_MapRGB(format, r, g, b);
     }
 }
 

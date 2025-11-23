@@ -39,6 +39,7 @@ void directDrawSetPalette(unsigned char* palette);
 unsigned char* directDrawGetPalette();
 void _GNW95_ShowRect(unsigned char* src, int src_pitch, int a3, int src_x, int src_y, int src_width, int src_height, int dest_x, int dest_y);
 void _GNW95_zero_vid_mem();
+void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect& rect);
 
 int screenGetWidth();
 int screenGetHeight();

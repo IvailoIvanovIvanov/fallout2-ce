@@ -29,10 +29,10 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 	- Hook the tail of `windowRefreshAll`/`renderPresent` so it blits the virtual surface into an intermediate texture instead of the physical window.
 	- Keep the `display_scaler` letterboxing math so our composite honors integer scaling and logical bounds automatically.
 	- **Implementation notes:** `windowPresentVirtualScreen()` now drains the dirty-rect queue produced by `_GNW_win_refresh`, copies the affected slice of `_screen_buffer` into the SDL texture surface, and emits a `SCALER` trace line with the blitted bounds. `_refresh_all`, `windowRefresh*`, and `renderPresent` all call the helper, so nothing touches the OS backbuffer until the virtual present runs.
-- [ ] **S1.3** Mirror that buffer into a modern RGBA texture for the real window and prove we can scale it cleanly.
+- [x] **S1.3** Mirror that buffer into a modern RGBA texture for the real window and prove we can scale it cleanly.
 	- Use the SDL/DirectDraw presenter we already have: promote the copy step to 32-bit (`bufferToTexture` style) so later stages can mix HD overlays.
 	- Instrument diagnostics (category `SCALER`) to log both virtual and physical dimensions for troubleshooting.
-	- **TODO:** allocate a cached `SDL_Texture` (or DirectDraw surface) sized to the physical window, then add a palette-to-RGBA conversion step before present.
+	- **Implementation notes:** `windowPresentVirtualScreen()` now copies the dirty rect from `_screen_buffer` straight into the ARGB8888 SDL texture surface via `blitIndexedRectToTexture`, using the shared palette cache that `directDrawSetPalette*` maintains. Every flush logs `virtual_present virtual=(...) viewport=(...)` so we can correlate 640×480 updates with the physical letterboxed viewport.
 
 ## Stage 2 – Tame the Rad-Input (Coordinate Translation)
 - [ ] **S2.1** Capture actual window inputs at native resolution (mouse, wheel, touch).

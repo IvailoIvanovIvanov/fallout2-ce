@@ -2689,34 +2689,33 @@ void windowPresentVirtualScreen()
     Rect rect = gVirtualScreenDirtyRect;
     virtualScreenResetDirty();
 
+    const Rect& bounds = displayScalerGetLogicalBounds();
+    if (rectIntersection(&rect, &bounds, &rect) == -1) {
+        return;
+    }
+
     int width = rectGetWidth(&rect);
     int height = rectGetHeight(&rect);
     if (width <= 0 || height <= 0) {
         return;
     }
 
+    blitIndexedRectToTexture(_screen_buffer, _screen_buffer_pitch, rect);
+
     if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        const Rect& viewport = displayScalerGetPhysicalViewport();
         diagnosticsLog(
             DiagnosticsLevel::Trace,
             "SCALER",
-            "virtual_present (%d,%d %dx%d)",
-            rect.left,
-            rect.top,
-            width,
-            height);
-    }
-
-    if (_scr_blit != nullptr) {
-        _scr_blit(
-            _screen_buffer,
-            _screen_buffer_pitch,
-            height,
+            "virtual_present virtual=(%d,%d %dx%d) viewport=(%d,%d %dx%d)",
             rect.left,
             rect.top,
             width,
             height,
-            rect.left,
-            rect.top);
+            viewport.left,
+            viewport.top,
+            rectGetWidth(&viewport),
+            rectGetHeight(&viewport));
     }
 }
 
