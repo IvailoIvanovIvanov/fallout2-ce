@@ -8,7 +8,6 @@
 #include <limits>
 #include <string>
 #include <unordered_map>
-#include <vector>
 
 #include "animation.h"
 #include "color.h"
@@ -50,15 +49,8 @@ static int paddingForSize(int size);
 
 struct HdArtInfo {
     std::string path;
-    int width = 0;
-    int height = 0;
-    bool hasTemplate = false;
-    short templateFrameWidth = 0;
-    short templateFrameHeight = 0;
-    short templateFrameX = 0;
-    short templateFrameY = 0;
-    short templateXOffsets[ROTATION_COUNT] = {};
-    short templateYOffsets[ROTATION_COUNT] = {};
+    int width;
+    int height;
 };
 
 struct HdPngStream {
@@ -66,33 +58,18 @@ struct HdPngStream {
 };
 
 static std::unordered_map<int, HdArtInfo> gHdArtInfoCache;
-struct HdTrueColorFrame {
-    std::vector<uint32_t> pixels;
-    int width = 0;
-    int height = 0;
-};
-static std::unordered_map<int, HdTrueColorFrame> gHdTrueColorFrameCache;
-static std::unordered_map<const unsigned char*, HdTrueColorFrameView> gRegisteredTrueColorFrameViews;
 
 static bool hdArtSupportedType(int type);
 static bool hdArtBuildPngFilePath(int fid, char* path, size_t size);
 static bool hdArtProbe(int fid, HdArtInfo& info);
 static int hdArtComputeDataSize(int width, int height);
 static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* data, int* sizePtr);
-static void hdArtStoreTrueColorFrame(int fid, const stbi_uc* pixels, int width, int height);
-static void hdArtClearTrueColorFrame(int fid);
 static void hdArtConvertRgbaToPalette(const stbi_uc* rgba, int width, int height, unsigned char* dest);
-static stbi_uc* hdArtResampleNearest(const stbi_uc* src, int srcWidth, int srcHeight, int destWidth, int destHeight);
 static unsigned char hdArtFindNearestPaletteColor(const unsigned char* palette, int r, int g, int b, std::unordered_map<int, unsigned char>& cache);
 static int hdArtPngRead(void* user, char* data, int size);
 static void hdArtPngSkip(void* user, int n);
 static int hdArtPngEof(void* user);
 static bool hdArtValidateDimensions(int fid, int width, int height);
-static bool hdArtLoadTemplateMetadata(int fid, HdArtInfo& info);
-static Art* hdArtLoadBaseArt(int fid);
-static short hdArtClampOffset(long value);
-static short hdArtAdjustXOffset(short baseOffset, int templateWidth, int width);
-static short hdArtAdjustYOffset(short baseOffset, int templateHeight, int height);
 
 // 0x5002D8
 static char gDefaultJumpsuitMaleFileName[] = "hmjmps";
@@ -380,16 +357,12 @@ int artInit()
 void artReset()
 {
     gHdArtInfoCache.clear();
-    gHdTrueColorFrameCache.clear();
-    gRegisteredTrueColorFrameViews.clear();
 }
 
 // 0x418EBC
 void artExit()
 {
     gHdArtInfoCache.clear();
-    gHdTrueColorFrameCache.clear();
-    gRegisteredTrueColorFrameViews.clear();
 
     cacheFree(&gArtCache);
 
@@ -988,15 +961,7 @@ int artAliasFid(int fid)
 
 static bool hdArtSupportedType(int type)
 {
-    switch (type) {
-    case OBJ_TYPE_ITEM:
-    case OBJ_TYPE_SCENERY:
-    case OBJ_TYPE_WALL:
-    case OBJ_TYPE_TILE:
-        return true;
-    default:
-        return false;
-    }
+    return type == OBJ_TYPE_ITEM || type == OBJ_TYPE_TILE;
 }
 
 static bool hdArtBuildPngFilePath(int fid, char* path, size_t size)
@@ -1123,15 +1088,6 @@ static bool hdArtProbe(int fid, HdArtInfo& info)
     info.path = path;
     info.width = width;
     info.height = height;
-    info.hasTemplate = hdArtLoadTemplateMetadata(fid, info);
-    if (info.hasTemplate) {
-        if (info.templateFrameWidth > 0) {
-            info.width = info.templateFrameWidth;
-        }
-        if (info.templateFrameHeight > 0) {
-            info.height = info.templateFrameHeight;
-        }
-    }
     gHdArtInfoCache[fid] = info;
     return true;
 }
@@ -1208,35 +1164,6 @@ static void hdArtConvertRgbaToPalette(const stbi_uc* rgba, int width, int height
     }
 }
 
-static stbi_uc* hdArtResampleNearest(const stbi_uc* src, int srcWidth, int srcHeight, int destWidth, int destHeight)
-{
-    if (src == nullptr || srcWidth <= 0 || srcHeight <= 0 || destWidth <= 0 || destHeight <= 0) {
-        return nullptr;
-    }
-
-    stbi_uc* dest = (stbi_uc*)internal_malloc(destWidth * destHeight * 4);
-    if (dest == nullptr) {
-        return nullptr;
-    }
-
-    for (int y = 0; y < destHeight; y++) {
-        int srcY = (y * srcHeight) / destHeight;
-        const stbi_uc* srcRow = src + srcY * srcWidth * 4;
-        stbi_uc* destRow = dest + y * destWidth * 4;
-        for (int x = 0; x < destWidth; x++) {
-            int srcX = (x * srcWidth) / destWidth;
-            const stbi_uc* srcPixel = srcRow + srcX * 4;
-            stbi_uc* destPixel = destRow + x * 4;
-            destPixel[0] = srcPixel[0];
-            destPixel[1] = srcPixel[1];
-            destPixel[2] = srcPixel[2];
-            destPixel[3] = srcPixel[3];
-        }
-    }
-
-    return dest;
-}
-
 static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* data, int* sizePtr)
 {
     File* stream = fileOpen(info.path.c_str(), "rb");
@@ -1277,9 +1204,7 @@ static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* da
         return false;
     }
 
-    int targetWidth = info.width > 0 ? info.width : width;
-    int targetHeight = info.height > 0 ? info.height : height;
-    int totalSize = hdArtComputeDataSize(targetWidth, targetHeight);
+    int totalSize = hdArtComputeDataSize(width, height);
     memset(data, 0, totalSize);
 
     Art* art = reinterpret_cast<Art*>(data);
@@ -1287,65 +1212,32 @@ static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* da
     art->actionFrame = 0;
     art->frameCount = 1;
 
-    bool pixelsFromStb = true;
-    if (width != targetWidth || height != targetHeight) {
-        stbi_uc* resized = hdArtResampleNearest(pixels, width, height, targetWidth, targetHeight);
-        stbi_image_free(pixels);
-        if (resized == nullptr) {
-            if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
-                diagnosticsLog(DiagnosticsLevel::Trace, "ART", "Failed to resample HD PNG '%s' for fid %08X", info.path.c_str(), fid);
-            }
-            return false;
-        }
-        pixels = resized;
-        width = targetWidth;
-        height = targetHeight;
-        pixelsFromStb = false;
-    }
-
     int headerPadding = paddingForSize(sizeof(Art));
-    const int templateWidth = info.templateFrameWidth;
-    const int templateHeight = info.templateFrameHeight;
     for (int rotation = 0; rotation < ROTATION_COUNT; rotation++) {
         art->dataOffsets[rotation] = 0;
         art->padding[rotation] = headerPadding;
-        if (info.hasTemplate) {
-            art->xOffsets[rotation] = hdArtAdjustXOffset(info.templateXOffsets[rotation], templateWidth, targetWidth);
-            art->yOffsets[rotation] = hdArtAdjustYOffset(info.templateYOffsets[rotation], templateHeight, targetHeight);
-        } else {
-            art->xOffsets[rotation] = 0;
-            art->yOffsets[rotation] = 0;
-        }
+        art->xOffsets[rotation] = 0;
+        art->yOffsets[rotation] = 0;
     }
 
-    int frameSize = targetWidth * targetHeight;
+    int frameSize = width * height;
     art->dataSize = sizeof(ArtFrame) + frameSize;
 
     unsigned char* frameStart = reinterpret_cast<unsigned char*>(art) + sizeof(Art) + art->padding[0];
     ArtFrame* frame = reinterpret_cast<ArtFrame*>(frameStart);
-    frame->width = static_cast<short>(targetWidth);
-    frame->height = static_cast<short>(targetHeight);
+    frame->width = static_cast<short>(width);
+    frame->height = static_cast<short>(height);
     frame->size = frameSize;
-    if (info.hasTemplate) {
-        frame->x = hdArtAdjustXOffset(info.templateFrameX, templateWidth, targetWidth);
-        frame->y = hdArtAdjustYOffset(info.templateFrameY, templateHeight, targetHeight);
-    } else {
-        frame->x = 0;
-        frame->y = 0;
-    }
+    frame->x = 0;
+    frame->y = 0;
 
     unsigned char* frameData = reinterpret_cast<unsigned char*>(frame + 1);
-    hdArtStoreTrueColorFrame(fid, pixels, targetWidth, targetHeight);
-    hdArtConvertRgbaToPalette(pixels, targetWidth, targetHeight, frameData);
+    hdArtConvertRgbaToPalette(pixels, width, height, frameData);
     int framePadding = paddingForSize(frameSize);
     if (framePadding > 0) {
         memset(frameData + frameSize, 0, framePadding);
     }
-    if (pixelsFromStb) {
-        stbi_image_free(pixels);
-    } else {
-        internal_free(pixels);
-    }
+    stbi_image_free(pixels);
 
     if (sizePtr != nullptr) {
         *sizePtr = totalSize;
@@ -1409,87 +1301,6 @@ static bool hdArtValidateDimensions(int fid, int width, int height)
     return true;
 }
 
-static bool hdArtLoadTemplateMetadata(int fid, HdArtInfo& info)
-{
-    Art* baseArt = hdArtLoadBaseArt(fid);
-    if (baseArt == nullptr) {
-        return false;
-    }
-
-    memcpy(info.templateXOffsets, baseArt->xOffsets, sizeof(info.templateXOffsets));
-    memcpy(info.templateYOffsets, baseArt->yOffsets, sizeof(info.templateYOffsets));
-
-    ArtFrame* baseFrame = artGetFrame(baseArt, 0, 0);
-    if (baseFrame != nullptr) {
-        info.templateFrameWidth = baseFrame->width;
-        info.templateFrameHeight = baseFrame->height;
-        info.templateFrameX = baseFrame->x;
-        info.templateFrameY = baseFrame->y;
-    }
-
-    internal_free(baseArt);
-    return true;
-}
-
-static Art* hdArtLoadBaseArt(int fid)
-{
-    char* originalPath = artBuildFilePath(fid);
-    if (originalPath == nullptr) {
-        return nullptr;
-    }
-
-    char path[COMPAT_MAX_PATH];
-    strncpy(path, originalPath, sizeof(path) - 1);
-    path[sizeof(path) - 1] = '\0';
-
-    if (gArtLanguageInitialized) {
-        char* pch = strchr(path, '\\');
-        if (pch == nullptr) {
-            pch = path;
-        }
-
-        char localizedPath[COMPAT_MAX_PATH];
-        if (snprintf(localizedPath, sizeof(localizedPath), "art\\%s\\%s", gArtLanguage, pch) < (int)sizeof(localizedPath)) {
-            Art* localized = artLoad(localizedPath);
-            if (localized != nullptr) {
-                return localized;
-            }
-        }
-    }
-
-    return artLoad(path);
-}
-
-static short hdArtClampOffset(long value)
-{
-    if (value < std::numeric_limits<short>::min()) {
-        return std::numeric_limits<short>::min();
-    }
-    if (value > std::numeric_limits<short>::max()) {
-        return std::numeric_limits<short>::max();
-    }
-
-    return static_cast<short>(value);
-}
-
-static short hdArtAdjustXOffset(short baseOffset, int templateWidth, int width)
-{
-    long value = baseOffset;
-    if (templateWidth > 0) {
-        value += (width - templateWidth) / 2;
-    }
-    return hdArtClampOffset(value);
-}
-
-static short hdArtAdjustYOffset(short baseOffset, int templateHeight, int height)
-{
-    long value = baseOffset;
-    if (templateHeight > 0) {
-        value += (height - templateHeight);
-    }
-    return hdArtClampOffset(value);
-}
-
 // 0x419A78
 static int artCacheGetFileSizeImpl(int fid, int* sizePtr)
 {
@@ -1550,7 +1361,6 @@ static int artCacheReadDataImpl(int fid, int* sizePtr, unsigned char* data)
             }
 
             gHdArtInfoCache.erase(fid);
-            hdArtClearTrueColorFrame(fid);
         }
     }
 
@@ -1579,7 +1389,6 @@ static int artCacheReadDataImpl(int fid, int* sizePtr, unsigned char* data)
 
         if (loaded) {
             *sizePtr = artGetDataSize((Art*)data);
-            hdArtClearTrueColorFrame(fid);
             result = 0;
         }
     }
@@ -1829,8 +1638,6 @@ FrmImage::FrmImage()
     _data = nullptr;
     _width = 0;
     _height = 0;
-    _fid = 0;
-    _trueColorPixels = nullptr;
 }
 
 FrmImage::~FrmImage()
@@ -1849,15 +1656,6 @@ bool FrmImage::lock(unsigned int fid)
         return false;
     }
 
-    _fid = fid;
-    HdTrueColorFrameView view;
-    if (artGetTrueColorFrame(fid, view)) {
-        _trueColorPixels = view.pixels;
-        artRegisterTrueColorFrameData(_data, _trueColorPixels, _width, _height);
-    } else {
-        _trueColorPixels = nullptr;
-    }
-
     return true;
 }
 
@@ -1866,100 +1664,10 @@ void FrmImage::unlock()
     if (isLocked()) {
         artUnlock(_key);
         _key = nullptr;
-        if (_trueColorPixels != nullptr && _data != nullptr) {
-            artUnregisterTrueColorFrameData(_data);
-        }
         _data = nullptr;
         _width = 0;
         _height = 0;
-        _fid = 0;
-        _trueColorPixels = nullptr;
     }
-}
-
-bool artGetTrueColorFrame(int fid, HdTrueColorFrameView& out)
-{
-    auto it = gHdTrueColorFrameCache.find(fid);
-    if (it == gHdTrueColorFrameCache.end()) {
-        return false;
-    }
-
-    const HdTrueColorFrame& frame = it->second;
-    if (frame.pixels.empty()) {
-        return false;
-    }
-
-    out.pixels = frame.pixels.data();
-    out.width = frame.width;
-    out.height = frame.height;
-    return true;
-}
-
-static void hdArtStoreTrueColorFrame(int fid, const stbi_uc* pixels, int width, int height)
-{
-    if (pixels == nullptr || width <= 0 || height <= 0) {
-        hdArtClearTrueColorFrame(fid);
-        return;
-    }
-
-    HdTrueColorFrame& frame = gHdTrueColorFrameCache[fid];
-    frame.width = width;
-    frame.height = height;
-    frame.pixels.resize(static_cast<size_t>(width) * height);
-
-    const stbi_uc* src = pixels;
-    uint32_t* dest = frame.pixels.data();
-    const int pixelCount = width * height;
-    for (int index = 0; index < pixelCount; index++) {
-        const stbi_uc* rgba = src + index * 4;
-        uint32_t value = (static_cast<uint32_t>(rgba[3]) << 24)
-            | (static_cast<uint32_t>(rgba[0]) << 16)
-            | (static_cast<uint32_t>(rgba[1]) << 8)
-            | static_cast<uint32_t>(rgba[2]);
-        dest[index] = value;
-    }
-}
-
-static void hdArtClearTrueColorFrame(int fid)
-{
-    gHdTrueColorFrameCache.erase(fid);
-}
-
-void artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t* pixels, int width, int height)
-{
-    if (indexed == nullptr || pixels == nullptr || width <= 0 || height <= 0) {
-        return;
-    }
-
-    HdTrueColorFrameView view;
-    view.pixels = pixels;
-    view.width = width;
-    view.height = height;
-    gRegisteredTrueColorFrameViews[indexed] = view;
-}
-
-void artUnregisterTrueColorFrameData(const unsigned char* indexed)
-{
-    if (indexed == nullptr) {
-        return;
-    }
-
-    gRegisteredTrueColorFrameViews.erase(indexed);
-}
-
-bool artLookupRegisteredTrueColorFrame(const unsigned char* indexed, HdTrueColorFrameView& out)
-{
-    if (indexed == nullptr) {
-        return false;
-    }
-
-    auto it = gRegisteredTrueColorFrameViews.find(indexed);
-    if (it == gRegisteredTrueColorFrameViews.end()) {
-        return false;
-    }
-
-    out = it->second;
-    return true;
 }
 
 } // namespace fallout

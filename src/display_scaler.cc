@@ -22,8 +22,6 @@ Point gLetterboxOffset = { 0, 0 };
 double gScale = 1.0;
 double gInvScale = 1.0;
 bool gUseIntegerScaling = false;
-double gLogicalScaleX = 1.0;
-double gLogicalScaleY = 1.0;
 
 static void logScalerState(const char* reason)
 {
@@ -97,9 +95,6 @@ static void updateViewport()
     gLogicalBounds.top = 0;
     gLogicalBounds.right = gLogicalSpace.width - 1;
     gLogicalBounds.bottom = gLogicalSpace.height - 1;
-
-    gLogicalScaleX = static_cast<double>(gLogicalSpace.width) / static_cast<double>(kDefaultLogicalWidth);
-    gLogicalScaleY = static_cast<double>(gLogicalSpace.height) / static_cast<double>(kDefaultLogicalHeight);
 
     logScalerState("viewport");
 }
@@ -254,26 +249,6 @@ Rect displayScalerPhysicalToLogical(const Rect& physicalRect)
     result.right = std::max(logicalTopLeft.x, logicalBottomRight.x);
     result.bottom = std::max(logicalTopLeft.y, logicalBottomRight.y);
     return result;
-}
-
-int displayScalerGetDefaultLogicalWidth()
-{
-    return kDefaultLogicalWidth;
-}
-
-int displayScalerGetDefaultLogicalHeight()
-{
-    return kDefaultLogicalHeight;
-}
-
-double displayScalerGetLogicalScaleX()
-{
-    return gLogicalScaleX;
-}
-
-double displayScalerGetLogicalScaleY()
-{
-    return gLogicalScaleY;
 }
 
 } // namespace fallout

@@ -30,10 +30,6 @@ Point displayScalerLogicalToPhysical(const Point& logicalPoint);
 Point displayScalerPhysicalToLogical(const Point& physicalPoint);
 Rect displayScalerLogicalToPhysical(const Rect& logicalRect);
 Rect displayScalerPhysicalToLogical(const Rect& physicalRect);
-int displayScalerGetDefaultLogicalWidth();
-int displayScalerGetDefaultLogicalHeight();
-double displayScalerGetLogicalScaleX();
-double displayScalerGetLogicalScaleY();
 
 } // namespace fallout
 

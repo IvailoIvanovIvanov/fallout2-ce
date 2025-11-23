@@ -25,7 +25,6 @@ struct SystemSettings {
     int times_run = 0;
     bool use_hd_art = false;
     std::string hd_art_path = "art";
-    bool use_true_color_renderer = false;
 };
 
 struct PreferencesSettings {

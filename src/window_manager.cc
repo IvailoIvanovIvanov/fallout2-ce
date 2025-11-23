@@ -3,13 +3,9 @@
 #include <string.h>
 
 #include <algorithm>
-#include <cmath>
-#include <cstdint>
-#include <initializer_list>
 
 #include <SDL.h>
 
-#include "art.h"
 #include "display_scaler.h"
 #include "color.h"
 #include "debug.h"
@@ -19,19 +15,10 @@
 #include "memory.h"
 #include "mouse.h"
 #include "palette.h"
-#include "settings.h"
 #include "svga.h"
 #include "text_font.h"
 #include "win32.h"
 #include "window_manager_private.h"
-
-#ifdef max
-#undef max
-#endif
-
-#ifdef min
-#undef min
-#endif
 
 namespace fallout {
 
@@ -83,7 +70,6 @@ int _GNW_wcolor[6] = {
 
 // 0x51E3FC
 static unsigned char* _screen_buffer = nullptr;
-static uint32_t* _true_color_screen_buffer = nullptr;
 
 // 0x51E400
 static bool _insideWinExit = false;
@@ -123,522 +109,6 @@ static void* _GNW_texture;
 
 // 0x6ADF40
 static ButtonGroup gButtonGroups[BUTTON_GROUP_LIST_CAPACITY];
-
-static PixelFormat gWindowPixelFormat = PixelFormat::Indexed8;
-static void presentScreenRectToTexture(const Rect& rect);
-static bool gTrueColorCompositorEnabled = false;
-static bool gTrueColorPaletteBaselineInitialized = false;
-static unsigned char gTrueColorPaletteBaseline[256 * 3];
-static float gTrueColorPaletteDeviation[256];
-static inline bool windowHasTrueColorOverlay(const Window* window);
-static inline void windowTrueColorClearRegion(Window* window, int left, int top, int width, int height);
-static void windowTrueColorBlit(Window* window, const uint32_t* src, int srcPitch, int width, int height, int destX, int destY, bool transparent);
-static void blitWindowRectToTrueColorScreen(Window* window, const Rect& rect);
-static inline uint32_t* trueColorScreenBufferAt(int x, int y);
-static inline uint32_t blendArgb(uint32_t src, uint32_t dst);
-static void updateTrueColorPaletteDeviation(const unsigned char* currentPalette);
-static uint32_t adjustOverlayForPalette(uint32_t overlayColor, uint32_t baseColor, unsigned char paletteIndex);
-
-static inline int windowBytesPerPixel(const Window* window)
-{
-    return pixelFormatBytesPerPixel(window->pixelFormat);
-}
-
-static inline bool windowIsIndexed(const Window* window)
-{
-    return window->pixelFormat == PixelFormat::Indexed8;
-}
-
-static inline unsigned char* windowBufferAt(Window* window, int x, int y)
-{
-    return window->buffer + window->pitch * y + x * windowBytesPerPixel(window);
-}
-
-static inline const unsigned char* windowBufferAtConst(const Window* window, int x, int y)
-{
-    return window->buffer + window->pitch * y + x * windowBytesPerPixel(window);
-}
-
-static inline unsigned char* screenBufferAt(int x, int y)
-{
-    return _screen_buffer + (screenGetWidth() * y + x) * pixelFormatBytesPerPixel(gWindowPixelFormat);
-}
-
-static inline uint32_t* trueColorScreenBufferAt(int x, int y)
-{
-    return _true_color_screen_buffer + screenGetWidth() * y + x;
-}
-
-static inline bool windowHasTrueColorOverlay(const Window* window)
-{
-    return window != nullptr && window->trueColorOverlay != nullptr && window->trueColorMask != nullptr;
-}
-
-static inline uint32_t blendArgb(uint32_t src, uint32_t dst)
-{
-    uint8_t srcA = static_cast<uint8_t>(src >> 24);
-    if (srcA == 0) {
-        return dst;
-    }
-    if (srcA == 255) {
-        return (src & 0x00FFFFFF) | 0xFF000000;
-    }
-
-    uint8_t dstR = static_cast<uint8_t>((dst >> 16) & 0xFF);
-    uint8_t dstG = static_cast<uint8_t>((dst >> 8) & 0xFF);
-    uint8_t dstB = static_cast<uint8_t>(dst & 0xFF);
-
-    uint8_t srcR = static_cast<uint8_t>((src >> 16) & 0xFF);
-    uint8_t srcG = static_cast<uint8_t>((src >> 8) & 0xFF);
-    uint8_t srcB = static_cast<uint8_t>(src & 0xFF);
-
-    uint8_t invA = static_cast<uint8_t>(255 - srcA);
-    uint8_t outR = static_cast<uint8_t>((srcR * srcA + dstR * invA) / 255);
-    uint8_t outG = static_cast<uint8_t>((srcG * srcA + dstG * invA) / 255);
-    uint8_t outB = static_cast<uint8_t>((srcB * srcA + dstB * invA) / 255);
-
-    return (0xFF000000) | (static_cast<uint32_t>(outR) << 16) | (static_cast<uint32_t>(outG) << 8) | outB;
-}
-
-static void updateTrueColorPaletteDeviation(const unsigned char* currentPalette)
-{
-    if (!gTrueColorPaletteBaselineInitialized || currentPalette == nullptr) {
-        return;
-    }
-
-    constexpr float kInvMaxComponent = 1.0f / 63.0f;
-    constexpr float kInvMaxDistance = 0.57735026919f; // 1 / sqrt(3)
-
-    for (int index = 0; index < 256; index++) {
-        const int offset = index * 3;
-        float dr = static_cast<float>(currentPalette[offset] - gTrueColorPaletteBaseline[offset]) * kInvMaxComponent;
-        float dg = static_cast<float>(currentPalette[offset + 1] - gTrueColorPaletteBaseline[offset + 1]) * kInvMaxComponent;
-        float db = static_cast<float>(currentPalette[offset + 2] - gTrueColorPaletteBaseline[offset + 2]) * kInvMaxComponent;
-
-        float distance = std::sqrt(dr * dr + dg * dg + db * db) * kInvMaxDistance;
-        gTrueColorPaletteDeviation[index] = std::clamp(distance, 0.0f, 1.0f);
-    }
-}
-
-static uint32_t adjustOverlayForPalette(uint32_t overlayColor, uint32_t baseColor, unsigned char paletteIndex)
-{
-    if (!gTrueColorPaletteBaselineInitialized) {
-        return overlayColor;
-    }
-
-    float mix = std::clamp(gTrueColorPaletteDeviation[paletteIndex], 0.0f, 1.0f);
-    if (mix <= 0.0f) {
-        return overlayColor;
-    }
-
-    if (mix >= 1.0f) {
-        return baseColor & 0x00FFFFFF;
-    }
-
-    auto lerpChannel = [mix](uint8_t from, uint8_t to) -> uint8_t {
-        float value = static_cast<float>(from) + (static_cast<float>(to) - static_cast<float>(from)) * mix;
-        return static_cast<uint8_t>(std::clamp(value, 0.0f, 255.0f));
-    };
-
-    uint8_t overlayA = static_cast<uint8_t>(overlayColor >> 24);
-    uint8_t overlayR = static_cast<uint8_t>((overlayColor >> 16) & 0xFF);
-    uint8_t overlayG = static_cast<uint8_t>((overlayColor >> 8) & 0xFF);
-    uint8_t overlayB = static_cast<uint8_t>(overlayColor & 0xFF);
-
-    uint8_t baseR = static_cast<uint8_t>((baseColor >> 16) & 0xFF);
-    uint8_t baseG = static_cast<uint8_t>((baseColor >> 8) & 0xFF);
-    uint8_t baseB = static_cast<uint8_t>(baseColor & 0xFF);
-
-    uint8_t resultA = static_cast<uint8_t>(static_cast<float>(overlayA) * (1.0f - mix));
-    uint8_t resultR = lerpChannel(overlayR, baseR);
-    uint8_t resultG = lerpChannel(overlayG, baseG);
-    uint8_t resultB = lerpChannel(overlayB, baseB);
-
-    return (static_cast<uint32_t>(resultA) << 24)
-        | (static_cast<uint32_t>(resultR) << 16)
-        | (static_cast<uint32_t>(resultG) << 8)
-        | resultB;
-}
-
-static void windowTrueColorClearRegion(Window* window, int left, int top, int width, int height)
-{
-    if (!windowHasTrueColorOverlay(window) || width <= 0 || height <= 0) {
-        return;
-    }
-
-    int startX = std::max(left, 0);
-    int startY = std::max(top, 0);
-    int endX = std::min(left + width, window->width);
-    int endY = std::min(top + height, window->height);
-    if (startX >= endX || startY >= endY) {
-        return;
-    }
-
-    const int rowSpan = endX - startX;
-    for (int y = startY; y < endY; y++) {
-        int offset = y * window->width + startX;
-        memset(window->trueColorMask + offset, 0, rowSpan);
-        memset(window->trueColorOverlay + offset, 0, rowSpan * sizeof(uint32_t));
-    }
-}
-
-static void windowTrueColorBlit(Window* window, const uint32_t* src, int srcPitch, int width, int height, int destX, int destY, bool transparent)
-{
-    if (!windowHasTrueColorOverlay(window) || src == nullptr || width <= 0 || height <= 0) {
-        return;
-    }
-
-    constexpr uint8_t kAlphaThreshold = 16;
-
-    for (int row = 0; row < height; row++) {
-        int targetY = destY + row;
-        if (targetY < 0 || targetY >= window->height) {
-            continue;
-        }
-
-        const uint32_t* srcRow = src + srcPitch * row;
-        uint32_t* destRow = window->trueColorOverlay + targetY * window->width;
-        unsigned char* maskRow = window->trueColorMask + targetY * window->width;
-
-        for (int col = 0; col < width; col++) {
-            int targetX = destX + col;
-            if (targetX < 0 || targetX >= window->width) {
-                continue;
-            }
-
-            uint32_t pixel = srcRow[col];
-            uint8_t alpha = static_cast<uint8_t>(pixel >> 24);
-            if (transparent && alpha < kAlphaThreshold) {
-                maskRow[targetX] = 0;
-                continue;
-            }
-
-            maskRow[targetX] = 1;
-            destRow[targetX] = pixel;
-        }
-    }
-}
-
-static void blitWindowRectToTrueColorScreen(Window* window, const Rect& rect)
-{
-    if (_true_color_screen_buffer == nullptr || window == nullptr || window->buffer == nullptr) {
-        return;
-    }
-
-    int width = rectGetWidth(&rect);
-    int height = rectGetHeight(&rect);
-    if (width <= 0 || height <= 0) {
-        return;
-    }
-
-    int screenWidth = screenGetWidth();
-    for (int row = 0; row < height; row++) {
-        int screenY = rect.top + row;
-        uint32_t* destRow = trueColorScreenBufferAt(rect.left, screenY);
-
-        int windowY = rect.top + row - window->rect.top;
-        if (windowY < 0 || windowY >= window->height) {
-            continue;
-        }
-        int windowX = rect.left - window->rect.left;
-        if (windowX < 0 || windowX >= window->width) {
-            continue;
-        }
-        const unsigned char* indexedRow = windowBufferAtConst(window, windowX, windowY);
-
-        const uint32_t* overlayRow = nullptr;
-        const unsigned char* maskRow = nullptr;
-        if (windowHasTrueColorOverlay(window)) {
-            overlayRow = window->trueColorOverlay + windowY * window->width + windowX;
-            maskRow = window->trueColorMask + windowY * window->width + windowX;
-        }
-
-        for (int col = 0; col < width; col++) {
-            uint32_t base = paletteIndexToArgb(indexedRow[col]);
-            if (maskRow != nullptr && maskRow[col] != 0) {
-                uint32_t overlayPixel = overlayRow[col];
-                if (gTrueColorPaletteBaselineInitialized) {
-                    overlayPixel = adjustOverlayForPalette(overlayPixel, base, indexedRow[col]);
-                }
-                destRow[col] = blendArgb(overlayPixel, base);
-            } else {
-                destRow[col] = base;
-            }
-        }
-    }
-}
-
-static void presentScreenRectToTexture(const Rect& rect)
-{
-    if (!gTrueColorCompositorEnabled || _screen_buffer == nullptr) {
-        return;
-    }
-
-    const int width = rectGetWidth(&rect);
-    const int height = rectGetHeight(&rect);
-    if (width <= 0 || height <= 0) {
-        return;
-    }
-
-    if (_true_color_screen_buffer != nullptr) {
-        const uint32_t* src = trueColorScreenBufferAt(rect.left, rect.top);
-        blitTrueColorBufferToTextureSurface(src, screenGetWidth(), width, height, rect.left, rect.top);
-        return;
-    }
-
-    const int screenPitch = screenGetWidth() * pixelFormatBytesPerPixel(gWindowPixelFormat);
-    unsigned char* src = screenBufferAt(rect.left, rect.top);
-
-    if (gWindowPixelFormat == PixelFormat::Indexed8) {
-        blitIndexedBufferToTextureSurface(src, screenPitch, width, height, rect.left, rect.top);
-    } else {
-        // TODO: Support true color screen buffers when needed.
-    }
-}
-
-static inline uint32_t* windowRowAt(Window* window, int y)
-{
-    return reinterpret_cast<uint32_t*>(window->buffer + window->pitch * y);
-}
-
-static inline unsigned char pickSentinel(std::initializer_list<unsigned char> disallowed)
-{
-    for (int value = 0; value < 256; value++) {
-        bool ok = true;
-        for (unsigned char banned : disallowed) {
-            if (value == banned) {
-                ok = false;
-                break;
-            }
-        }
-
-        if (ok) {
-            return static_cast<unsigned char>(value);
-        }
-    }
-
-    return 0;
-}
-
-static inline uint32_t lightenArgb(uint32_t color)
-{
-    uint8_t a = static_cast<uint8_t>(color >> 24);
-    uint8_t r = static_cast<uint8_t>((color >> 16) & 0xFF);
-    uint8_t g = static_cast<uint8_t>((color >> 8) & 0xFF);
-    uint8_t b = static_cast<uint8_t>(color & 0xFF);
-
-    auto lightenChannel = [](uint8_t channel) {
-        return static_cast<uint8_t>(channel + ((255 - channel) >> 2));
-    };
-
-    r = lightenChannel(r);
-    g = lightenChannel(g);
-    b = lightenChannel(b);
-
-    return (static_cast<uint32_t>(a) << 24) | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | b;
-}
-
-static void lightenRect(Window* window, int left, int top, int width, int height)
-{
-    if (width <= 0 || height <= 0) {
-        return;
-    }
-
-    int startX = std::max(left, 0);
-    int startY = std::max(top, 0);
-    int endX = std::min(left + width, window->width);
-    int endY = std::min(top + height, window->height);
-
-    for (int y = startY; y < endY; y++) {
-        uint32_t* row = windowRowAt(window, y);
-        for (int x = startX; x < endX; x++) {
-            row[x] = lightenArgb(row[x]);
-        }
-    }
-}
-
-static void fillRectArgb(Window* window, int left, int top, int width, int height, uint32_t color)
-{
-    if (width <= 0 || height <= 0) {
-        return;
-    }
-
-    int startX = std::max(left, 0);
-    int startY = std::max(top, 0);
-    int endX = std::min(left + width, window->width);
-    int endY = std::min(top + height, window->height);
-
-    for (int y = startY; y < endY; y++) {
-        uint32_t* row = windowRowAt(window, y);
-        for (int x = startX; x < endX; x++) {
-            row[x] = color;
-        }
-    }
-}
-
-static void drawHorizontalLineTrueColor(Window* window, int x1, int x2, int y, uint32_t color)
-{
-    if (y < 0 || y >= window->height) {
-        return;
-    }
-
-    if (x1 > x2) {
-        std::swap(x1, x2);
-    }
-
-    x1 = std::max(x1, 0);
-    x2 = std::min(x2, window->width - 1);
-    if (x1 > x2) {
-        return;
-    }
-
-    uint32_t* row = windowRowAt(window, y);
-    for (int x = x1; x <= x2; x++) {
-        row[x] = color;
-    }
-}
-
-static void drawVerticalLineTrueColor(Window* window, int y1, int y2, int x, uint32_t color)
-{
-    if (x < 0 || x >= window->width) {
-        return;
-    }
-
-    if (y1 > y2) {
-        std::swap(y1, y2);
-    }
-
-    y1 = std::max(y1, 0);
-    y2 = std::min(y2, window->height - 1);
-    if (y1 > y2) {
-        return;
-    }
-
-    for (int y = y1; y <= y2; y++) {
-        uint32_t* row = windowRowAt(window, y);
-        row[x] = color;
-    }
-}
-
-static void drawLineTrueColor(Window* window, int x0, int y0, int x1, int y1, uint32_t color)
-{
-    int dx = std::abs(x1 - x0);
-    int sx = x0 < x1 ? 1 : -1;
-    int dy = -std::abs(y1 - y0);
-    int sy = y0 < y1 ? 1 : -1;
-    int err = dx + dy;
-
-    while (true) {
-        if (x0 >= 0 && x0 < window->width && y0 >= 0 && y0 < window->height) {
-            uint32_t* row = windowRowAt(window, y0);
-            row[x0] = color;
-        }
-
-        if (x0 == x1 && y0 == y1) {
-            break;
-        }
-
-        int e2 = 2 * err;
-        if (e2 >= dy) {
-            err += dy;
-            x0 += sx;
-        }
-
-        if (e2 <= dx) {
-            err += dx;
-            y0 += sy;
-        }
-    }
-}
-
-static void drawRectTrueColor(Window* window, int left, int top, int right, int bottom, uint32_t color)
-{
-    drawHorizontalLineTrueColor(window, left, right, top, color);
-    drawHorizontalLineTrueColor(window, left, right, bottom, color);
-    drawVerticalLineTrueColor(window, top, bottom, left, color);
-    drawVerticalLineTrueColor(window, top, bottom, right, color);
-}
-
-static void drawRectShadowedTrueColor(Window* window, int left, int top, int right, int bottom, uint32_t ltColor, uint32_t rbColor)
-{
-    drawHorizontalLineTrueColor(window, left, right, top, ltColor);
-    drawVerticalLineTrueColor(window, top, bottom, left, ltColor);
-    drawHorizontalLineTrueColor(window, left, right, bottom, rbColor);
-    drawVerticalLineTrueColor(window, top, bottom, right, rbColor);
-}
-
-static void blitIndexedToTrueColor(const unsigned char* src, int srcPitch, int width, int height, Window* window, int destX, int destY)
-{
-    for (int row = 0; row < height; row++) {
-        int targetY = destY + row;
-        if (targetY < 0 || targetY >= window->height) {
-            continue;
-        }
-
-        const unsigned char* srcRow = src + srcPitch * row;
-        uint32_t* destRow = windowRowAt(window, targetY);
-        for (int col = 0; col < width; col++) {
-            int targetX = destX + col;
-            if (targetX < 0 || targetX >= window->width) {
-                continue;
-            }
-
-            destRow[targetX] = paletteIndexToArgb(srcRow[col]);
-        }
-    }
-}
-
-static void blitIndexedMaskToTrueColor(const unsigned char* src, int srcPitch, int width, int height, unsigned char transparentIndex, Window* window, int destX, int destY)
-{
-    for (int row = 0; row < height; row++) {
-        int targetY = destY + row;
-        if (targetY < 0 || targetY >= window->height) {
-            continue;
-        }
-
-        const unsigned char* srcRow = src + srcPitch * row;
-        uint32_t* destRow = windowRowAt(window, targetY);
-        for (int col = 0; col < width; col++) {
-            int targetX = destX + col;
-            if (targetX < 0 || targetX >= window->width) {
-                continue;
-            }
-
-            unsigned char index = srcRow[col];
-            if (index == transparentIndex) {
-                continue;
-            }
-
-            destRow[targetX] = paletteIndexToArgb(index);
-        }
-    }
-}
-
-static void blitIndexedImageToTrueColor(Window* window, const unsigned char* src, int srcPitch, int width, int height, int destX, int destY, bool transparent)
-{
-    for (int row = 0; row < height; row++) {
-        int targetY = destY + row;
-        if (targetY < 0 || targetY >= window->height) {
-            continue;
-        }
-
-        const unsigned char* srcRow = src + srcPitch * row;
-        uint32_t* destRow = windowRowAt(window, targetY);
-        for (int col = 0; col < width; col++) {
-            unsigned char index = srcRow[col];
-            if (transparent && index == 0) {
-                continue;
-            }
-
-            int targetX = destX + col;
-            if (targetX < 0 || targetX >= window->width) {
-                continue;
-            }
-
-            destRow[targetX] = paletteIndexToArgb(index);
-        }
-    }
-}
 
 // 0x4D5C30
 int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitProc* videoSystemExitProc, int a3)
@@ -681,10 +151,6 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
     gVideoSystemInitProc = videoSystemInitProc;
     gVideoSystemExitProc = directInputFree;
 
-    setTrueColorRendererRequested(settings.system.use_true_color_renderer);
-
-    gWindowPixelFormat = PixelFormat::Indexed8;
-
     int rc = videoSystemInitProc();
     if (rc == -1) {
         if (gVideoSystemExitProc != nullptr) {
@@ -701,15 +167,8 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
     int screenWidth = screenGetWidth();
     int screenHeight = screenGetHeight();
 
-    int screenBytesPerPixel = pixelFormatBytesPerPixel(gWindowPixelFormat);
-
-    bool needScreenBuffer = (a3 & 1) != 0;
-    if (settings.system.use_true_color_renderer) {
-        needScreenBuffer = true;
-    }
-
-    if (needScreenBuffer) {
-        _screen_buffer = (unsigned char*)internal_malloc(screenWidth * screenHeight * screenBytesPerPixel);
+    if (a3 & 1) {
+        _screen_buffer = (unsigned char*)internal_malloc(screenWidth * screenHeight);
         if (_screen_buffer == nullptr) {
             if (gVideoSystemExitProc != nullptr) {
                 gVideoSystemExitProc();
@@ -721,31 +180,7 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
         }
     }
 
-    gTrueColorCompositorEnabled = isTrueColorRendererActive();
-    if (settings.system.use_true_color_renderer && !gTrueColorCompositorEnabled) {
-        debugPrint("True color renderer requested but not available; falling back to indexed mode.\n");
-    }
-
-    if (gTrueColorCompositorEnabled) {
-        _true_color_screen_buffer = (uint32_t*)internal_malloc(screenWidth * screenHeight * sizeof(uint32_t));
-        if (_true_color_screen_buffer == nullptr) {
-            if (gVideoSystemExitProc != nullptr) {
-                gVideoSystemExitProc();
-            } else {
-                directDrawFree();
-            }
-
-            if (_screen_buffer != nullptr) {
-                internal_free(_screen_buffer);
-                _screen_buffer = nullptr;
-            }
-
-            return WINDOW_MANAGER_ERR_NO_MEMORY;
-        }
-        memset(_true_color_screen_buffer, 0, screenWidth * screenHeight * sizeof(uint32_t));
-    }
-
-    _buffering = gTrueColorCompositorEnabled;
+    _buffering = false;
     _doing_refresh_all = 0;
 
     if (!_initColors()) {
@@ -806,10 +241,6 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
     window->tx = 0;
     window->ty = 0;
     window->buffer = nullptr;
-    window->pixelFormat = gWindowPixelFormat;
-    window->pitch = window->width * pixelFormatBytesPerPixel(window->pixelFormat);
-    window->trueColorOverlay = nullptr;
-    window->trueColorMask = nullptr;
     window->buttonListHead = nullptr;
     window->hoveredButton = nullptr;
     window->clickedButton = nullptr;
@@ -853,11 +284,6 @@ void windowManagerExit(void)
                 internal_free(_screen_buffer);
             }
 
-            if (_true_color_screen_buffer != nullptr) {
-                internal_free(_true_color_screen_buffer);
-                _true_color_screen_buffer = nullptr;
-            }
-
             if (gVideoSystemExitProc != nullptr) {
                 gVideoSystemExitProc();
             }
@@ -870,7 +296,6 @@ void windowManagerExit(void)
             SDL_DestroyWindow(gSdlWindow);
 
             gWindowSystemInitialized = false;
-            gTrueColorCompositorEnabled = false;
 
 #ifdef _WIN32
             CloseHandle(_GNW95_title_mutex);
@@ -913,35 +338,10 @@ int windowCreate(int x, int y, int width, int height, int color, int flags)
         return -1;
     }
 
-    int bytesPerPixel = pixelFormatBytesPerPixel(gWindowPixelFormat);
-    window->pitch = width * bytesPerPixel;
-    window->pixelFormat = gWindowPixelFormat;
-
-    window->buffer = (unsigned char*)internal_malloc(window->pitch * height);
+    window->buffer = (unsigned char*)internal_malloc(width * height);
     if (window->buffer == nullptr) {
         internal_free(window);
         return -1;
-    }
-
-    window->trueColorOverlay = nullptr;
-    window->trueColorMask = nullptr;
-    if (gTrueColorCompositorEnabled) {
-        size_t pixelCount = static_cast<size_t>(width) * height;
-        window->trueColorOverlay = (uint32_t*)internal_malloc(pixelCount * sizeof(uint32_t));
-        window->trueColorMask = (unsigned char*)internal_malloc(pixelCount);
-        if (window->trueColorOverlay == nullptr || window->trueColorMask == nullptr) {
-            if (window->trueColorOverlay != nullptr) {
-                internal_free(window->trueColorOverlay);
-            }
-            if (window->trueColorMask != nullptr) {
-                internal_free(window->trueColorMask);
-            }
-            internal_free(window->buffer);
-            internal_free(window);
-            return -1;
-        }
-        memset(window->trueColorOverlay, 0, pixelCount * sizeof(uint32_t));
-        memset(window->trueColorMask, 0, pixelCount);
     }
 
     int id = 1;
@@ -1057,14 +457,6 @@ void windowFree(int win)
         internal_free(window->buffer);
     }
 
-    if (window->trueColorOverlay != nullptr) {
-        internal_free(window->trueColorOverlay);
-    }
-
-    if (window->trueColorMask != nullptr) {
-        internal_free(window->trueColorMask);
-    }
-
     if (window->menuBar != nullptr) {
         internal_free(window->menuBar);
     }
@@ -1099,22 +491,15 @@ void windowDrawBorder(int win)
         return;
     }
 
-    if (windowBytesPerPixel(window) != 1) {
-        // TODO: Implement true color window borders.
-        return;
-    }
+    _lighten_buf(window->buffer + 5, window->width - 10, 5, window->width);
+    _lighten_buf(window->buffer, 5, window->height, window->width);
+    _lighten_buf(window->buffer + window->width - 5, 5, window->height, window->width);
+    _lighten_buf(window->buffer + window->width * (window->height - 5) + 5, window->width - 10, 5, window->width);
 
-    int pitch = window->pitch;
+    bufferDrawRect(window->buffer, window->width, 0, 0, window->width - 1, window->height - 1, _colorTable[0]);
 
-    _lighten_buf(windowBufferAt(window, 5, 0), window->width - 10, 5, pitch);
-    _lighten_buf(windowBufferAt(window, 0, 0), 5, window->height, pitch);
-    _lighten_buf(windowBufferAt(window, window->width - 5, 0), 5, window->height, pitch);
-    _lighten_buf(windowBufferAt(window, 5, window->height - 5), window->width - 10, 5, pitch);
-
-    bufferDrawRect(window->buffer, pitch, 0, 0, window->width - 1, window->height - 1, _colorTable[0]);
-
-    bufferDrawRectShadowed(window->buffer, pitch, 1, 1, window->width - 2, window->height - 2, _colorTable[_GNW_wcolor[1]], _colorTable[_GNW_wcolor[2]]);
-    bufferDrawRectShadowed(window->buffer, pitch, 5, 5, window->width - 6, window->height - 6, _colorTable[_GNW_wcolor[2]], _colorTable[_GNW_wcolor[1]]);
+    bufferDrawRectShadowed(window->buffer, window->width, 1, 1, window->width - 2, window->height - 2, _colorTable[_GNW_wcolor[1]], _colorTable[_GNW_wcolor[2]]);
+    bufferDrawRectShadowed(window->buffer, window->width, 5, 5, window->width - 6, window->height - 6, _colorTable[_GNW_wcolor[2]], _colorTable[_GNW_wcolor[1]]);
 }
 
 // 0x4D684C
@@ -1130,11 +515,6 @@ void windowDrawText(int win, const char* str, int width, int x, int y, int color
     }
 
     if (window == nullptr) {
-        return;
-    }
-
-    if (windowBytesPerPixel(window) != 1) {
-        // TODO: Implement true color text rendering.
         return;
     }
 
@@ -1154,12 +534,7 @@ void windowDrawText(int win, const char* str, int width, int x, int y, int color
         width = window->width - x;
     }
 
-    buf = windowBufferAt(window, x, y);
-    int pitch = window->pitch;
-
-    if (gTrueColorCompositorEnabled) {
-        windowTrueColorClearRegion(window, x, y, width, fontGetLineHeight());
-    }
+    buf = window->buffer + x + y * window->width;
 
     if (fontGetLineHeight() + y > window->height) {
         return;
@@ -1167,9 +542,9 @@ void windowDrawText(int win, const char* str, int width, int x, int y, int color
 
     if (!(color & 0x02000000)) {
         if (window->color == 256 && _GNW_texture != nullptr) {
-            _buf_texture(buf, width, fontGetLineHeight(), pitch, _GNW_texture, window->tx + x, window->ty + y);
+            _buf_texture(buf, width, fontGetLineHeight(), window->width, _GNW_texture, window->tx + x, window->ty + y);
         } else {
-            bufferFill(buf, width, fontGetLineHeight(), pitch, window->color);
+            bufferFill(buf, width, fontGetLineHeight(), window->width, window->color);
         }
     }
 
@@ -1180,7 +555,7 @@ void windowDrawText(int win, const char* str, int width, int x, int y, int color
         textColor = color;
     }
 
-    fontDrawText(buf, str, width, pitch, textColor);
+    fontDrawText(buf, str, width, window->width, textColor);
 
     if (color & 0x01000000) {
         // TODO: Check.
@@ -1206,23 +581,12 @@ void windowDrawLine(int win, int left, int top, int right, int bottom, int color
         return;
     }
 
-    if (windowBytesPerPixel(window) != 1) {
-        // TODO: Implement true color line drawing.
-        return;
-    }
-
-    int minX = std::min(left, right);
-    int minY = std::min(top, bottom);
-    int spanX = std::abs(right - left) + 1;
-    int spanY = std::abs(bottom - top) + 1;
-    windowTrueColorClearRegion(window, minX, minY, spanX, spanY);
-
     if ((color & 0xFF00) != 0) {
         int colorIndex = (color & 0xFF) - 1;
         color = (color & ~0xFFFF) | _colorTable[_GNW_wcolor[colorIndex]];
     }
 
-    bufferDrawLine(window->buffer, window->pitch, left, top, right, bottom, color);
+    bufferDrawLine(window->buffer, window->width, left, top, right, bottom, color);
 }
 
 // 0x4D6B88
@@ -1237,13 +601,6 @@ void windowDrawRect(int win, int left, int top, int right, int bottom, int color
     if (window == nullptr) {
         return;
     }
-
-    if (windowBytesPerPixel(window) != 1) {
-        // TODO: Implement true color rect drawing.
-        return;
-    }
-
-    windowTrueColorClearRegion(window, std::min(left, right), std::min(top, bottom), std::abs(right - left) + 1, std::abs(bottom - top) + 1);
 
     if ((color & 0xFF00) != 0) {
         int colorIndex = (color & 0xFF) - 1;
@@ -1262,7 +619,7 @@ void windowDrawRect(int win, int left, int top, int right, int bottom, int color
         bottom = tmp;
     }
 
-    bufferDrawRect(window->buffer, window->pitch, left, top, right, bottom, color);
+    bufferDrawRect(window->buffer, window->width, left, top, right, bottom, color);
 }
 
 // 0x4D6CC8
@@ -1278,14 +635,9 @@ void windowFill(int win, int x, int y, int width, int height, int color)
         return;
     }
 
-    int bytesPerPixel = windowBytesPerPixel(window);
-    unsigned char* dest = windowBufferAt(window, x, y);
-
-    windowTrueColorClearRegion(window, x, y, width, height);
-
     if (color == 256) {
         if (_GNW_texture != nullptr) {
-            _buf_texture(dest, width, height, window->pitch, _GNW_texture, x + window->tx, y + window->ty);
+            _buf_texture(window->buffer + window->width * y + x, width, height, window->width, _GNW_texture, x + window->tx, y + window->ty);
         } else {
             color = _colorTable[_GNW_wcolor[0]] & 0xFF;
         }
@@ -1294,8 +646,8 @@ void windowFill(int win, int x, int y, int width, int height, int color)
         color = (color & ~0xFFFF) | _colorTable[_GNW_wcolor[colorIndex]];
     }
 
-    if (color < 256 && bytesPerPixel == 1) {
-        bufferFill(dest, width, height, window->pitch, color);
+    if (color < 256) {
+        bufferFill(window->buffer + window->width * y + x, width, height, window->width, color);
     }
 }
 
@@ -1461,7 +813,6 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
     dest_pitch = 0;
 
     const int screenWidth = screenGetWidth();
-    const int screenPitch = screenWidth * pixelFormatBytesPerPixel(gWindowPixelFormat);
 
     if ((window->flags & WINDOW_HIDDEN) != 0) {
         return;
@@ -1477,10 +828,10 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
 
         v26->next = nullptr;
 
-        v26->rect.left = window->rect.left >= rect->left ? window->rect.left : rect->left;
-        v26->rect.top = window->rect.top >= rect->top ? window->rect.top : rect->top;
-        v26->rect.right = window->rect.right <= rect->right ? window->rect.right : rect->right;
-        v26->rect.bottom = window->rect.bottom <= rect->bottom ? window->rect.bottom : rect->bottom;
+        v26->rect.left = std::max(window->rect.left, rect->left);
+        v26->rect.top = std::max(window->rect.top, rect->top);
+        v26->rect.right = std::min(window->rect.right, rect->right);
+        v26->rect.bottom = std::min(window->rect.bottom, rect->bottom);
 
         if (v26->rect.right >= v26->rect.left && v26->rect.bottom >= v26->rect.top) {
             if (a3) {
@@ -1494,24 +845,20 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                 while (v20) {
                     _GNW_button_refresh(window, &(v20->rect));
 
-                    int srcX = v20->rect.left - window->rect.left;
-                    int srcY = v20->rect.top - window->rect.top;
-                    unsigned char* srcPtr = windowBufferAt(window, srcX, srcY);
-
                     if (a3) {
                         if (_buffering && (window->flags & WINDOW_TRANSPARENT)) {
-                            window->blitProc(srcPtr,
+                            window->blitProc(window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
                                 v20->rect.right - v20->rect.left + 1,
                                 v20->rect.bottom - v20->rect.top + 1,
-                                window->pitch,
+                                window->width,
                                 a3 + dest_pitch * (v20->rect.top - rect->top) + v20->rect.left - rect->left,
                                 dest_pitch);
                         } else {
                             blitBufferToBuffer(
-                                srcPtr,
+                                window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
                                 v20->rect.right - v20->rect.left + 1,
                                 v20->rect.bottom - v20->rect.top + 1,
-                                window->pitch,
+                                window->width,
                                 a3 + dest_pitch * (v20->rect.top - rect->top) + v20->rect.left - rect->left,
                                 dest_pitch);
                         }
@@ -1519,28 +866,25 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                         if (_buffering) {
                             if (window->flags & WINDOW_TRANSPARENT) {
                                 window->blitProc(
-                                    srcPtr,
+                                    window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
                                     v20->rect.right - v20->rect.left + 1,
                                     v20->rect.bottom - v20->rect.top + 1,
-                                    window->pitch,
-                                    screenBufferAt(v20->rect.left, v20->rect.top),
-                                    screenPitch);
+                                    window->width,
+                                    _screen_buffer + v20->rect.top * screenWidth + v20->rect.left,
+                                    screenWidth);
                             } else {
                                 blitBufferToBuffer(
-                                    srcPtr,
+                                    window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
                                     v20->rect.right - v20->rect.left + 1,
                                     v20->rect.bottom - v20->rect.top + 1,
-                                    window->pitch,
-                                    screenBufferAt(v20->rect.left, v20->rect.top),
-                                    screenPitch);
-                            }
-                            if (gTrueColorCompositorEnabled && _true_color_screen_buffer != nullptr) {
-                                blitWindowRectToTrueColorScreen(window, v20->rect);
+                                    window->width,
+                                    _screen_buffer + v20->rect.top * screenWidth + v20->rect.left,
+                                    screenWidth);
                             }
                         } else {
                             _scr_blit(
-                                srcPtr,
-                                window->pitch,
+                                window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
+                                window->width,
                                 v20->rect.bottom - v20->rect.top + 1,
                                 0,
                                 0,
@@ -1575,11 +919,8 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                                     width,
                                     height,
                                     width,
-                                    screenBufferAt(v16->rect.left, v16->rect.top),
-                                    screenPitch);
-                                if (gTrueColorCompositorEnabled && _true_color_screen_buffer != nullptr) {
-                                    blitWindowRectToTrueColorScreen(window, v16->rect);
-                                }
+                                    _screen_buffer + v16->rect.top * screenWidth + v16->rect.left,
+                                    screenWidth);
                             } else {
                                 _scr_blit(buf, width, height, 0, 0, width, height, v16->rect.left, v16->rect.top);
                             }
@@ -1596,20 +937,16 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                 v24 = v23->next;
 
                 if (_buffering && !a3) {
-                    if (gTrueColorCompositorEnabled) {
-                        presentScreenRectToTexture(v23->rect);
-                    } else {
-                        _scr_blit(
-                            screenBufferAt(v23->rect.left, v23->rect.top),
-                            screenPitch,
-                            v23->rect.bottom - v23->rect.top + 1,
-                            0,
-                            0,
-                            v23->rect.right - v23->rect.left + 1,
-                            v23->rect.bottom - v23->rect.top + 1,
-                            v23->rect.left,
-                            v23->rect.top);
-                    }
+                    _scr_blit(
+                        _screen_buffer + v23->rect.left + screenWidth * v23->rect.top,
+                        screenWidth,
+                        v23->rect.bottom - v23->rect.top + 1,
+                        0,
+                        0,
+                        v23->rect.right - v23->rect.left + 1,
+                        v23->rect.bottom - v23->rect.top + 1,
+                        v23->rect.left,
+                        v23->rect.top);
                 }
 
                 _rect_free(v23);
@@ -1634,38 +971,6 @@ void windowRefreshAll(Rect* rect)
     if (gWindowSystemInitialized) {
         _refresh_all(rect, nullptr);
     }
-}
-
-void windowNotifyPaletteChanged()
-{
-    if (!gWindowSystemInitialized || !gTrueColorCompositorEnabled) {
-        return;
-    }
-
-    const unsigned char* palette = _getSystemPalette();
-    if (palette != nullptr) {
-        updateTrueColorPaletteDeviation(palette);
-    }
-
-    Rect rect;
-    rect.left = 0;
-    rect.top = 0;
-    rect.right = screenGetWidth() - 1;
-    rect.bottom = screenGetHeight() - 1;
-
-    _refresh_all(&rect, nullptr);
-    renderPresent();
-}
-
-void windowTrueColorSetPaletteBaseline(const unsigned char* palette)
-{
-    if (palette == nullptr) {
-        return;
-    }
-
-    memcpy(gTrueColorPaletteBaseline, palette, sizeof(gTrueColorPaletteBaseline));
-    gTrueColorPaletteBaselineInitialized = true;
-    updateTrueColorPaletteDeviation(palette);
 }
 
 // 0x4D75B0
@@ -1846,46 +1151,6 @@ unsigned char* windowGetBuffer(int win)
     return window->buffer;
 }
 
-int windowGetPitch(int win)
-{
-    Window* window = windowGetWindow(win);
-
-    if (!gWindowSystemInitialized) {
-        return 0;
-    }
-
-    if (window == nullptr) {
-        return 0;
-    }
-
-    return window->pitch;
-}
-
-unsigned char* windowGetScreenBuffer()
-{
-    return _screen_buffer;
-}
-
-int windowGetScreenPitch()
-{
-    if (_screen_buffer == nullptr) {
-        return 0;
-    }
-
-    return screenGetWidth() * pixelFormatBytesPerPixel(gWindowPixelFormat);
-}
-
-PixelFormat windowGetPixelFormat(int win)
-{
-    Window* window = windowGetWindow(win);
-
-    if (!gWindowSystemInitialized || window == nullptr) {
-        return gWindowPixelFormat;
-    }
-
-    return window->pixelFormat;
-}
-
 // 0x4D78CC
 int windowGetAtPoint(int x, int y)
 {
@@ -1949,46 +1214,6 @@ int windowGetRect(int win, Rect* rect)
     rectCopy(rect, &(window->rect));
 
     return 0;
-}
-
-bool windowHasTrueColorOverlay(int win)
-{
-    Window* window = windowGetWindow(win);
-    if (window == nullptr) {
-        return false;
-    }
-
-    return windowHasTrueColorOverlay(window);
-}
-
-uint32_t* windowGetTrueColorOverlay(int win)
-{
-    Window* window = windowGetWindow(win);
-    if (window == nullptr || !windowHasTrueColorOverlay(window)) {
-        return nullptr;
-    }
-
-    return window->trueColorOverlay;
-}
-
-unsigned char* windowGetTrueColorMask(int win)
-{
-    Window* window = windowGetWindow(win);
-    if (window == nullptr || !windowHasTrueColorOverlay(window)) {
-        return nullptr;
-    }
-
-    return window->trueColorMask;
-}
-
-void windowClearTrueColorRegion(int win, int left, int top, int width, int height)
-{
-    Window* window = windowGetWindow(win);
-    if (window == nullptr) {
-        return;
-    }
-
-    windowTrueColorClearRegion(window, left, top, width, height);
 }
 
 // 0x4D797C
@@ -2072,16 +1297,11 @@ void _win_text(int win, char** fileNameList, int fileNameListLength, int maxWidt
         return;
     }
 
-    if (windowBytesPerPixel(window) != 1) {
-        // TODO: Implement true color text list rendering.
-        return;
-    }
-
-    int pitch = window->pitch;
-    unsigned char* ptr = windowBufferAt(window, x, y);
+    int width = window->width;
+    unsigned char* ptr = window->buffer + y * width + x;
     int lineHeight = fontGetLineHeight();
 
-    int step = pitch * lineHeight;
+    int step = width * lineHeight;
     int v1 = lineHeight / 2;
     int v2 = v1 + 1;
     int v3 = maxWidth - 1;
@@ -2092,8 +1312,8 @@ void _win_text(int win, char** fileNameList, int fileNameListLength, int maxWidt
             windowDrawText(win, fileName, maxWidth, x, y, flags);
         } else {
             if (maxWidth != 0) {
-                bufferDrawLine(ptr, pitch, 0, v1, v3, v1, _colorTable[_GNW_wcolor[2]]);
-                bufferDrawLine(ptr, pitch, 0, v2, v3, v2, _colorTable[_GNW_wcolor[1]]);
+                bufferDrawLine(ptr, width, 0, v1, v3, v1, _colorTable[_GNW_wcolor[2]]);
+                bufferDrawLine(ptr, width, 0, v2, v3, v2, _colorTable[_GNW_wcolor[1]]);
             }
         }
 
@@ -3252,45 +2472,24 @@ void _button_draw(Button* button, Window* window, unsigned char* data, bool draw
         }
 
         if (data) {
-            int buttonWidth = button->rect.right - button->rect.left + 1;
-            int srcX = v3.left - button->rect.left;
-            int srcY = v3.top - button->rect.top;
-            int blitWidth = v3.right - v3.left + 1;
-            int blitHeight = v3.bottom - v3.top + 1;
-            unsigned char* src = data + srcY * buttonWidth + srcX;
-
-            if (blitWidth > 0 && blitHeight > 0) {
-                if (gTrueColorCompositorEnabled) {
-                    windowTrueColorClearRegion(window, v3.left, v3.top, blitWidth, blitHeight);
-                }
-
-                if (windowIsIndexed(window)) {
-                    unsigned char* dest = windowBufferAt(window, v3.left, v3.top);
-                    if ((button->flags & BUTTON_FLAG_TRANSPARENT) != 0) {
-                        blitBufferToBufferTrans(src, blitWidth, blitHeight, buttonWidth, dest, window->pitch);
-                    } else {
-                        blitBufferToBuffer(src, blitWidth, blitHeight, buttonWidth, dest, window->pitch);
-                    }
+            if (!draw) {
+                int width = button->rect.right - button->rect.left + 1;
+                if ((button->flags & BUTTON_FLAG_TRANSPARENT) != 0) {
+                    blitBufferToBufferTrans(
+                        data + (v3.top - button->rect.top) * width + v3.left - button->rect.left,
+                        v3.right - v3.left + 1,
+                        v3.bottom - v3.top + 1,
+                        width,
+                        window->buffer + window->width * v3.top + v3.left,
+                        window->width);
                 } else {
-                    bool transparent = (button->flags & BUTTON_FLAG_TRANSPARENT) != 0;
-                    blitIndexedImageToTrueColor(window, src, buttonWidth, blitWidth, blitHeight, v3.left, v3.top, transparent);
-                }
-
-                if (gTrueColorCompositorEnabled && windowHasTrueColorOverlay(window)) {
-                    HdTrueColorFrameView view;
-                    if (artLookupRegisteredTrueColorFrame(data, view)) {
-                        int availableWidth = view.width - srcX;
-                        int availableHeight = view.height - srcY;
-                        if (availableWidth > 0 && availableHeight > 0) {
-                            int copyWidth = std::min(blitWidth, availableWidth);
-                            int copyHeight = std::min(blitHeight, availableHeight);
-                            if (copyWidth > 0 && copyHeight > 0) {
-                                const uint32_t* trueColorSrc = view.pixels + srcY * view.width + srcX;
-                                bool transparent = (button->flags & BUTTON_FLAG_TRANSPARENT) != 0;
-                                windowTrueColorBlit(window, trueColorSrc, view.width, copyWidth, copyHeight, v3.left, v3.top, transparent);
-                            }
-                        }
-                    }
+                    blitBufferToBuffer(
+                        data + (v3.top - button->rect.top) * width + v3.left - button->rect.left,
+                        v3.right - v3.left + 1,
+                        v3.bottom - v3.top + 1,
+                        width,
+                        window->buffer + window->width * v3.top + v3.left,
+                        window->width);
                 }
             }
 

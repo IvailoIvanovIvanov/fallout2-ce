@@ -31,7 +31,6 @@ namespace fallout {
 #define GAME_CONFIG_TIMES_RUN_KEY "times_run"
 #define GAME_CONFIG_USE_HD_ART_KEY "use_hd_art"
 #define GAME_CONFIG_HD_ART_PATH_KEY "hd_art_path"
-#define GAME_CONFIG_TRUE_COLOR_RENDERER_KEY "true_color_renderer"
 #define GAME_CONFIG_GAME_DIFFICULTY_KEY "game_difficulty"
 #define GAME_CONFIG_RUNNING_BURNING_GUY_KEY "running_burning_guy"
 #define GAME_CONFIG_COMBAT_DIFFICULTY_KEY "combat_difficulty"

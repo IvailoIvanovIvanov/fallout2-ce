@@ -59,7 +59,6 @@ static void settingsFromConfig()
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_FREE_SPACE_KEY, settings.system.free_space);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_USE_HD_ART_KEY, settings.system.use_hd_art);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_HD_ART_PATH_KEY, settings.system.hd_art_path);
-    settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_TRUE_COLOR_RENDERER_KEY, settings.system.use_true_color_renderer);
 
     settingsRead(GAME_CONFIG_PREFERENCES_KEY, GAME_CONFIG_GAME_DIFFICULTY_KEY, settings.preferences.game_difficulty);
     settingsRead(GAME_CONFIG_PREFERENCES_KEY, GAME_CONFIG_COMBAT_DIFFICULTY_KEY, settings.preferences.combat_difficulty);
@@ -136,7 +135,6 @@ static void settingsToConfig()
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_FREE_SPACE_KEY, settings.system.free_space);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_USE_HD_ART_KEY, settings.system.use_hd_art);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_HD_ART_PATH_KEY, settings.system.hd_art_path);
-    settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_TRUE_COLOR_RENDERER_KEY, settings.system.use_true_color_renderer);
 
     settingsWrite(GAME_CONFIG_PREFERENCES_KEY, GAME_CONFIG_GAME_DIFFICULTY_KEY, settings.preferences.game_difficulty);
     settingsWrite(GAME_CONFIG_PREFERENCES_KEY, GAME_CONFIG_COMBAT_DIFFICULTY_KEY, settings.preferences.combat_difficulty);
