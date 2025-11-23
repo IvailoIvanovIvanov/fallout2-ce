@@ -608,6 +608,7 @@ void handleWindowSizeChanged()
 void renderPresent()
 {
     syncPhysicalSizeWithRenderer();
+    windowPresentVirtualScreen();
 
     LogicalSpace logicalSpace = displayScalerGetLogicalSpace();
     SDL_Rect srcRect;

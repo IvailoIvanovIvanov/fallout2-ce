@@ -7,6 +7,7 @@
 #include <SDL.h>
 
 #include "display_scaler.h"
+#include "diagnostics.h"
 #include "color.h"
 #include "debug.h"
 #include "dinput.h"
@@ -44,6 +45,9 @@ static int _win_group_check_buttons(int buttonCount, int* btns, int maxChecked, 
 static int _button_check_group(Button* button);
 static void _button_draw(Button* button, Window* window, unsigned char* data, bool draw, Rect* bound, bool sound);
 static void _GNW_button_refresh(Window* window, Rect* rect);
+static void virtualScreenResetDirty();
+static void virtualScreenInvalidateRect(const Rect* rect);
+static void virtualScreenInvalidateAll();
 
 // 0x50FA30
 static char _path_patches[] = "";
@@ -73,6 +77,8 @@ int _GNW_wcolor[6] = {
 static unsigned char* _screen_buffer = nullptr;
 static int _screen_buffer_pitch = 0;
 static bool gVirtualScreenEnabled = false;
+static Rect gVirtualScreenDirtyRect = { 0, 0, -1, -1 };
+static bool gVirtualScreenDirty = false;
 
 // 0x51E400
 static bool _insideWinExit = false;
@@ -112,6 +118,58 @@ static void* _GNW_texture;
 
 // 0x6ADF40
 static ButtonGroup gButtonGroups[BUTTON_GROUP_LIST_CAPACITY];
+
+static void virtualScreenResetDirty()
+{
+    gVirtualScreenDirtyRect.left = 0;
+    gVirtualScreenDirtyRect.top = 0;
+    gVirtualScreenDirtyRect.right = -1;
+    gVirtualScreenDirtyRect.bottom = -1;
+    gVirtualScreenDirty = false;
+}
+
+static void virtualScreenInvalidateRect(const Rect* rect)
+{
+    if (!gVirtualScreenEnabled || rect == nullptr) {
+        return;
+    }
+
+    Rect clipped;
+    rectCopy(&clipped, rect);
+    const Rect& bounds = displayScalerGetLogicalBounds();
+    if (rectIntersection(&clipped, &bounds, &clipped) == -1) {
+        return;
+    }
+
+    if (!gVirtualScreenDirty) {
+        gVirtualScreenDirtyRect = clipped;
+        gVirtualScreenDirty = true;
+        return;
+    }
+
+    if (clipped.left < gVirtualScreenDirtyRect.left) {
+        gVirtualScreenDirtyRect.left = clipped.left;
+    }
+    if (clipped.top < gVirtualScreenDirtyRect.top) {
+        gVirtualScreenDirtyRect.top = clipped.top;
+    }
+    if (clipped.right > gVirtualScreenDirtyRect.right) {
+        gVirtualScreenDirtyRect.right = clipped.right;
+    }
+    if (clipped.bottom > gVirtualScreenDirtyRect.bottom) {
+        gVirtualScreenDirtyRect.bottom = clipped.bottom;
+    }
+}
+
+static void virtualScreenInvalidateAll()
+{
+    if (!gVirtualScreenEnabled) {
+        return;
+    }
+
+    Rect bounds = displayScalerGetLogicalBounds();
+    virtualScreenInvalidateRect(&bounds);
+}
 
 // 0x4D5C30
 int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitProc* videoSystemExitProc, int a3)
@@ -195,6 +253,10 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
 
     gVirtualScreenEnabled = settings.system.virtual_adapter && _screen_buffer != nullptr;
     _buffering = gVirtualScreenEnabled;
+    virtualScreenResetDirty();
+    if (gVirtualScreenEnabled) {
+        virtualScreenInvalidateAll();
+    }
     _doing_refresh_all = 0;
 
     if (!_initColors()) {
@@ -300,6 +362,7 @@ void windowManagerExit(void)
             _screen_buffer = nullptr;
             _screen_buffer_pitch = 0;
             gVirtualScreenEnabled = false;
+            virtualScreenResetDirty();
 
             if (gVideoSystemExitProc != nullptr) {
                 gVideoSystemExitProc();
@@ -801,6 +864,8 @@ void windowRefresh(int win)
     }
 
     _GNW_win_refresh(window, &(window->rect), nullptr);
+
+    windowPresentVirtualScreen();
 }
 
 // 0x4D6F80
@@ -821,6 +886,7 @@ void windowRefreshRect(int win, const Rect* rect)
     rectOffset(&newRect, window->rect.left, window->rect.top);
 
     _GNW_win_refresh(window, &newRect, nullptr);
+    windowPresentVirtualScreen();
 }
 
 // 0x4D6FD8
@@ -957,16 +1023,20 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                 v24 = v23->next;
 
                 if (_buffering && !a3) {
-                    _scr_blit(
-                        _screen_buffer + v23->rect.left + screenWidth * v23->rect.top,
-                        screenWidth,
-                        v23->rect.bottom - v23->rect.top + 1,
-                        0,
-                        0,
-                        v23->rect.right - v23->rect.left + 1,
-                        v23->rect.bottom - v23->rect.top + 1,
-                        v23->rect.left,
-                        v23->rect.top);
+                    if (gVirtualScreenEnabled) {
+                        virtualScreenInvalidateRect(&(v23->rect));
+                    } else {
+                        _scr_blit(
+                            _screen_buffer + v23->rect.left + screenWidth * v23->rect.top,
+                            screenWidth,
+                            v23->rect.bottom - v23->rect.top + 1,
+                            0,
+                            0,
+                            v23->rect.right - v23->rect.left + 1,
+                            v23->rect.bottom - v23->rect.top + 1,
+                            v23->rect.left,
+                            v23->rect.top);
+                    }
                 }
 
                 _rect_free(v23);
@@ -1136,6 +1206,8 @@ void _refresh_all(Rect* rect, unsigned char* a2)
                 mouseShowCursor();
             }
         }
+
+        windowPresentVirtualScreen();
     }
 }
 
@@ -2606,6 +2678,46 @@ int windowGetVirtualScreenPitch()
 bool windowIsVirtualScreenEnabled()
 {
     return gVirtualScreenEnabled;
+}
+
+void windowPresentVirtualScreen()
+{
+    if (!gVirtualScreenEnabled || !gVirtualScreenDirty || _screen_buffer == nullptr) {
+        return;
+    }
+
+    Rect rect = gVirtualScreenDirtyRect;
+    virtualScreenResetDirty();
+
+    int width = rectGetWidth(&rect);
+    int height = rectGetHeight(&rect);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        diagnosticsLog(
+            DiagnosticsLevel::Trace,
+            "SCALER",
+            "virtual_present (%d,%d %dx%d)",
+            rect.left,
+            rect.top,
+            width,
+            height);
+    }
+
+    if (_scr_blit != nullptr) {
+        _scr_blit(
+            _screen_buffer,
+            _screen_buffer_pitch,
+            height,
+            rect.left,
+            rect.top,
+            width,
+            height,
+            rect.left,
+            rect.top);
+    }
 }
 
 // Legacy true-color compatibility layer ------------------------------------
