@@ -420,6 +420,20 @@ int artGetFidgetCount(int headFid)
     return 0;
 }
 
+static void artTraceRenderOp(int fid, unsigned char* dest, int pitch, int width, int height)
+{
+    if (dest == nullptr || pitch <= 0 || width <= 0 || height <= 0) {
+        return;
+    }
+
+    Rect rect;
+    if (!windowResolveBufferRect(dest, pitch, width, height, &rect)) {
+        return;
+    }
+
+    renderTraceRecord(RenderTraceLayer::Ui, fid, 0, 0, rect, -1, rect.bottom);
+}
+
 // 0x418FFC
 void artRender(int fid, unsigned char* dest, int width, int height, int pitch)
 {

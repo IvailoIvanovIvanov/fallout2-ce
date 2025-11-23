@@ -1481,11 +1481,12 @@ static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light)
     tileRect.bottom = y + tileHeight - 1;
 
     if (rectIntersection(&tileRect, rect, &tileRect) == 0) {
+        renderTraceRecord(RenderTraceLayer::TileRoof, fid, 0, 0, tileRect, gElevation, tileRect.bottom);
+
         unsigned char* tileFrmBuffer = artGetFrameData(tileFrm, 0, 0);
         tileFrmBuffer += tileWidth * (tileRect.top - y) + (tileRect.left - x);
 
-                if (rectIntersection(&tileRect, rect, &tileRect) == 0) {
-                    renderTraceRecord(RenderTraceLayer::TileRoof, fid, 0, 0, tileRect, gElevation, tileRect.bottom);
+        CacheEntry* eggFrmHandle;
         Art* eggFrm = artLock(gEgg->fid, &eggFrmHandle);
         if (eggFrm != nullptr) {
             int eggWidth = artGetWidth(eggFrm, 0, 0);
