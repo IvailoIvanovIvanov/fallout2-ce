@@ -14,6 +14,7 @@
 #include "interface.h"
 #include "memory.h"
 #include "mouse.h"
+#include "virtual_input.h"
 #include "win32.h"
 #include "window_manager.h"
 #include "window_manager_private.h"
@@ -753,6 +754,7 @@ void renderPresent()
     }
 
     SDL_RenderCopy(gSdlRenderer, gSdlTexture, &srcRect, &destRect);
+    virtualInputRenderOverlay(gSdlRenderer);
     SDL_RenderPresent(gSdlRenderer);
 }
 

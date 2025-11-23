@@ -32,9 +32,6 @@ void mouseDeviceFree();
 bool keyboardDeviceInit();
 void keyboardDeviceFree();
 
-void handleMouseEvent(SDL_Event* event);
-void handleTouchEvent(SDL_Event* event);
-
 } // namespace fallout
 
 #endif /* DINPUT_H */

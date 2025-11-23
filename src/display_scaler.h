@@ -15,6 +15,17 @@ struct PhysicalSpace {
     int height;
 };
 
+struct DisplayScalerVirtualMapping {
+    double exactX;
+    double exactY;
+    bool clampedLowX;
+    bool clampedHighX;
+    bool clampedLowY;
+    bool clampedHighY;
+    bool insideViewport;
+    Rect viewport;
+};
+
 void displayScalerInit(int logicalWidth, int logicalHeight);
 void displayScalerSetLogicalSize(int logicalWidth, int logicalHeight);
 void displayScalerSetIntegerScaling(bool enabled);
@@ -30,6 +41,7 @@ Point displayScalerLogicalToPhysical(const Point& logicalPoint);
 Point displayScalerPhysicalToLogical(const Point& physicalPoint);
 Rect displayScalerLogicalToPhysical(const Rect& logicalRect);
 Rect displayScalerPhysicalToLogical(const Rect& physicalRect);
+DisplayScalerVirtualMapping displayScalerMapPointToVirtual(int physicalX, int physicalY);
 
 } // namespace fallout
 

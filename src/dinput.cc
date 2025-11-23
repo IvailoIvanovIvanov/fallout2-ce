@@ -6,11 +6,10 @@
 #include "display_scaler.h"
 #include "diagnostics.h"
 #include "svga.h"
+#include "virtual_input.h"
 
 namespace fallout {
 
-static int gMouseWheelDeltaX = 0;
-static int gMouseWheelDeltaY = 0;
 static bool gMouseHasPosition = false;
 static double gMouseLogicalExactX = 0.0;
 static double gMouseLogicalExactY = 0.0;
@@ -143,6 +142,7 @@ bool mouseDeviceAcquire()
     gMouseLogicalRemainderY = 0.0;
     gHasMouseMetrics = false;
     gHasClampSnapshot = false;
+    virtualInputReset();
     return true;
 }
 
@@ -156,6 +156,7 @@ bool mouseDeviceUnacquire()
     gMouseLogicalRemainderY = 0.0;
     gHasMouseMetrics = false;
     gHasClampSnapshot = false;
+    virtualInputReset();
     return true;
 }
 
@@ -236,51 +237,9 @@ bool mouseDeviceGetData(MouseData* mouseState)
     physicalX = std::clamp(physicalX, 0, std::max(0, physicalSpace.width - 1));
     physicalY = std::clamp(physicalY, 0, std::max(0, physicalSpace.height - 1));
 
-    const Rect& viewport = displayScalerGetPhysicalViewport();
-    LogicalSpace logicalSpace = displayScalerGetLogicalSpace();
-    double inverseScale = displayScalerGetInverseScale();
-
-    double localX = static_cast<double>(physicalX - viewport.left);
-    double localY = static_cast<double>(physicalY - viewport.top);
-
-    double rawLogicalExactX = localX * inverseScale;
-    double rawLogicalExactY = localY * inverseScale;
-
-    double logicalMaxX = static_cast<double>(logicalSpace.width - 1);
-    double logicalMaxY = static_cast<double>(logicalSpace.height - 1);
-
-    bool clampedLowX = rawLogicalExactX <= 0.0;
-    bool clampedHighX = rawLogicalExactX >= logicalMaxX;
-    bool clampedLowY = rawLogicalExactY <= 0.0;
-    bool clampedHighY = rawLogicalExactY >= logicalMaxY;
-
-    bool hitViewportLeft = physicalX <= viewport.left;
-    bool hitViewportRight = physicalX >= viewport.right;
-    bool hitViewportTop = physicalY <= viewport.top;
-    bool hitViewportBottom = physicalY >= viewport.bottom;
-
-    double logicalExactX = std::clamp(rawLogicalExactX, 0.0, logicalMaxX);
-    double logicalExactY = std::clamp(rawLogicalExactY, 0.0, logicalMaxY);
-
-    if (hitViewportLeft) {
-        logicalExactX = 0.0;
-        clampedLowX = true;
-        clampedHighX = false;
-    } else if (hitViewportRight) {
-        logicalExactX = logicalMaxX;
-        clampedHighX = true;
-        clampedLowX = false;
-    }
-
-    if (hitViewportTop) {
-        logicalExactY = 0.0;
-        clampedLowY = true;
-        clampedHighY = false;
-    } else if (hitViewportBottom) {
-        logicalExactY = logicalMaxY;
-        clampedHighY = true;
-        clampedLowY = false;
-    }
+    DisplayScalerVirtualMapping mapping = displayScalerMapPointToVirtual(physicalX, physicalY);
+    double logicalExactX = mapping.exactX;
+    double logicalExactY = mapping.exactY;
 
     if (!gMouseHasPosition) {
         gMouseLogicalExactX = logicalExactX;
@@ -292,11 +251,11 @@ bool mouseDeviceGetData(MouseData* mouseState)
         mouseState->y = 0;
         logMousePrimed(logicalExactX, logicalExactY, physicalX, physicalY);
     } else {
-        if (clampedLowX || clampedHighX) {
+        if (mapping.clampedLowX || mapping.clampedHighX) {
             gMouseLogicalRemainderX = 0.0;
         }
 
-        if (clampedLowY || clampedHighY) {
+        if (mapping.clampedLowY || mapping.clampedHighY) {
             gMouseLogicalRemainderY = 0.0;
         }
 
@@ -306,8 +265,8 @@ bool mouseDeviceGetData(MouseData* mouseState)
         int deltaX = static_cast<int>(std::round(deltaXExact));
         int deltaY = static_cast<int>(std::round(deltaYExact));
 
-        gMouseLogicalRemainderX = (clampedLowX || clampedHighX) ? 0.0 : (deltaXExact - deltaX);
-        gMouseLogicalRemainderY = (clampedLowY || clampedHighY) ? 0.0 : (deltaYExact - deltaY);
+        gMouseLogicalRemainderX = (mapping.clampedLowX || mapping.clampedHighX) ? 0.0 : (deltaXExact - deltaX);
+        gMouseLogicalRemainderY = (mapping.clampedLowY || mapping.clampedHighY) ? 0.0 : (deltaYExact - deltaY);
 
         gMouseLogicalExactX = logicalExactX;
         gMouseLogicalExactY = logicalExactY;
@@ -316,16 +275,28 @@ bool mouseDeviceGetData(MouseData* mouseState)
         mouseState->y = deltaY;
     }
 
-    MouseClampSnapshot clampSnapshot = { clampedLowX, clampedHighX, clampedLowY, clampedHighY };
+    MouseClampSnapshot clampSnapshot = {
+        mapping.clampedLowX,
+        mapping.clampedHighX,
+        mapping.clampedLowY,
+        mapping.clampedHighY,
+    };
     logMouseClampChange(clampSnapshot, logicalExactX, logicalExactY);
 
     mouseState->buttons[0] = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
     mouseState->buttons[1] = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
-    mouseState->wheelX = gMouseWheelDeltaX;
-    mouseState->wheelY = gMouseWheelDeltaY;
+    virtualInputConsumeWheelDeltas(&mouseState->wheelX, &mouseState->wheelY);
 
-    gMouseWheelDeltaX = 0;
-    gMouseWheelDeltaY = 0;
+    VirtualMouseMappingSample overlaySample = {};
+    overlaySample.windowX = clampedWindowX;
+    overlaySample.windowY = clampedWindowY;
+    overlaySample.physicalX = physicalX;
+    overlaySample.physicalY = physicalY;
+    overlaySample.virtualExactX = logicalExactX;
+    overlaySample.virtualExactY = logicalExactY;
+    overlaySample.insideViewport = mapping.insideViewport;
+    overlaySample.viewport = mapping.viewport;
+    virtualInputPublishMouseMapping(overlaySample);
 
     return true;
 }
@@ -413,17 +384,6 @@ bool keyboardDeviceInit()
 // 0x4E0874
 void keyboardDeviceFree()
 {
-}
-
-void handleMouseEvent(SDL_Event* event)
-{
-    // Mouse wheel events are accumulated here; absolute position is read in
-    // `mouseDeviceGetData` via `SDL_GetMouseState` each frame.
-
-    if (event->type == SDL_MOUSEWHEEL) {
-        gMouseWheelDeltaX += event->wheel.x;
-        gMouseWheelDeltaY += event->wheel.y;
-    }
 }
 
 } // namespace fallout

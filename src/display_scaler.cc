@@ -251,4 +251,58 @@ Rect displayScalerPhysicalToLogical(const Rect& physicalRect)
     return result;
 }
 
+DisplayScalerVirtualMapping displayScalerMapPointToVirtual(int physicalX, int physicalY)
+{
+    DisplayScalerVirtualMapping mapping = {};
+    mapping.viewport = gPhysicalViewport;
+
+    const Rect& viewport = gPhysicalViewport;
+    const LogicalSpace logicalSpace = gLogicalSpace;
+
+    const double logicalMaxX = static_cast<double>(logicalSpace.width - 1);
+    const double logicalMaxY = static_cast<double>(logicalSpace.height - 1);
+
+    const bool hitViewportLeft = physicalX <= viewport.left;
+    const bool hitViewportRight = physicalX >= viewport.right;
+    const bool hitViewportTop = physicalY <= viewport.top;
+    const bool hitViewportBottom = physicalY >= viewport.bottom;
+    mapping.insideViewport = !hitViewportLeft && !hitViewportRight && !hitViewportTop && !hitViewportBottom;
+
+    const double localX = static_cast<double>(physicalX - viewport.left);
+    const double localY = static_cast<double>(physicalY - viewport.top);
+
+    const double rawLogicalExactX = localX * gInvScale;
+    const double rawLogicalExactY = localY * gInvScale;
+
+    mapping.exactX = std::clamp(rawLogicalExactX, 0.0, logicalMaxX);
+    mapping.exactY = std::clamp(rawLogicalExactY, 0.0, logicalMaxY);
+
+    mapping.clampedLowX = mapping.exactX <= 0.0;
+    mapping.clampedHighX = mapping.exactX >= logicalMaxX;
+    mapping.clampedLowY = mapping.exactY <= 0.0;
+    mapping.clampedHighY = mapping.exactY >= logicalMaxY;
+
+    if (hitViewportLeft) {
+        mapping.exactX = 0.0;
+        mapping.clampedLowX = true;
+        mapping.clampedHighX = false;
+    } else if (hitViewportRight) {
+        mapping.exactX = logicalMaxX;
+        mapping.clampedHighX = true;
+        mapping.clampedLowX = false;
+    }
+
+    if (hitViewportTop) {
+        mapping.exactY = 0.0;
+        mapping.clampedLowY = true;
+        mapping.clampedHighY = false;
+    } else if (hitViewportBottom) {
+        mapping.exactY = logicalMaxY;
+        mapping.clampedHighY = true;
+        mapping.clampedLowY = false;
+    }
+
+    return mapping;
+}
+
 } // namespace fallout

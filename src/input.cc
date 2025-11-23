@@ -16,6 +16,7 @@
 #include "svga.h"
 #include "text_font.h"
 #include "touch.h"
+#include "virtual_input.h"
 #include "win32.h"
 #include "window_manager.h"
 
@@ -972,15 +973,18 @@ void _GNW95_process_message()
         case SDL_MOUSEBUTTONDOWN:
         case SDL_MOUSEBUTTONUP:
         case SDL_MOUSEWHEEL:
-            handleMouseEvent(&e);
+            virtualInputCaptureEvent(&e);
             break;
         case SDL_FINGERDOWN:
+            virtualInputCaptureEvent(&e);
             touch_handle_start(&(e.tfinger));
             break;
         case SDL_FINGERMOTION:
+            virtualInputCaptureEvent(&e);
             touch_handle_move(&(e.tfinger));
             break;
         case SDL_FINGERUP:
+            virtualInputCaptureEvent(&e);
             touch_handle_end(&(e.tfinger));
             break;
         case SDL_KEYDOWN:

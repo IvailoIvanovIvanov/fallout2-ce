@@ -227,6 +227,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/text_font.cc"
     "src/text_font.h"
     "src/text_object.cc"
+    "src/virtual_input.cc"
+    "src/virtual_input.h"
     "src/text_object.h"
     "src/tile.cc"
     "src/tile.h"

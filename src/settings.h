@@ -75,6 +75,7 @@ struct DebugSettings {
     bool show_script_messages = false;
     bool show_load_info = false;
     bool output_map_data_info = false;
+    bool input_overlay = false;
 };
 
 struct MapperSettings {

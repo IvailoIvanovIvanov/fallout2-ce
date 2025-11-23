@@ -35,12 +35,12 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 	- **Implementation notes:** `windowPresentVirtualScreen()` now copies the dirty rect from `_screen_buffer` straight into the ARGB8888 SDL texture surface via `blitIndexedRectToTexture`, using the shared palette cache that `directDrawSetPalette*` maintains. Every flush logs `virtual_present virtual=(...) viewport=(...)` so we can correlate 640×480 updates with the physical letterboxed viewport.
 
 ## Stage 2 – Tame the Rad-Input (Coordinate Translation)
-- [ ] **S2.1** Capture actual window inputs at native resolution (mouse, wheel, touch).
-	- **TODO:** wire SDL raw mouse events into a new `virtualInputCapture` shim before `game_mouse` touches them.
-- [ ] **S2.2** Normalize and remap to 640x480 coordinates before they reach `game_mouse` / `input`.
-	- **TODO:** expose `displayScalerMapPointToVirtual()` that handles integer scaling, aspect padding, and hands back vault-space coords.
-- [ ] **S2.3** Add diagnostics switches to visualize both coordinate spaces for sanity checks.
-	- **TODO:** draw a translucent overlay highlighting the cursor’s raw vs virtual positions when `debug_input_overlay=1`.
+- [x] **S2.1** Capture actual window inputs at native resolution (mouse, wheel, touch).
+	- **Implementation notes:** `_GNW95_process_message` now funnels **every** SDL mouse/touch packet into `virtualInputCaptureEvent`, which caches native window coordinates plus wheel deltas the moment they arrive. The new `virtual_input.*` shim resets alongside `mouseDeviceAcquire`, so the Vault Dweller’s cursor always starts fresh after focus changes.
+- [x] **S2.2** Normalize and remap to 640x480 coordinates before they reach `game_mouse` / `input`.
+	- **Implementation notes:** `displayScalerMapPointToVirtual()` centralizes physical→vault math (letterbox padding, clamps, inverse scale). `mouseDeviceGetData` consumes it for delta math and publishes `VirtualMouseMappingSample`s so downstream systems see the same 640×480 truth as the diagnostics overlay.
+- [x] **S2.3** Add diagnostics switches to visualize both coordinate spaces for sanity checks.
+	- **Implementation notes:** Flip `[debug] debug_input_overlay=1` in `fallout2.cfg` to summon the Neon Overseer Overlay—red crosshairs track raw physical hits, green marks the remapped vault coords, and the viewport outline glows teal. Everything renders just before `SDL_RenderPresent`, so what you see is exactly what the wasteland gets.
 
 ## Stage 3 – Scout the Draw Calls
 - [ ] **S3.1** Instrument `artRender`/tile/UI paths to log which fid, frame, and layer rendered where in the virtual buffer.
