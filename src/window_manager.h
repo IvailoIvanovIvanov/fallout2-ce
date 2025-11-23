@@ -2,6 +2,7 @@
 #define WINDOW_MANAGER_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "geometry.h"
 
@@ -170,6 +171,19 @@ void windowRefreshRect(int win, const Rect* rect);
 void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3);
 void windowRefreshAll(Rect* rect);
 void _win_get_mouse_buf(unsigned char* a1);
+unsigned char* windowGetVirtualScreenBuffer();
+int windowGetVirtualScreenPitch();
+bool windowIsVirtualScreenEnabled();
+// Legacy true-color/true-screen helpers kept for compatibility while the
+// virtual adapter is rolled out. They currently return safe defaults.
+void windowTrueColorSetPaletteBaseline(const unsigned char* palette);
+bool isTrueColorRendererActive();
+unsigned char* windowGetScreenBuffer();
+int windowGetScreenPitch();
+bool windowHasTrueColorOverlay(int win);
+uint32_t* windowGetTrueColorOverlay(int win);
+unsigned char* windowGetTrueColorMask(int win);
+void windowClearTrueColorRegion(int win, int left, int top, int width, int height);
 Window* windowGetWindow(int win);
 unsigned char* windowGetBuffer(int win);
 int windowGetAtPoint(int x, int y);

@@ -57,6 +57,7 @@ static void settingsFromConfig()
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_HASHING_KEY, settings.system.hashing);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_SPLASH_KEY, settings.system.splash);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_FREE_SPACE_KEY, settings.system.free_space);
+    settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_VIRTUAL_ADAPTER_KEY, settings.system.virtual_adapter);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_USE_HD_ART_KEY, settings.system.use_hd_art);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_HD_ART_PATH_KEY, settings.system.hd_art_path);
 
@@ -133,6 +134,7 @@ static void settingsToConfig()
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_HASHING_KEY, settings.system.hashing);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_SPLASH_KEY, settings.system.splash);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_FREE_SPACE_KEY, settings.system.free_space);
+    settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_VIRTUAL_ADAPTER_KEY, settings.system.virtual_adapter);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_USE_HD_ART_KEY, settings.system.use_hd_art);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_HD_ART_PATH_KEY, settings.system.hd_art_path);
 

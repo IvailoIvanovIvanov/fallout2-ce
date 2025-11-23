@@ -29,6 +29,7 @@ namespace fallout {
 #define GAME_CONFIG_SPLASH_KEY "splash"
 #define GAME_CONFIG_FREE_SPACE_KEY "free_space"
 #define GAME_CONFIG_TIMES_RUN_KEY "times_run"
+#define GAME_CONFIG_VIRTUAL_ADAPTER_KEY "virtual_adapter"
 #define GAME_CONFIG_USE_HD_ART_KEY "use_hd_art"
 #define GAME_CONFIG_HD_ART_PATH_KEY "hd_art_path"
 #define GAME_CONFIG_GAME_DIFFICULTY_KEY "game_difficulty"

@@ -17,6 +17,7 @@
 #include "palette.h"
 #include "svga.h"
 #include "text_font.h"
+#include "settings.h"
 #include "win32.h"
 #include "window_manager_private.h"
 
@@ -70,6 +71,8 @@ int _GNW_wcolor[6] = {
 
 // 0x51E3FC
 static unsigned char* _screen_buffer = nullptr;
+static int _screen_buffer_pitch = 0;
+static bool gVirtualScreenEnabled = false;
 
 // 0x51E400
 static bool _insideWinExit = false;
@@ -167,7 +170,12 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
     int screenWidth = screenGetWidth();
     int screenHeight = screenGetHeight();
 
-    if (a3 & 1) {
+    bool wantScreenBuffer = (a3 & 1) != 0;
+    if (settings.system.virtual_adapter) {
+        wantScreenBuffer = true;
+    }
+
+    if (wantScreenBuffer) {
         _screen_buffer = (unsigned char*)internal_malloc(screenWidth * screenHeight);
         if (_screen_buffer == nullptr) {
             if (gVideoSystemExitProc != nullptr) {
@@ -178,9 +186,15 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
 
             return WINDOW_MANAGER_ERR_NO_MEMORY;
         }
+
+        _screen_buffer_pitch = screenWidth;
+    } else {
+        _screen_buffer = nullptr;
+        _screen_buffer_pitch = 0;
     }
 
-    _buffering = false;
+    gVirtualScreenEnabled = settings.system.virtual_adapter && _screen_buffer != nullptr;
+    _buffering = gVirtualScreenEnabled;
     _doing_refresh_all = 0;
 
     if (!_initColors()) {
@@ -283,6 +297,9 @@ void windowManagerExit(void)
             if (_screen_buffer != nullptr) {
                 internal_free(_screen_buffer);
             }
+            _screen_buffer = nullptr;
+            _screen_buffer_pitch = 0;
+            gVirtualScreenEnabled = false;
 
             if (gVideoSystemExitProc != nullptr) {
                 gVideoSystemExitProc();
@@ -475,6 +492,9 @@ void windowFree(int win)
 void _win_buffering(bool a1)
 {
     if (_screen_buffer != nullptr) {
+        if (gVirtualScreenEnabled && !a1) {
+            return;
+        }
         _buffering = a1;
     }
 }
@@ -2571,6 +2591,63 @@ int _win_button_press_and_release(int btn)
     }
 
     return 0;
+}
+
+unsigned char* windowGetVirtualScreenBuffer()
+{
+    return _screen_buffer;
+}
+
+int windowGetVirtualScreenPitch()
+{
+    return _screen_buffer != nullptr ? _screen_buffer_pitch : 0;
+}
+
+bool windowIsVirtualScreenEnabled()
+{
+    return gVirtualScreenEnabled;
+}
+
+// Legacy true-color compatibility layer ------------------------------------
+
+void windowTrueColorSetPaletteBaseline(const unsigned char* /*palette*/)
+{
+    // No-op until the true-color compositor returns.
+}
+
+bool isTrueColorRendererActive()
+{
+    return false;
+}
+
+unsigned char* windowGetScreenBuffer()
+{
+    return _screen_buffer;
+}
+
+int windowGetScreenPitch()
+{
+    return _screen_buffer != nullptr ? _screen_buffer_pitch : 0;
+}
+
+bool windowHasTrueColorOverlay(int /*win*/)
+{
+    return false;
+}
+
+uint32_t* windowGetTrueColorOverlay(int /*win*/)
+{
+    return nullptr;
+}
+
+unsigned char* windowGetTrueColorMask(int /*win*/)
+{
+    return nullptr;
+}
+
+void windowClearTrueColorRegion(int /*win*/, int /*left*/, int /*top*/, int /*width*/, int /*height*/)
+{
+    // Nothing to clear when overlays are disabled.
 }
 
 } // namespace fallout

@@ -1,7 +1,5 @@
 #include "art.h"
 
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include <algorithm>
@@ -1668,6 +1666,34 @@ void FrmImage::unlock()
         _width = 0;
         _height = 0;
     }
+}
+
+// Legacy true-color hooks ---------------------------------------------------
+
+bool artGetTrueColorFrame(int /*fid*/, HdTrueColorFrameView& out)
+{
+    out.pixels = nullptr;
+    out.width = 0;
+    out.height = 0;
+    return false;
+}
+
+void artRegisterTrueColorFrameData(const unsigned char* /*indexed*/, const uint32_t* /*pixels*/, int /*width*/, int /*height*/)
+{
+    // Placeholder to keep old registration code compilable.
+}
+
+void artUnregisterTrueColorFrameData(const unsigned char* /*indexed*/)
+{
+    // Nothing to clean up while true-color overlays are disabled.
+}
+
+bool artLookupRegisteredTrueColorFrame(const unsigned char* /*indexed*/, HdTrueColorFrameView& out)
+{
+    out.pixels = nullptr;
+    out.width = 0;
+    out.height = 0;
+    return false;
 }
 
 } // namespace fallout
