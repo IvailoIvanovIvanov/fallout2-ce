@@ -4,8 +4,14 @@
 
 ## Stage 1 – Establish the Vault (Virtual Surface) 
 - [ ] **S1.1** Spin up an off-screen 640x480 back buffer that mirrors the existing pipeline (palette, blits, everything).
+	- Reuse the existing `displayScalerInit(640, 480)` contract so all callers still query logical dimensions through `displayScalerGetLogicalBounds`.
+	- Allocate the "virtual" surface in `window_manager_private.cc` right next to `gBackBuffer` so legacy code keeps writing 8-bit pixels.
 - [ ] **S1.2** Wrap `renderPresent`/`window_manager_private` so the old buffer never hits the OS directly.
+	- Hook the tail of `windowRefreshAll`/`renderPresent` so it blits the virtual surface into an intermediate texture instead of the physical window.
+	- Keep the `display_scaler` letterboxing math so our composite honors integer scaling and logical bounds automatically.
 - [ ] **S1.3** Mirror that buffer into a modern RGBA texture for the real window and prove we can scale it cleanly.
+	- Use the SDL/DirectDraw presenter we already have: promote the copy step to 32-bit (`bufferToTexture` style) so later stages can mix HD overlays.
+	- Instrument diagnostics (category `SCALER`) to log both virtual and physical dimensions for troubleshooting.
 
 ## Stage 2 – Tame the Rad-Input (Coordinate Translation)
 - [ ] **S2.1** Capture actual window inputs at native resolution (mouse, wheel, touch).
