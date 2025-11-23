@@ -3,6 +3,7 @@
 #include <SDL.h>
 
 #include <algorithm>
+#include <string.h>
 
 #include "audio_engine.h"
 #include "color.h"
@@ -16,6 +17,7 @@
 #include "text_font.h"
 #include "touch.h"
 #include "win32.h"
+#include "window_manager.h"
 
 namespace fallout {
 
@@ -352,6 +354,33 @@ void takeScreenshot()
     gScreenshotHeight = screenGetHeight();
 
     if (gScreenshotWidth <= 0 || gScreenshotHeight <= 0) {
+        gScreenshotWidth = 0;
+        gScreenshotHeight = 0;
+        return;
+    }
+
+    if (isTrueColorRendererActive()) {
+        unsigned char* screenBuffer = windowGetScreenBuffer();
+        int screenPitch = windowGetScreenPitch();
+        if (screenBuffer == nullptr || screenPitch == 0) {
+            return;
+        }
+
+        gScreenshotBuffer = (unsigned char*)internal_malloc(gScreenshotWidth * gScreenshotHeight);
+        if (gScreenshotBuffer == nullptr) {
+            gScreenshotWidth = 0;
+            gScreenshotHeight = 0;
+            return;
+        }
+
+        for (int row = 0; row < gScreenshotHeight; row++) {
+            memcpy(gScreenshotBuffer + row * gScreenshotWidth, screenBuffer + row * screenPitch, gScreenshotWidth);
+        }
+
+        unsigned char* palette = _getSystemPalette();
+        gScreenshotHandler(gScreenshotWidth, gScreenshotHeight, gScreenshotBuffer, palette);
+        internal_free(gScreenshotBuffer);
+        gScreenshotBuffer = nullptr;
         gScreenshotWidth = 0;
         gScreenshotHeight = 0;
         return;

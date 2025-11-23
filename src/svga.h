@@ -47,6 +47,9 @@ int screenGetPhysicalWidth();
 int screenGetPhysicalHeight();
 void handleWindowSizeChanged();
 void renderPresent();
+void setTrueColorRendererRequested(bool enabled);
+bool isTrueColorRendererActive();
+void blitIndexedBufferToTextureSurface(const unsigned char* src, int srcPitch, int width, int height, int destX, int destY);
 
 } // namespace fallout
 

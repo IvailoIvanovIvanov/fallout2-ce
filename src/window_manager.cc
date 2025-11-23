@@ -122,6 +122,8 @@ static void* _GNW_texture;
 static ButtonGroup gButtonGroups[BUTTON_GROUP_LIST_CAPACITY];
 
 static PixelFormat gWindowPixelFormat = PixelFormat::Indexed8;
+static void presentScreenRectToTexture(const Rect& rect);
+static bool gTrueColorCompositorEnabled = false;
 
 static inline int windowBytesPerPixel(const Window* window)
 {
@@ -148,17 +150,26 @@ static inline unsigned char* screenBufferAt(int x, int y)
     return _screen_buffer + (screenGetWidth() * y + x) * pixelFormatBytesPerPixel(gWindowPixelFormat);
 }
 
-static inline uint32_t paletteIndexToArgb(unsigned char index)
+static void presentScreenRectToTexture(const Rect& rect)
 {
-    unsigned char r6 = _cmap[index * 3 + 0];
-    unsigned char g6 = _cmap[index * 3 + 1];
-    unsigned char b6 = _cmap[index * 3 + 2];
+    if (!gTrueColorCompositorEnabled || _screen_buffer == nullptr) {
+        return;
+    }
 
-    unsigned char r = static_cast<unsigned char>((r6 << 2) | (r6 >> 4));
-    unsigned char g = static_cast<unsigned char>((g6 << 2) | (g6 >> 4));
-    unsigned char b = static_cast<unsigned char>((b6 << 2) | (b6 >> 4));
+    const int width = rectGetWidth(&rect);
+    const int height = rectGetHeight(&rect);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
 
-    return 0xFF000000 | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | b;
+    const int screenPitch = screenGetWidth() * pixelFormatBytesPerPixel(gWindowPixelFormat);
+    unsigned char* src = screenBufferAt(rect.left, rect.top);
+
+    if (gWindowPixelFormat == PixelFormat::Indexed8) {
+        blitIndexedBufferToTextureSurface(src, screenPitch, width, height, rect.left, rect.top);
+    } else {
+        // TODO: Support true color screen buffers when needed.
+    }
 }
 
 static inline uint32_t* windowRowAt(Window* window, int y)
@@ -446,9 +457,7 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
     gVideoSystemInitProc = videoSystemInitProc;
     gVideoSystemExitProc = directInputFree;
 
-    if (settings.system.use_true_color_renderer) {
-        debugPrint("True color renderer requested but not yet implemented; falling back to indexed mode.\n");
-    }
+    setTrueColorRendererRequested(settings.system.use_true_color_renderer);
 
     gWindowPixelFormat = PixelFormat::Indexed8;
 
@@ -470,7 +479,12 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
 
     int screenBytesPerPixel = pixelFormatBytesPerPixel(gWindowPixelFormat);
 
-    if (a3 & 1) {
+    bool needScreenBuffer = (a3 & 1) != 0;
+    if (settings.system.use_true_color_renderer) {
+        needScreenBuffer = true;
+    }
+
+    if (needScreenBuffer) {
         _screen_buffer = (unsigned char*)internal_malloc(screenWidth * screenHeight * screenBytesPerPixel);
         if (_screen_buffer == nullptr) {
             if (gVideoSystemExitProc != nullptr) {
@@ -483,7 +497,12 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
         }
     }
 
-    _buffering = false;
+    gTrueColorCompositorEnabled = isTrueColorRendererActive();
+    if (settings.system.use_true_color_renderer && !gTrueColorCompositorEnabled) {
+        debugPrint("True color renderer requested but not available; falling back to indexed mode.\n");
+    }
+
+    _buffering = gTrueColorCompositorEnabled;
     _doing_refresh_all = 0;
 
     if (!_initColors()) {
@@ -601,6 +620,7 @@ void windowManagerExit(void)
             SDL_DestroyWindow(gSdlWindow);
 
             gWindowSystemInitialized = false;
+            gTrueColorCompositorEnabled = false;
 
 #ifdef _WIN32
             CloseHandle(_GNW95_title_mutex);
@@ -1277,16 +1297,20 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                 v24 = v23->next;
 
                 if (_buffering && !a3) {
-                    _scr_blit(
-                        screenBufferAt(v23->rect.left, v23->rect.top),
-                        screenPitch,
-                        v23->rect.bottom - v23->rect.top + 1,
-                        0,
-                        0,
-                        v23->rect.right - v23->rect.left + 1,
-                        v23->rect.bottom - v23->rect.top + 1,
-                        v23->rect.left,
-                        v23->rect.top);
+                    if (gTrueColorCompositorEnabled) {
+                        presentScreenRectToTexture(v23->rect);
+                    } else {
+                        _scr_blit(
+                            screenBufferAt(v23->rect.left, v23->rect.top),
+                            screenPitch,
+                            v23->rect.bottom - v23->rect.top + 1,
+                            0,
+                            0,
+                            v23->rect.right - v23->rect.left + 1,
+                            v23->rect.bottom - v23->rect.top + 1,
+                            v23->rect.left,
+                            v23->rect.top);
+                    }
                 }
 
                 _rect_free(v23);
@@ -1504,6 +1528,20 @@ int windowGetPitch(int win)
     }
 
     return window->pitch;
+}
+
+unsigned char* windowGetScreenBuffer()
+{
+    return _screen_buffer;
+}
+
+int windowGetScreenPitch()
+{
+    if (_screen_buffer == nullptr) {
+        return 0;
+    }
+
+    return screenGetWidth() * pixelFormatBytesPerPixel(gWindowPixelFormat);
 }
 
 PixelFormat windowGetPixelFormat(int win)

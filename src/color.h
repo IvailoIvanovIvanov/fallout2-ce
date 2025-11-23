@@ -1,6 +1,8 @@
 #ifndef COLOR_H
 #define COLOR_H
 
+#include <cstdint>
+
 namespace fallout {
 
 typedef unsigned char Color;
@@ -32,6 +34,7 @@ void _freeColorBlendTable(int a1);
 void colorSetBrightness(double value);
 bool _initColors();
 void _colorsClose();
+uint32_t paletteIndexToArgb(unsigned char index);
 
 } // namespace fallout
 

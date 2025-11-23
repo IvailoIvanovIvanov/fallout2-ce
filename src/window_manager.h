@@ -177,6 +177,8 @@ Window* windowGetWindow(int win);
 unsigned char* windowGetBuffer(int win);
 int windowGetPitch(int win);
 PixelFormat windowGetPixelFormat(int win);
+unsigned char* windowGetScreenBuffer();
+int windowGetScreenPitch();
 int windowGetAtPoint(int x, int y);
 int windowGetWidth(int win);
 int windowGetHeight(int win);

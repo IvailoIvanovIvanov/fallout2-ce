@@ -6,6 +6,7 @@
 
 #include <SDL.h>
 
+#include "color.h"
 #include "config.h"
 #include "diagnostics.h"
 #include "display_scaler.h"
@@ -44,8 +45,18 @@ SDL_Renderer* gSdlRenderer = nullptr;
 SDL_Texture* gSdlTexture = nullptr;
 SDL_Surface* gSdlTextureSurface = nullptr;
 
+static bool gTrueColorRendererRequested = false;
+static bool gTrueColorRendererActive = false;
+
 // TODO: Remove once migration to update-render cycle is completed.
 FpsLimiter sharedFpsLimiter;
+
+void blitIndexedBufferToTextureSurface(const unsigned char* src,
+    int srcPitch,
+    int width,
+    int height,
+    int destX,
+    int destY);
 
 // 0x4CAD08
 int _init_mode_320_200()
@@ -106,6 +117,16 @@ void _zero_vid_mem()
     if (_zero_mem) {
         _zero_mem();
     }
+}
+
+void setTrueColorRendererRequested(bool enabled)
+{
+    gTrueColorRendererRequested = enabled;
+}
+
+bool isTrueColorRendererActive()
+{
+    return gTrueColorRendererActive;
 }
 
 // 0x4CAE1C
@@ -367,7 +388,9 @@ void directDrawSetPaletteInRange(unsigned char* palette, int start, int count)
         }
 
         SDL_SetPaletteColors(gSdlSurface->format->palette, colors, start, count);
-        SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+        if (!gTrueColorRendererActive && gSdlTextureSurface != nullptr) {
+            SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+        }
     }
 }
 
@@ -385,7 +408,9 @@ void directDrawSetPalette(unsigned char* palette)
         }
 
         SDL_SetPaletteColors(gSdlSurface->format->palette, colors, 0, 256);
-        SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+        if (!gTrueColorRendererActive && gSdlTextureSurface != nullptr) {
+            SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+        }
     }
 }
 
@@ -438,6 +463,11 @@ void _GNW95_ShowRect(unsigned char* src, int srcPitch, int a3, int srcX, int src
     const int srcOffsetY = destRect.top - destY;
     unsigned char* srcStart = src + srcPitch * (srcY + srcOffsetY) + (srcX + srcOffsetX);
 
+    if (gTrueColorRendererActive) {
+        blitIndexedBufferToTextureSurface(srcStart, srcPitch, clippedWidth, clippedHeight, destRect.left, destRect.top);
+        return;
+    }
+
     blitBufferToBuffer(srcStart, clippedWidth, clippedHeight, srcPitch, (unsigned char*)gSdlSurface->pixels + gSdlSurface->pitch * destRect.top + destRect.left, gSdlSurface->pitch);
 
     SDL_Rect sdlRect;
@@ -455,6 +485,13 @@ void _GNW95_ShowRect(unsigned char* src, int srcPitch, int a3, int srcX, int src
 void _GNW95_zero_vid_mem()
 {
     if (!gProgramIsActive) {
+        return;
+    }
+
+    if (gTrueColorRendererActive) {
+        if (gSdlTextureSurface != nullptr) {
+            SDL_FillRect(gSdlTextureSurface, nullptr, SDL_MapRGBA(gSdlTextureSurface->format, 0, 0, 0, 255));
+        }
         return;
     }
 
@@ -509,8 +546,14 @@ static bool createRenderer()
     }
 
     LogicalSpace logicalSpace = displayScalerGetLogicalSpace();
+    Uint32 requestedFormat = gTrueColorRendererRequested ? SDL_PIXELFORMAT_ARGB8888 : SDL_PIXELFORMAT_RGB888;
+    gSdlTexture = SDL_CreateTexture(gSdlRenderer, requestedFormat, SDL_TEXTUREACCESS_STREAMING, logicalSpace.width, logicalSpace.height);
+    if (gSdlTexture == nullptr && gTrueColorRendererRequested) {
+        requestedFormat = SDL_PIXELFORMAT_RGB888;
+        gSdlTexture = SDL_CreateTexture(gSdlRenderer, requestedFormat, SDL_TEXTUREACCESS_STREAMING, logicalSpace.width, logicalSpace.height);
+        gTrueColorRendererActive = false;
+    }
 
-    gSdlTexture = SDL_CreateTexture(gSdlRenderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, logicalSpace.width, logicalSpace.height);
     if (gSdlTexture == nullptr) {
         return false;
     }
@@ -518,6 +561,15 @@ static bool createRenderer()
     Uint32 format;
     if (SDL_QueryTexture(gSdlTexture, &format, nullptr, nullptr, nullptr) != 0) {
         return false;
+    }
+
+    if (gTrueColorRendererRequested && format != SDL_PIXELFORMAT_ARGB8888) {
+        gTrueColorRendererActive = false;
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info, "RENDERER", "true color renderer unsupported, falling back to %s", SDL_GetPixelFormatName(format));
+        }
+    } else {
+        gTrueColorRendererActive = gTrueColorRendererRequested;
     }
 
     gSdlTextureSurface = SDL_CreateRGBSurfaceWithFormat(0, logicalSpace.width, logicalSpace.height, SDL_BITSPERPIXEL(format), format);
@@ -544,6 +596,8 @@ static void destroyRenderer()
         SDL_DestroyRenderer(gSdlRenderer);
         gSdlRenderer = nullptr;
     }
+
+    gTrueColorRendererActive = false;
 }
 
 static void syncPhysicalSizeWithRenderer()
@@ -607,6 +661,33 @@ static void logViewportIfChanged(const Rect& viewport)
         height);
 }
 
+void blitIndexedBufferToTextureSurface(const unsigned char* src, int srcPitch, int width, int height, int destX, int destY)
+{
+    if (gSdlTextureSurface == nullptr || width <= 0 || height <= 0) {
+        return;
+    }
+
+    const int destBytesPerPixel = gSdlTextureSurface->format->BytesPerPixel;
+    uint8_t* destPixels = static_cast<uint8_t*>(gSdlTextureSurface->pixels) + destY * gSdlTextureSurface->pitch + destX * destBytesPerPixel;
+
+    for (int row = 0; row < height; row++) {
+        const unsigned char* srcRow = src + srcPitch * row;
+        uint8_t* destRow = destPixels + gSdlTextureSurface->pitch * row;
+        for (int col = 0; col < width; col++) {
+            uint32_t argb = paletteIndexToArgb(srcRow[col]);
+            if (destBytesPerPixel == 4) {
+                reinterpret_cast<uint32_t*>(destRow)[col] = argb;
+            } else {
+                // Assume RGB888
+                uint8_t* pixel = destRow + col * destBytesPerPixel;
+                pixel[0] = static_cast<uint8_t>(argb >> 16);
+                pixel[1] = static_cast<uint8_t>((argb >> 8) & 0xFF);
+                pixel[2] = static_cast<uint8_t>(argb & 0xFF);
+            }
+        }
+    }
+}
+
 void handleWindowSizeChanged()
 {
     if (gSdlWindow == nullptr) {
@@ -635,7 +716,7 @@ void handleWindowSizeChanged()
 
     createRenderer();
 
-    if (gSdlTextureSurface != nullptr && gSdlSurface != nullptr) {
+    if (!gTrueColorRendererActive && gSdlTextureSurface != nullptr && gSdlSurface != nullptr) {
         SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
     }
 
