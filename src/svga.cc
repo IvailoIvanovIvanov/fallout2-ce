@@ -14,6 +14,7 @@
 #include "interface.h"
 #include "memory.h"
 #include "mouse.h"
+#include "render_trace.h"
 #include "virtual_input.h"
 #include "win32.h"
 #include "window_manager.h"
@@ -679,6 +680,7 @@ void handleWindowSizeChanged()
 void renderPresent()
 {
     syncPhysicalSizeWithRenderer();
+    renderTraceCommitFrame();
     windowPresentVirtualScreen();
 
     LogicalSpace logicalSpace = displayScalerGetLogicalSpace();

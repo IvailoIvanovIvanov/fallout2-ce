@@ -21,6 +21,7 @@
 #include "party_member.h"
 #include "proto.h"
 #include "proto_instance.h"
+#include "render_trace.h"
 #include "scripts.h"
 #include "settings.h"
 #include "svga.h"
@@ -56,7 +57,7 @@ static int _obj_remove(ObjectListNode* a1, ObjectListNode* a2);
 static int _obj_connect_to_tile(ObjectListNode* node, int tile_index, int elev, Rect* rect);
 static int _obj_adjust_light(Object* obj, int a2, Rect* rect);
 static void objectDrawOutline(Object* object, Rect* rect);
-static void _obj_render_object(Object* object, Rect* rect, int light);
+static void _obj_render_object(Object* object, Rect* rect, int light, RenderTraceLayer layer);
 static int _obj_preload_sort(const void* a1, const void* a2);
 
 // 0x5195F8
@@ -807,7 +808,7 @@ void _obj_render_pre_roof(Rect* rect, int elevation)
                     }
 
                     if ((objectListNode->obj->flags & OBJECT_HIDDEN) == 0) {
-                        _obj_render_object(objectListNode->obj, &updatedRect, lightIntensity);
+                        _obj_render_object(objectListNode->obj, &updatedRect, lightIntensity, RenderTraceLayer::ObjectPreRoof);
 
                         if ((objectListNode->obj->outline & OUTLINE_TYPE_MASK) != 0) {
                             if ((objectListNode->obj->outline & OUTLINE_DISABLED) == 0 && _outlineCount < 100) {
@@ -843,7 +844,7 @@ void _obj_render_pre_roof(Rect* rect, int elevation)
 
             if (elevation == objectListNode->obj->elevation) {
                 if ((objectListNode->obj->flags & OBJECT_HIDDEN) == 0) {
-                    _obj_render_object(object, &updatedRect, lightIntensity);
+                    _obj_render_object(object, &updatedRect, lightIntensity, RenderTraceLayer::ObjectPreRoof);
 
                     if ((objectListNode->obj->outline & OUTLINE_TYPE_MASK) != 0) {
                         if ((objectListNode->obj->outline & OUTLINE_DISABLED) == 0 && _outlineCount < 100) {
@@ -880,7 +881,7 @@ void _obj_render_post_roof(Rect* rect, int elevation)
     while (objectListNode != nullptr) {
         Object* object = objectListNode->obj;
         if ((object->flags & OBJECT_HIDDEN) == 0) {
-            _obj_render_object(object, &updatedRect, 0x10000);
+            _obj_render_object(object, &updatedRect, 0x10000, RenderTraceLayer::ObjectPostRoof);
         }
         objectListNode = objectListNode->next;
     }
@@ -4878,7 +4879,7 @@ static void objectDrawOutline(Object* object, Rect* rect)
 }
 
 // 0x48F1B0
-static void _obj_render_object(Object* object, Rect* rect, int light)
+static void _obj_render_object(Object* object, Rect* rect, int light, RenderTraceLayer layer)
 {
     int type = FID_TYPE(object->fid);
     if (artIsObjectTypeHidden(type)) {
@@ -4934,6 +4935,8 @@ static void _obj_render_object(Object* object, Rect* rect, int light)
     src += frameWidth * v49 + v50;
     int objectWidth = objectRect.right - objectRect.left + 1;
     int objectHeight = objectRect.bottom - objectRect.top + 1;
+
+    renderTraceRecord(layer, object->fid, object->frame, object->rotation, objectRect, object->elevation, objectRect.bottom);
 
     if (type == 6) {
         blitBufferToBufferTrans(src,

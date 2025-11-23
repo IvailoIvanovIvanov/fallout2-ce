@@ -13,6 +13,7 @@
 #include "kb.h"
 #include "memory.h"
 #include "mouse.h"
+#include "render_trace.h"
 #include "svga.h"
 #include "text_font.h"
 #include "touch.h"
@@ -219,6 +220,10 @@ void enqueueInputEvent(int a1)
 
     if (a1 == gScreenshotKeyCode) {
         takeScreenshot();
+        return;
+    }
+
+    if (renderTraceHandleHotkey(a1)) {
         return;
     }
 

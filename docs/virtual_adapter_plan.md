@@ -43,12 +43,12 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 	- **Implementation notes:** Flip `[debug] debug_input_overlay=1` in `fallout2.cfg` to summon the Neon Overseer Overlay—red crosshairs track raw physical hits, green marks the remapped vault coords, and the viewport outline glows teal. Everything renders just before `SDL_RenderPresent`, so what you see is exactly what the wasteland gets.
 
 ## Stage 3 – Scout the Draw Calls
-- [ ] **S3.1** Instrument `artRender`/tile/UI paths to log which fid, frame, and layer rendered where in the virtual buffer.
-	- **TODO:** emit `RENDERTRACE` events containing `fid`, screen rect, and z-order for later playback.
-- [ ] **S3.2** Define a lightweight render-command stream (fid, screen rect, depth bucket).
-	- **TODO:** prototype a ring buffer of `RenderOp` structs so Stage 4 can remap them to HD assets.
-- [ ] **S3.3** Validate that the command stream matches the on-screen order in tricky scenes (combat, dialogue, UI overlays).
-	- **TODO:** add a developer hotkey that replays the command stream to a debug window for eyeballing.
+- [x] **S3.1** Instrument `artRender`/tile/UI paths to log which fid, frame, and layer rendered where in the virtual buffer.
+	- **Implementation notes:** `render_trace.cc` now taps `artRender`, tile floors/roofs, and both `_obj_render_pre_roof` / `_obj_render_post_roof` so every blit reports a `RenderTraceOp` with fid, frame, rotation, elevation, and the resolved screen rect (thanks to the new `windowResolveBufferRect` helper). Each op lands in the `RENDERTRACE` diagnostics channel with its depth bucket for forensic spelunking.
+- [x] **S3.2** Define a lightweight render-command stream (fid, screen rect, depth bucket).
+	- **Implementation notes:** The adapter keeps a per-frame ring buffer (4K ops) of `RenderTraceOp` structs and commits it right before `renderPresent`. Overflow toggles a per-frame flag so we can spot stressed scenes before Stage 4 swaps in HD sprites.
+- [x] **S3.3** Validate that the command stream matches the on-screen order in tricky scenes (combat, dialogue, UI overlays).
+	- **Implementation notes:** Hitting `Ctrl+F8` spawns the Overseer Replay Window—a 320×240 overlay that replays the last frame’s command stream with color-coded rectangles per layer. Toggle it on/off to eyeball ordering without pausing the action; the hotkey is consumed inside `input.cc` so gameplay never sees the chord.
 
 ## Stage 4 – Deploy HD Overlays
 - [ ] **S4.1** Teach the compositor to look up RGBA assets per fid/frame and draw them instead of the scaled buffer patch.

@@ -16,9 +16,11 @@
 #include "memory.h"
 #include "object.h"
 #include "proto.h"
+#include "render_trace.h"
 #include "settings.h"
 #include "stb_image.h"
 #include "sfall_config.h"
+#include "window_manager.h"
 
 namespace fallout {
 
@@ -44,6 +46,7 @@ static int artReadFrameData(unsigned char* data, File* stream, int count, int* p
 static int artReadHeader(Art* art, File* stream);
 static int artGetDataSize(Art* art);
 static int paddingForSize(int size);
+static void artTraceRenderOp(int fid, unsigned char* dest, int pitch, int width, int height);
 
 struct HdArtInfo {
     std::string path;
@@ -441,31 +444,39 @@ void artRender(int fid, unsigned char* dest, int width, int height, int pitch)
     int remainingHeight = height - frameHeight;
     if (remainingWidth < 0 || remainingHeight < 0) {
         if (height * frameWidth >= width * frameHeight) {
+            int scaledHeight = width * frameHeight / frameWidth;
+            unsigned char* target = dest + pitch * ((height - scaledHeight) / 2);
             blitBufferToBufferStretchTrans(frameData,
                 frameWidth,
                 frameHeight,
                 frameWidth,
-                dest + pitch * ((height - width * frameHeight / frameWidth) / 2),
+                target,
                 width,
-                width * frameHeight / frameWidth,
+                scaledHeight,
                 pitch);
+            artTraceRenderOp(fid, target, pitch, width, scaledHeight);
         } else {
+            int scaledWidth = height * frameWidth / frameHeight;
+            unsigned char* target = dest + (width - scaledWidth) / 2;
             blitBufferToBufferStretchTrans(frameData,
                 frameWidth,
                 frameHeight,
                 frameWidth,
-                dest + (width - height * frameWidth / frameHeight) / 2,
-                height * frameWidth / frameHeight,
+                target,
+                scaledWidth,
                 height,
                 pitch);
+            artTraceRenderOp(fid, target, pitch, scaledWidth, height);
         }
     } else {
+        unsigned char* target = dest + pitch * (remainingHeight / 2) + remainingWidth / 2;
         blitBufferToBufferTrans(frameData,
             frameWidth,
             frameHeight,
             frameWidth,
-            dest + pitch * (remainingHeight / 2) + remainingWidth / 2,
+            target,
             pitch);
+        artTraceRenderOp(fid, target, pitch, frameWidth, frameHeight);
     }
 
     artUnlock(handle);

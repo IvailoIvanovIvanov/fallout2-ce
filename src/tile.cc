@@ -17,6 +17,7 @@
 #include "light.h"
 #include "map.h"
 #include "object.h"
+#include "render_trace.h"
 #include "platform_compat.h"
 #include "settings.h"
 #include "svga.h"
@@ -1483,7 +1484,8 @@ static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light)
         unsigned char* tileFrmBuffer = artGetFrameData(tileFrm, 0, 0);
         tileFrmBuffer += tileWidth * (tileRect.top - y) + (tileRect.left - x);
 
-        CacheEntry* eggFrmHandle;
+                if (rectIntersection(&tileRect, rect, &tileRect) == 0) {
+                    renderTraceRecord(RenderTraceLayer::TileRoof, fid, 0, 0, tileRect, gElevation, tileRect.bottom);
         Art* eggFrm = artLock(gEgg->fid, &eggFrmHandle);
         if (eggFrm != nullptr) {
             int eggWidth = artGetWidth(eggFrm, 0, 0);
@@ -1828,6 +1830,13 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
     }
 
     if (v77 <= 0 || v76 <= 0) goto out;
+
+    Rect renderRect;
+    renderRect.left = x;
+    renderRect.top = y;
+    renderRect.right = x + v77 - 1;
+    renderRect.bottom = y + v76 - 1;
+    renderTraceRecord(RenderTraceLayer::TileFloor, fid, 0, 0, renderRect, gElevation, renderRect.bottom);
 
     tile = tileFromScreenXY(savedX, savedY + tileScaleValue(13), gElevation);
     if (tile != -1) {

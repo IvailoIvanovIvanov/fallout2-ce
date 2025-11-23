@@ -187,6 +187,7 @@ unsigned char* windowGetTrueColorMask(int win);
 void windowClearTrueColorRegion(int win, int left, int top, int width, int height);
 Window* windowGetWindow(int win);
 unsigned char* windowGetBuffer(int win);
+bool windowResolveBufferRect(const unsigned char* buffer, int pitch, int width, int height, Rect* outRect);
 int windowGetAtPoint(int x, int y);
 int windowGetWidth(int win);
 int windowGetHeight(int win);

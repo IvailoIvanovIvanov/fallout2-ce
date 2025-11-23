@@ -16,6 +16,7 @@
 #include "memory.h"
 #include "mouse.h"
 #include "palette.h"
+#include "render_trace.h"
 #include "svga.h"
 #include "text_font.h"
 #include "settings.h"
@@ -347,6 +348,7 @@ void windowManagerExit(void)
         _insideWinExit = true;
         if (gWindowSystemInitialized) {
             _GNW_intr_exit();
+            renderTraceReset();
 
             for (int index = gWindowsLength - 1; index >= 0; index--) {
                 windowFree(gWindows[index]->id);
@@ -1241,6 +1243,79 @@ unsigned char* windowGetBuffer(int win)
     }
 
     return window->buffer;
+}
+
+bool windowResolveBufferRect(const unsigned char* buffer, int pitch, int width, int height, Rect* outRect)
+{
+    if (!gWindowSystemInitialized) {
+        return false;
+    }
+
+    if (buffer == nullptr || outRect == nullptr) {
+        return false;
+    }
+
+    if (width <= 0 || height <= 0 || pitch <= 0) {
+        return false;
+    }
+
+    auto tryResolve = [&](const unsigned char* base, int basePitch, int baseHeight, const Rect& baseRect) {
+        if (base == nullptr) {
+            return false;
+        }
+
+        if (pitch != basePitch) {
+            return false;
+        }
+
+        ptrdiff_t delta = buffer - base;
+        if (delta < 0) {
+            return false;
+        }
+
+        const ptrdiff_t limit = static_cast<ptrdiff_t>(basePitch) * baseHeight;
+        if (delta >= limit) {
+            return false;
+        }
+
+        int localY = static_cast<int>(delta / basePitch);
+        int localX = static_cast<int>(delta % basePitch);
+
+        Rect resolved;
+        resolved.left = baseRect.left + localX;
+        resolved.top = baseRect.top + localY;
+        resolved.right = resolved.left + width - 1;
+        resolved.bottom = resolved.top + height - 1;
+
+        if (rectIntersection(&resolved, &baseRect, &resolved) == -1) {
+            return false;
+        }
+
+        *outRect = resolved;
+        return true;
+    };
+
+    if (gVirtualScreenEnabled && _screen_buffer != nullptr) {
+        const Rect& logical = displayScalerGetLogicalBounds();
+        if (tryResolve(_screen_buffer, _screen_buffer_pitch, rectGetHeight(&logical), logical)) {
+            return true;
+        }
+    }
+
+    for (int index = 0; index < gWindowsLength; index++) {
+        Window* window = gWindows[index];
+        if (window == nullptr || window->buffer == nullptr) {
+            continue;
+        }
+
+        Rect rect;
+        rectCopy(&rect, &(window->rect));
+        if (tryResolve(window->buffer, window->width, window->height, rect)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 // 0x4D78CC
