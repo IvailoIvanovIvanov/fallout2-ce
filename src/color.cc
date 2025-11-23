@@ -9,6 +9,7 @@
 #include "db.h"
 #include "memory.h"
 #include "svga.h"
+#include "window_manager.h"
 
 namespace fallout {
 
@@ -505,6 +506,7 @@ bool _initColors()
     }
 
     _setSystemPalette(_cmap);
+    windowTrueColorSetPaletteBaseline(_getSystemPalette());
 
     return true;
 }

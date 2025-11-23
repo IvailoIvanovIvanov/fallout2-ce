@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <initializer_list>
 
@@ -126,12 +127,17 @@ static ButtonGroup gButtonGroups[BUTTON_GROUP_LIST_CAPACITY];
 static PixelFormat gWindowPixelFormat = PixelFormat::Indexed8;
 static void presentScreenRectToTexture(const Rect& rect);
 static bool gTrueColorCompositorEnabled = false;
+static bool gTrueColorPaletteBaselineInitialized = false;
+static unsigned char gTrueColorPaletteBaseline[256 * 3];
+static float gTrueColorPaletteDeviation[256];
 static inline bool windowHasTrueColorOverlay(const Window* window);
 static inline void windowTrueColorClearRegion(Window* window, int left, int top, int width, int height);
 static void windowTrueColorBlit(Window* window, const uint32_t* src, int srcPitch, int width, int height, int destX, int destY, bool transparent);
 static void blitWindowRectToTrueColorScreen(Window* window, const Rect& rect);
 static inline uint32_t* trueColorScreenBufferAt(int x, int y);
 static inline uint32_t blendArgb(uint32_t src, uint32_t dst);
+static void updateTrueColorPaletteDeviation(const unsigned char* currentPalette);
+static uint32_t adjustOverlayForPalette(uint32_t overlayColor, uint32_t baseColor, unsigned char paletteIndex);
 
 static inline int windowBytesPerPixel(const Window* window)
 {
@@ -192,6 +198,66 @@ static inline uint32_t blendArgb(uint32_t src, uint32_t dst)
     uint8_t outB = static_cast<uint8_t>((srcB * srcA + dstB * invA) / 255);
 
     return (0xFF000000) | (static_cast<uint32_t>(outR) << 16) | (static_cast<uint32_t>(outG) << 8) | outB;
+}
+
+static void updateTrueColorPaletteDeviation(const unsigned char* currentPalette)
+{
+    if (!gTrueColorPaletteBaselineInitialized || currentPalette == nullptr) {
+        return;
+    }
+
+    constexpr float kInvMaxComponent = 1.0f / 63.0f;
+    constexpr float kInvMaxDistance = 0.57735026919f; // 1 / sqrt(3)
+
+    for (int index = 0; index < 256; index++) {
+        const int offset = index * 3;
+        float dr = static_cast<float>(currentPalette[offset] - gTrueColorPaletteBaseline[offset]) * kInvMaxComponent;
+        float dg = static_cast<float>(currentPalette[offset + 1] - gTrueColorPaletteBaseline[offset + 1]) * kInvMaxComponent;
+        float db = static_cast<float>(currentPalette[offset + 2] - gTrueColorPaletteBaseline[offset + 2]) * kInvMaxComponent;
+
+        float distance = std::sqrt(dr * dr + dg * dg + db * db) * kInvMaxDistance;
+        gTrueColorPaletteDeviation[index] = std::clamp(distance, 0.0f, 1.0f);
+    }
+}
+
+static uint32_t adjustOverlayForPalette(uint32_t overlayColor, uint32_t baseColor, unsigned char paletteIndex)
+{
+    if (!gTrueColorPaletteBaselineInitialized) {
+        return overlayColor;
+    }
+
+    float mix = std::clamp(gTrueColorPaletteDeviation[paletteIndex], 0.0f, 1.0f);
+    if (mix <= 0.0f) {
+        return overlayColor;
+    }
+
+    if (mix >= 1.0f) {
+        return baseColor & 0x00FFFFFF;
+    }
+
+    auto lerpChannel = [mix](uint8_t from, uint8_t to) -> uint8_t {
+        float value = static_cast<float>(from) + (static_cast<float>(to) - static_cast<float>(from)) * mix;
+        return static_cast<uint8_t>(std::clamp(value, 0.0f, 255.0f));
+    };
+
+    uint8_t overlayA = static_cast<uint8_t>(overlayColor >> 24);
+    uint8_t overlayR = static_cast<uint8_t>((overlayColor >> 16) & 0xFF);
+    uint8_t overlayG = static_cast<uint8_t>((overlayColor >> 8) & 0xFF);
+    uint8_t overlayB = static_cast<uint8_t>(overlayColor & 0xFF);
+
+    uint8_t baseR = static_cast<uint8_t>((baseColor >> 16) & 0xFF);
+    uint8_t baseG = static_cast<uint8_t>((baseColor >> 8) & 0xFF);
+    uint8_t baseB = static_cast<uint8_t>(baseColor & 0xFF);
+
+    uint8_t resultA = static_cast<uint8_t>(static_cast<float>(overlayA) * (1.0f - mix));
+    uint8_t resultR = lerpChannel(overlayR, baseR);
+    uint8_t resultG = lerpChannel(overlayG, baseG);
+    uint8_t resultB = lerpChannel(overlayB, baseB);
+
+    return (static_cast<uint32_t>(resultA) << 24)
+        | (static_cast<uint32_t>(resultR) << 16)
+        | (static_cast<uint32_t>(resultG) << 8)
+        | resultB;
 }
 
 static void windowTrueColorClearRegion(Window* window, int left, int top, int width, int height)
@@ -290,7 +356,11 @@ static void blitWindowRectToTrueColorScreen(Window* window, const Rect& rect)
         for (int col = 0; col < width; col++) {
             uint32_t base = paletteIndexToArgb(indexedRow[col]);
             if (maskRow != nullptr && maskRow[col] != 0) {
-                destRow[col] = blendArgb(overlayRow[col], base);
+                uint32_t overlayPixel = overlayRow[col];
+                if (gTrueColorPaletteBaselineInitialized) {
+                    overlayPixel = adjustOverlayForPalette(overlayPixel, base, indexedRow[col]);
+                }
+                destRow[col] = blendArgb(overlayPixel, base);
             } else {
                 destRow[col] = base;
             }
@@ -1572,6 +1642,11 @@ void windowNotifyPaletteChanged()
         return;
     }
 
+    const unsigned char* palette = _getSystemPalette();
+    if (palette != nullptr) {
+        updateTrueColorPaletteDeviation(palette);
+    }
+
     Rect rect;
     rect.left = 0;
     rect.top = 0;
@@ -1580,6 +1655,17 @@ void windowNotifyPaletteChanged()
 
     _refresh_all(&rect, nullptr);
     renderPresent();
+}
+
+void windowTrueColorSetPaletteBaseline(const unsigned char* palette)
+{
+    if (palette == nullptr) {
+        return;
+    }
+
+    memcpy(gTrueColorPaletteBaseline, palette, sizeof(gTrueColorPaletteBaseline));
+    gTrueColorPaletteBaselineInitialized = true;
+    updateTrueColorPaletteDeviation(palette);
 }
 
 // 0x4D75B0
