@@ -391,6 +391,8 @@ void directDrawSetPaletteInRange(unsigned char* palette, int start, int count)
         if (!gTrueColorRendererActive && gSdlTextureSurface != nullptr) {
             SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
         }
+
+        windowNotifyPaletteChanged();
     }
 }
 
@@ -411,6 +413,8 @@ void directDrawSetPalette(unsigned char* palette)
         if (!gTrueColorRendererActive && gSdlTextureSurface != nullptr) {
             SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
         }
+
+        windowNotifyPaletteChanged();
     }
 }
 
@@ -683,6 +687,32 @@ void blitIndexedBufferToTextureSurface(const unsigned char* src, int srcPitch, i
                 pixel[0] = static_cast<uint8_t>(argb >> 16);
                 pixel[1] = static_cast<uint8_t>((argb >> 8) & 0xFF);
                 pixel[2] = static_cast<uint8_t>(argb & 0xFF);
+            }
+        }
+    }
+}
+
+void blitTrueColorBufferToTextureSurface(const uint32_t* src, int srcPitch, int width, int height, int destX, int destY)
+{
+    if (gSdlTextureSurface == nullptr || src == nullptr || width <= 0 || height <= 0) {
+        return;
+    }
+
+    const int destBytesPerPixel = gSdlTextureSurface->format->BytesPerPixel;
+    uint8_t* destPixels = static_cast<uint8_t*>(gSdlTextureSurface->pixels) + destY * gSdlTextureSurface->pitch + destX * destBytesPerPixel;
+
+    for (int row = 0; row < height; row++) {
+        const uint32_t* srcRow = src + srcPitch * row;
+        uint8_t* destRow = destPixels + gSdlTextureSurface->pitch * row;
+        if (destBytesPerPixel == 4) {
+            memcpy(destRow, srcRow, width * sizeof(uint32_t));
+        } else {
+            for (int col = 0; col < width; col++) {
+                uint32_t pixel = srcRow[col];
+                uint8_t* dest = destRow + col * destBytesPerPixel;
+                dest[0] = static_cast<uint8_t>((pixel >> 16) & 0xFF);
+                dest[1] = static_cast<uint8_t>((pixel >> 8) & 0xFF);
+                dest[2] = static_cast<uint8_t>(pixel & 0xFF);
             }
         }
     }

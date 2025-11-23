@@ -8,6 +8,7 @@
 
 #include <SDL.h>
 
+#include "art.h"
 #include "display_scaler.h"
 #include "color.h"
 #include "debug.h"
@@ -81,6 +82,7 @@ int _GNW_wcolor[6] = {
 
 // 0x51E3FC
 static unsigned char* _screen_buffer = nullptr;
+static uint32_t* _true_color_screen_buffer = nullptr;
 
 // 0x51E400
 static bool _insideWinExit = false;
@@ -124,6 +126,12 @@ static ButtonGroup gButtonGroups[BUTTON_GROUP_LIST_CAPACITY];
 static PixelFormat gWindowPixelFormat = PixelFormat::Indexed8;
 static void presentScreenRectToTexture(const Rect& rect);
 static bool gTrueColorCompositorEnabled = false;
+static inline bool windowHasTrueColorOverlay(const Window* window);
+static inline void windowTrueColorClearRegion(Window* window, int left, int top, int width, int height);
+static void windowTrueColorBlit(Window* window, const uint32_t* src, int srcPitch, int width, int height, int destX, int destY, bool transparent);
+static void blitWindowRectToTrueColorScreen(Window* window, const Rect& rect);
+static inline uint32_t* trueColorScreenBufferAt(int x, int y);
+static inline uint32_t blendArgb(uint32_t src, uint32_t dst);
 
 static inline int windowBytesPerPixel(const Window* window)
 {
@@ -150,6 +158,146 @@ static inline unsigned char* screenBufferAt(int x, int y)
     return _screen_buffer + (screenGetWidth() * y + x) * pixelFormatBytesPerPixel(gWindowPixelFormat);
 }
 
+static inline uint32_t* trueColorScreenBufferAt(int x, int y)
+{
+    return _true_color_screen_buffer + screenGetWidth() * y + x;
+}
+
+static inline bool windowHasTrueColorOverlay(const Window* window)
+{
+    return window != nullptr && window->trueColorOverlay != nullptr && window->trueColorMask != nullptr;
+}
+
+static inline uint32_t blendArgb(uint32_t src, uint32_t dst)
+{
+    uint8_t srcA = static_cast<uint8_t>(src >> 24);
+    if (srcA == 0) {
+        return dst;
+    }
+    if (srcA == 255) {
+        return (src & 0x00FFFFFF) | 0xFF000000;
+    }
+
+    uint8_t dstR = static_cast<uint8_t>((dst >> 16) & 0xFF);
+    uint8_t dstG = static_cast<uint8_t>((dst >> 8) & 0xFF);
+    uint8_t dstB = static_cast<uint8_t>(dst & 0xFF);
+
+    uint8_t srcR = static_cast<uint8_t>((src >> 16) & 0xFF);
+    uint8_t srcG = static_cast<uint8_t>((src >> 8) & 0xFF);
+    uint8_t srcB = static_cast<uint8_t>(src & 0xFF);
+
+    uint8_t invA = static_cast<uint8_t>(255 - srcA);
+    uint8_t outR = static_cast<uint8_t>((srcR * srcA + dstR * invA) / 255);
+    uint8_t outG = static_cast<uint8_t>((srcG * srcA + dstG * invA) / 255);
+    uint8_t outB = static_cast<uint8_t>((srcB * srcA + dstB * invA) / 255);
+
+    return (0xFF000000) | (static_cast<uint32_t>(outR) << 16) | (static_cast<uint32_t>(outG) << 8) | outB;
+}
+
+static void windowTrueColorClearRegion(Window* window, int left, int top, int width, int height)
+{
+    if (!windowHasTrueColorOverlay(window) || width <= 0 || height <= 0) {
+        return;
+    }
+
+    int startX = std::max(left, 0);
+    int startY = std::max(top, 0);
+    int endX = std::min(left + width, window->width);
+    int endY = std::min(top + height, window->height);
+    if (startX >= endX || startY >= endY) {
+        return;
+    }
+
+    const int rowSpan = endX - startX;
+    for (int y = startY; y < endY; y++) {
+        int offset = y * window->width + startX;
+        memset(window->trueColorMask + offset, 0, rowSpan);
+        memset(window->trueColorOverlay + offset, 0, rowSpan * sizeof(uint32_t));
+    }
+}
+
+static void windowTrueColorBlit(Window* window, const uint32_t* src, int srcPitch, int width, int height, int destX, int destY, bool transparent)
+{
+    if (!windowHasTrueColorOverlay(window) || src == nullptr || width <= 0 || height <= 0) {
+        return;
+    }
+
+    constexpr uint8_t kAlphaThreshold = 16;
+
+    for (int row = 0; row < height; row++) {
+        int targetY = destY + row;
+        if (targetY < 0 || targetY >= window->height) {
+            continue;
+        }
+
+        const uint32_t* srcRow = src + srcPitch * row;
+        uint32_t* destRow = window->trueColorOverlay + targetY * window->width;
+        unsigned char* maskRow = window->trueColorMask + targetY * window->width;
+
+        for (int col = 0; col < width; col++) {
+            int targetX = destX + col;
+            if (targetX < 0 || targetX >= window->width) {
+                continue;
+            }
+
+            uint32_t pixel = srcRow[col];
+            uint8_t alpha = static_cast<uint8_t>(pixel >> 24);
+            if (transparent && alpha < kAlphaThreshold) {
+                maskRow[targetX] = 0;
+                continue;
+            }
+
+            maskRow[targetX] = 1;
+            destRow[targetX] = pixel;
+        }
+    }
+}
+
+static void blitWindowRectToTrueColorScreen(Window* window, const Rect& rect)
+{
+    if (_true_color_screen_buffer == nullptr || window == nullptr || window->buffer == nullptr) {
+        return;
+    }
+
+    int width = rectGetWidth(&rect);
+    int height = rectGetHeight(&rect);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    int screenWidth = screenGetWidth();
+    for (int row = 0; row < height; row++) {
+        int screenY = rect.top + row;
+        uint32_t* destRow = trueColorScreenBufferAt(rect.left, screenY);
+
+        int windowY = rect.top + row - window->rect.top;
+        if (windowY < 0 || windowY >= window->height) {
+            continue;
+        }
+        int windowX = rect.left - window->rect.left;
+        if (windowX < 0 || windowX >= window->width) {
+            continue;
+        }
+        const unsigned char* indexedRow = windowBufferAtConst(window, windowX, windowY);
+
+        const uint32_t* overlayRow = nullptr;
+        const unsigned char* maskRow = nullptr;
+        if (windowHasTrueColorOverlay(window)) {
+            overlayRow = window->trueColorOverlay + windowY * window->width + windowX;
+            maskRow = window->trueColorMask + windowY * window->width + windowX;
+        }
+
+        for (int col = 0; col < width; col++) {
+            uint32_t base = paletteIndexToArgb(indexedRow[col]);
+            if (maskRow != nullptr && maskRow[col] != 0) {
+                destRow[col] = blendArgb(overlayRow[col], base);
+            } else {
+                destRow[col] = base;
+            }
+        }
+    }
+}
+
 static void presentScreenRectToTexture(const Rect& rect)
 {
     if (!gTrueColorCompositorEnabled || _screen_buffer == nullptr) {
@@ -159,6 +307,12 @@ static void presentScreenRectToTexture(const Rect& rect)
     const int width = rectGetWidth(&rect);
     const int height = rectGetHeight(&rect);
     if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    if (_true_color_screen_buffer != nullptr) {
+        const uint32_t* src = trueColorScreenBufferAt(rect.left, rect.top);
+        blitTrueColorBufferToTextureSurface(src, screenGetWidth(), width, height, rect.left, rect.top);
         return;
     }
 
@@ -502,6 +656,25 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
         debugPrint("True color renderer requested but not available; falling back to indexed mode.\n");
     }
 
+    if (gTrueColorCompositorEnabled) {
+        _true_color_screen_buffer = (uint32_t*)internal_malloc(screenWidth * screenHeight * sizeof(uint32_t));
+        if (_true_color_screen_buffer == nullptr) {
+            if (gVideoSystemExitProc != nullptr) {
+                gVideoSystemExitProc();
+            } else {
+                directDrawFree();
+            }
+
+            if (_screen_buffer != nullptr) {
+                internal_free(_screen_buffer);
+                _screen_buffer = nullptr;
+            }
+
+            return WINDOW_MANAGER_ERR_NO_MEMORY;
+        }
+        memset(_true_color_screen_buffer, 0, screenWidth * screenHeight * sizeof(uint32_t));
+    }
+
     _buffering = gTrueColorCompositorEnabled;
     _doing_refresh_all = 0;
 
@@ -565,6 +738,8 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
     window->buffer = nullptr;
     window->pixelFormat = gWindowPixelFormat;
     window->pitch = window->width * pixelFormatBytesPerPixel(window->pixelFormat);
+    window->trueColorOverlay = nullptr;
+    window->trueColorMask = nullptr;
     window->buttonListHead = nullptr;
     window->hoveredButton = nullptr;
     window->clickedButton = nullptr;
@@ -606,6 +781,11 @@ void windowManagerExit(void)
 
             if (_screen_buffer != nullptr) {
                 internal_free(_screen_buffer);
+            }
+
+            if (_true_color_screen_buffer != nullptr) {
+                internal_free(_true_color_screen_buffer);
+                _true_color_screen_buffer = nullptr;
             }
 
             if (gVideoSystemExitProc != nullptr) {
@@ -671,6 +851,27 @@ int windowCreate(int x, int y, int width, int height, int color, int flags)
     if (window->buffer == nullptr) {
         internal_free(window);
         return -1;
+    }
+
+    window->trueColorOverlay = nullptr;
+    window->trueColorMask = nullptr;
+    if (gTrueColorCompositorEnabled) {
+        size_t pixelCount = static_cast<size_t>(width) * height;
+        window->trueColorOverlay = (uint32_t*)internal_malloc(pixelCount * sizeof(uint32_t));
+        window->trueColorMask = (unsigned char*)internal_malloc(pixelCount);
+        if (window->trueColorOverlay == nullptr || window->trueColorMask == nullptr) {
+            if (window->trueColorOverlay != nullptr) {
+                internal_free(window->trueColorOverlay);
+            }
+            if (window->trueColorMask != nullptr) {
+                internal_free(window->trueColorMask);
+            }
+            internal_free(window->buffer);
+            internal_free(window);
+            return -1;
+        }
+        memset(window->trueColorOverlay, 0, pixelCount * sizeof(uint32_t));
+        memset(window->trueColorMask, 0, pixelCount);
     }
 
     int id = 1;
@@ -786,6 +987,14 @@ void windowFree(int win)
         internal_free(window->buffer);
     }
 
+    if (window->trueColorOverlay != nullptr) {
+        internal_free(window->trueColorOverlay);
+    }
+
+    if (window->trueColorMask != nullptr) {
+        internal_free(window->trueColorMask);
+    }
+
     if (window->menuBar != nullptr) {
         internal_free(window->menuBar);
     }
@@ -878,6 +1087,10 @@ void windowDrawText(int win, const char* str, int width, int x, int y, int color
     buf = windowBufferAt(window, x, y);
     int pitch = window->pitch;
 
+    if (gTrueColorCompositorEnabled) {
+        windowTrueColorClearRegion(window, x, y, width, fontGetLineHeight());
+    }
+
     if (fontGetLineHeight() + y > window->height) {
         return;
     }
@@ -928,6 +1141,12 @@ void windowDrawLine(int win, int left, int top, int right, int bottom, int color
         return;
     }
 
+    int minX = std::min(left, right);
+    int minY = std::min(top, bottom);
+    int spanX = std::abs(right - left) + 1;
+    int spanY = std::abs(bottom - top) + 1;
+    windowTrueColorClearRegion(window, minX, minY, spanX, spanY);
+
     if ((color & 0xFF00) != 0) {
         int colorIndex = (color & 0xFF) - 1;
         color = (color & ~0xFFFF) | _colorTable[_GNW_wcolor[colorIndex]];
@@ -953,6 +1172,8 @@ void windowDrawRect(int win, int left, int top, int right, int bottom, int color
         // TODO: Implement true color rect drawing.
         return;
     }
+
+    windowTrueColorClearRegion(window, std::min(left, right), std::min(top, bottom), std::abs(right - left) + 1, std::abs(bottom - top) + 1);
 
     if ((color & 0xFF00) != 0) {
         int colorIndex = (color & 0xFF) - 1;
@@ -989,6 +1210,8 @@ void windowFill(int win, int x, int y, int width, int height, int color)
 
     int bytesPerPixel = windowBytesPerPixel(window);
     unsigned char* dest = windowBufferAt(window, x, y);
+
+    windowTrueColorClearRegion(window, x, y, width, height);
 
     if (color == 256) {
         if (_GNW_texture != nullptr) {
@@ -1241,6 +1464,9 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                                     screenBufferAt(v20->rect.left, v20->rect.top),
                                     screenPitch);
                             }
+                            if (gTrueColorCompositorEnabled && _true_color_screen_buffer != nullptr) {
+                                blitWindowRectToTrueColorScreen(window, v20->rect);
+                            }
                         } else {
                             _scr_blit(
                                 srcPtr,
@@ -1281,6 +1507,9 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                                     width,
                                     screenBufferAt(v16->rect.left, v16->rect.top),
                                     screenPitch);
+                                if (gTrueColorCompositorEnabled && _true_color_screen_buffer != nullptr) {
+                                    blitWindowRectToTrueColorScreen(window, v16->rect);
+                                }
                             } else {
                                 _scr_blit(buf, width, height, 0, 0, width, height, v16->rect.left, v16->rect.top);
                             }
@@ -1335,6 +1564,22 @@ void windowRefreshAll(Rect* rect)
     if (gWindowSystemInitialized) {
         _refresh_all(rect, nullptr);
     }
+}
+
+void windowNotifyPaletteChanged()
+{
+    if (!gWindowSystemInitialized || !gTrueColorCompositorEnabled) {
+        return;
+    }
+
+    Rect rect;
+    rect.left = 0;
+    rect.top = 0;
+    rect.right = screenGetWidth() - 1;
+    rect.bottom = screenGetHeight() - 1;
+
+    _refresh_all(&rect, nullptr);
+    renderPresent();
 }
 
 // 0x4D75B0
@@ -1618,6 +1863,46 @@ int windowGetRect(int win, Rect* rect)
     rectCopy(rect, &(window->rect));
 
     return 0;
+}
+
+bool windowHasTrueColorOverlay(int win)
+{
+    Window* window = windowGetWindow(win);
+    if (window == nullptr) {
+        return false;
+    }
+
+    return windowHasTrueColorOverlay(window);
+}
+
+uint32_t* windowGetTrueColorOverlay(int win)
+{
+    Window* window = windowGetWindow(win);
+    if (window == nullptr || !windowHasTrueColorOverlay(window)) {
+        return nullptr;
+    }
+
+    return window->trueColorOverlay;
+}
+
+unsigned char* windowGetTrueColorMask(int win)
+{
+    Window* window = windowGetWindow(win);
+    if (window == nullptr || !windowHasTrueColorOverlay(window)) {
+        return nullptr;
+    }
+
+    return window->trueColorMask;
+}
+
+void windowClearTrueColorRegion(int win, int left, int top, int width, int height)
+{
+    Window* window = windowGetWindow(win);
+    if (window == nullptr) {
+        return;
+    }
+
+    windowTrueColorClearRegion(window, left, top, width, height);
 }
 
 // 0x4D797C
@@ -2889,6 +3174,10 @@ void _button_draw(Button* button, Window* window, unsigned char* data, bool draw
             unsigned char* src = data + srcY * buttonWidth + srcX;
 
             if (blitWidth > 0 && blitHeight > 0) {
+                if (gTrueColorCompositorEnabled) {
+                    windowTrueColorClearRegion(window, v3.left, v3.top, blitWidth, blitHeight);
+                }
+
                 if (windowIsIndexed(window)) {
                     unsigned char* dest = windowBufferAt(window, v3.left, v3.top);
                     if ((button->flags & BUTTON_FLAG_TRANSPARENT) != 0) {
@@ -2899,6 +3188,23 @@ void _button_draw(Button* button, Window* window, unsigned char* data, bool draw
                 } else {
                     bool transparent = (button->flags & BUTTON_FLAG_TRANSPARENT) != 0;
                     blitIndexedImageToTrueColor(window, src, buttonWidth, blitWidth, blitHeight, v3.left, v3.top, transparent);
+                }
+
+                if (gTrueColorCompositorEnabled && windowHasTrueColorOverlay(window)) {
+                    HdTrueColorFrameView view;
+                    if (artLookupRegisteredTrueColorFrame(data, view)) {
+                        int availableWidth = view.width - srcX;
+                        int availableHeight = view.height - srcY;
+                        if (availableWidth > 0 && availableHeight > 0) {
+                            int copyWidth = std::min(blitWidth, availableWidth);
+                            int copyHeight = std::min(blitHeight, availableHeight);
+                            if (copyWidth > 0 && copyHeight > 0) {
+                                const uint32_t* trueColorSrc = view.pixels + srcY * view.width + srcX;
+                                bool transparent = (button->flags & BUTTON_FLAG_TRANSPARENT) != 0;
+                                windowTrueColorBlit(window, trueColorSrc, view.width, copyWidth, copyHeight, v3.left, v3.top, transparent);
+                            }
+                        }
+                    }
                 }
             }
 

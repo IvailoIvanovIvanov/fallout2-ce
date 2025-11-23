@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <math.h>
 #include <string.h>
+#include <cstdint>
 
 #include <algorithm>
 #include <stack>
@@ -19,6 +20,7 @@
 #include "platform_compat.h"
 #include "settings.h"
 #include "svga.h"
+#include "window_manager.h"
 
 namespace fallout {
 
@@ -250,6 +252,9 @@ static TileData** gTileSquares;
 
 // 0x66BE0C
 static unsigned char* gTileWindowBuffer;
+static int gTileWindowId = -1;
+static uint32_t* gTileWindowTrueColorOverlay = nullptr;
+static unsigned char* gTileWindowTrueColorMask = nullptr;
 
 // Number of tiles vertically.
 //
@@ -312,6 +317,73 @@ static inline int tileScaleDown(int value)
     return tileFloorDiv(value, gTilePixelScale);
 }
 
+static inline bool tileHasTrueColorOverlay()
+{
+    return gTileWindowTrueColorOverlay != nullptr && gTileWindowTrueColorMask != nullptr;
+}
+
+static void tileClearTrueColorRegion(const Rect& rect)
+{
+    if (!tileHasTrueColorOverlay()) {
+        return;
+    }
+
+    int left = std::max(rect.left, 0);
+    int top = std::max(rect.top, 0);
+    int right = std::min(rect.right, gTileWindowWidth - 1);
+    int bottom = std::min(rect.bottom, gTileWindowHeight - 1);
+    if (left > right || top > bottom) {
+        return;
+    }
+
+    int width = right - left + 1;
+    uint32_t* overlayRow = gTileWindowTrueColorOverlay + top * gTileWindowWidth + left;
+    unsigned char* maskRow = gTileWindowTrueColorMask + top * gTileWindowWidth + left;
+    for (int y = top; y <= bottom; y++) {
+        memset(maskRow, 0, width);
+        memset(overlayRow, 0, width * sizeof(uint32_t));
+        overlayRow += gTileWindowWidth;
+        maskRow += gTileWindowWidth;
+    }
+}
+
+static inline uint8_t applyIntensityToChannel(uint8_t value, int intensityIndex)
+{
+    if (intensityIndex <= 0) {
+        return 0;
+    }
+
+    if (intensityIndex >= 255) {
+        return 255;
+    }
+
+    if (intensityIndex < 128) {
+        return static_cast<uint8_t>((value * intensityIndex) / 128);
+    }
+
+    int lighten = intensityIndex - 128;
+    return static_cast<uint8_t>(value + ((255 - value) * lighten) / 128);
+}
+
+static inline uint32_t applyTileLightingToArgb(uint32_t color, int intensityIndex)
+{
+    intensityIndex = std::clamp(intensityIndex, 0, 255);
+
+    uint8_t a = static_cast<uint8_t>(color >> 24);
+    uint8_t r = static_cast<uint8_t>((color >> 16) & 0xFF);
+    uint8_t g = static_cast<uint8_t>((color >> 8) & 0xFF);
+    uint8_t b = static_cast<uint8_t>(color & 0xFF);
+
+    r = applyIntensityToChannel(r, intensityIndex);
+    g = applyIntensityToChannel(g, intensityIndex);
+    b = applyIntensityToChannel(b, intensityIndex);
+
+    return (static_cast<uint32_t>(a) << 24)
+        | (static_cast<uint32_t>(r) << 16)
+        | (static_cast<uint32_t>(g) << 8)
+        | static_cast<uint32_t>(b);
+}
+
 static void tileUpdatePixelScale(int windowWidth, int windowHeight)
 {
     double scaleX = static_cast<double>(windowWidth) / static_cast<double>(ORIGINAL_ISO_WINDOW_WIDTH);
@@ -330,7 +402,7 @@ static void tileUpdatePixelScale(int windowWidth, int windowHeight)
 }
 
 // 0x4B0C40
-int tileInit(TileData** a1, int squareGridWidth, int squareGridHeight, int hexGridWidth, int hexGridHeight, unsigned char* buf, int windowWidth, int windowHeight, int windowPitch, TileWindowRefreshProc* windowRefreshProc)
+int tileInit(TileData** a1, int squareGridWidth, int squareGridHeight, int hexGridWidth, int hexGridHeight, unsigned char* buf, int windowId, int windowWidth, int windowHeight, int windowPitch, TileWindowRefreshProc* windowRefreshProc)
 {
     int v11;
     int v12;
@@ -354,6 +426,14 @@ int tileInit(TileData** a1, int squareGridWidth, int squareGridHeight, int hexGr
     gHexGridSize = hexGridWidth * hexGridHeight;
     _dir_tile[1][3] = 1;
     gTileWindowBuffer = buf;
+    gTileWindowId = windowId;
+    if (windowId != -1 && windowHasTrueColorOverlay(windowId)) {
+        gTileWindowTrueColorOverlay = windowGetTrueColorOverlay(windowId);
+        gTileWindowTrueColorMask = windowGetTrueColorMask(windowId);
+    } else {
+        gTileWindowTrueColorOverlay = nullptr;
+        gTileWindowTrueColorMask = nullptr;
+    }
     _dir_tile2[0][0] = -1;
     gTileWindowWidth = windowWidth;
     _dir_tile2[0][3] = -1;
@@ -529,6 +609,9 @@ void tileReset()
 // NOTE: Uncollapsed 0x4B129C.
 void tileExit()
 {
+    gTileWindowId = -1;
+    gTileWindowTrueColorOverlay = nullptr;
+    gTileWindowTrueColorMask = nullptr;
     _tile_reset_();
 }
 
@@ -653,6 +736,8 @@ static void tileRefreshMapper(Rect* rect, int elevation)
         gTileWindowPitch,
         0);
 
+    tileClearTrueColorRegion(rectToUpdate);
+
     tileRenderFloorsInRect(&rectToUpdate, elevation);
     _grid_render(&rectToUpdate, elevation);
     _obj_render_pre_roof(&rectToUpdate, elevation);
@@ -677,6 +762,8 @@ static void tileRefreshGame(Rect* rect, int elevation)
         rectGetHeight(&rectToUpdate),
         gTileWindowPitch,
         0);
+
+    tileClearTrueColorRegion(rectToUpdate);
 
     tileRenderFloorsInRect(&rectToUpdate, elevation);
     _obj_render_pre_roof(&rectToUpdate, elevation);
@@ -1704,6 +1791,16 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
     frameWidth = artGetWidth(art, 0, 0);
     frameHeight = artGetHeight(art, 0, 0);
 
+    HdTrueColorFrameView trueColorView;
+    bool hasTrueColor = false;
+    if (tileHasTrueColorOverlay()) {
+        if (artGetTrueColorFrame(fid, trueColorView)) {
+            if (trueColorView.width == frameWidth && trueColorView.height == frameHeight) {
+                hasTrueColor = trueColorView.pixels != nullptr;
+            }
+        }
+    }
+
     if (left < x) {
         v79 = 0;
         int v12 = left + width;
@@ -1753,6 +1850,42 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
         if (v23 == 9) {
             unsigned char* buf = artGetFrameData(art, 0, 0);
             _dark_trans_buf_to_buf(buf + frameWidth * v78 + v79, v77, v76, frameWidth, gTileWindowBuffer, x, y, gTileWindowPitch, _verticies[0].intensity);
+
+            if (hasTrueColor) {
+                int intensityIndex = _verticies[0].intensity >> 9;
+                const uint32_t* trueColorSrcRow = trueColorView.pixels + trueColorView.width * v78 + v79;
+                uint32_t* trueColorDestRow = gTileWindowTrueColorOverlay + gTileWindowWidth * y + x;
+                unsigned char* trueColorMaskRow = gTileWindowTrueColorMask + gTileWindowWidth * y + x;
+                unsigned char* indexedRow = buf + frameWidth * v78 + v79;
+
+                for (int row = 0; row < v76; row++) {
+                    const uint32_t* trueColorSrcPixel = trueColorSrcRow;
+                    uint32_t* trueColorDestPixel = trueColorDestRow;
+                    unsigned char* trueColorMaskPixel = trueColorMaskRow;
+                    unsigned char* indexedPixel = indexedRow;
+
+                    for (int col = 0; col < v77; col++) {
+                        if (*indexedPixel != 0) {
+                            *trueColorDestPixel = applyTileLightingToArgb(*trueColorSrcPixel, intensityIndex);
+                            *trueColorMaskPixel = 1;
+                        } else {
+                            *trueColorDestPixel = 0;
+                            *trueColorMaskPixel = 0;
+                        }
+
+                        indexedPixel++;
+                        trueColorSrcPixel++;
+                        trueColorDestPixel++;
+                        trueColorMaskPixel++;
+                    }
+
+                    indexedRow += frameWidth;
+                    trueColorSrcRow += trueColorView.width;
+                    trueColorDestRow += gTileWindowWidth;
+                    trueColorMaskRow += gTileWindowWidth;
+                }
+            }
+
             goto out;
         }
 
@@ -1871,18 +2004,54 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
         int v85 = gTileWindowPitch - v77;
         int v87 = 80 - v77;
 
+        const uint32_t* trueColorSrcRow = nullptr;
+        uint32_t* trueColorDestRow = nullptr;
+        unsigned char* trueColorMaskRow = nullptr;
+        if (hasTrueColor) {
+            trueColorSrcRow = trueColorView.pixels + trueColorView.width * v78 + v79;
+            trueColorDestRow = gTileWindowTrueColorOverlay + gTileWindowWidth * y + x;
+            trueColorMaskRow = gTileWindowTrueColorMask + gTileWindowWidth * y + x;
+        }
+
         while (--v76 != -1) {
+            const uint32_t* trueColorSrcPixel = trueColorSrcRow;
+            uint32_t* trueColorDestPixel = trueColorDestRow;
+            unsigned char* trueColorMaskPixel = trueColorMaskRow;
+
             for (int kk = 0; kk < v77; kk++) {
-                if (*v67 != 0) {
-                    *v66 = intensityColorTable[*v67][*v68 >> 9];
+                unsigned char paletteIndex = *v67;
+                if (paletteIndex != 0) {
+                    int intensityIndex = *v68 >> 9;
+                    *v66 = intensityColorTable[paletteIndex][intensityIndex];
+                    if (hasTrueColor) {
+                        *trueColorDestPixel = applyTileLightingToArgb(*trueColorSrcPixel, intensityIndex);
+                        *trueColorMaskPixel = 1;
+                    }
+                } else if (hasTrueColor) {
+                    *trueColorDestPixel = 0;
+                    *trueColorMaskPixel = 0;
                 }
+
                 v67++;
                 v68++;
                 v66++;
+
+                if (hasTrueColor) {
+                    trueColorSrcPixel++;
+                    trueColorDestPixel++;
+                    trueColorMaskPixel++;
+                }
             }
+
             v66 += v85;
             v68 += v87;
             v67 += v86;
+
+            if (hasTrueColor) {
+                trueColorSrcRow += trueColorView.width;
+                trueColorDestRow += gTileWindowWidth;
+                trueColorMaskRow += gTileWindowWidth;
+            }
         }
     }
 

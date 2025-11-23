@@ -8,6 +8,7 @@
 #include <limits>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "animation.h"
 #include "color.h"
@@ -65,12 +66,21 @@ struct HdPngStream {
 };
 
 static std::unordered_map<int, HdArtInfo> gHdArtInfoCache;
+struct HdTrueColorFrame {
+    std::vector<uint32_t> pixels;
+    int width = 0;
+    int height = 0;
+};
+static std::unordered_map<int, HdTrueColorFrame> gHdTrueColorFrameCache;
+static std::unordered_map<const unsigned char*, HdTrueColorFrameView> gRegisteredTrueColorFrameViews;
 
 static bool hdArtSupportedType(int type);
 static bool hdArtBuildPngFilePath(int fid, char* path, size_t size);
 static bool hdArtProbe(int fid, HdArtInfo& info);
 static int hdArtComputeDataSize(int width, int height);
 static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* data, int* sizePtr);
+static void hdArtStoreTrueColorFrame(int fid, const stbi_uc* pixels, int width, int height);
+static void hdArtClearTrueColorFrame(int fid);
 static void hdArtConvertRgbaToPalette(const stbi_uc* rgba, int width, int height, unsigned char* dest);
 static stbi_uc* hdArtResampleNearest(const stbi_uc* src, int srcWidth, int srcHeight, int destWidth, int destHeight);
 static unsigned char hdArtFindNearestPaletteColor(const unsigned char* palette, int r, int g, int b, std::unordered_map<int, unsigned char>& cache);
@@ -370,12 +380,16 @@ int artInit()
 void artReset()
 {
     gHdArtInfoCache.clear();
+    gHdTrueColorFrameCache.clear();
+    gRegisteredTrueColorFrameViews.clear();
 }
 
 // 0x418EBC
 void artExit()
 {
     gHdArtInfoCache.clear();
+    gHdTrueColorFrameCache.clear();
+    gRegisteredTrueColorFrameViews.clear();
 
     cacheFree(&gArtCache);
 
@@ -1321,6 +1335,7 @@ static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* da
     }
 
     unsigned char* frameData = reinterpret_cast<unsigned char*>(frame + 1);
+    hdArtStoreTrueColorFrame(fid, pixels, targetWidth, targetHeight);
     hdArtConvertRgbaToPalette(pixels, targetWidth, targetHeight, frameData);
     int framePadding = paddingForSize(frameSize);
     if (framePadding > 0) {
@@ -1535,6 +1550,7 @@ static int artCacheReadDataImpl(int fid, int* sizePtr, unsigned char* data)
             }
 
             gHdArtInfoCache.erase(fid);
+            hdArtClearTrueColorFrame(fid);
         }
     }
 
@@ -1563,6 +1579,7 @@ static int artCacheReadDataImpl(int fid, int* sizePtr, unsigned char* data)
 
         if (loaded) {
             *sizePtr = artGetDataSize((Art*)data);
+            hdArtClearTrueColorFrame(fid);
             result = 0;
         }
     }
@@ -1812,6 +1829,8 @@ FrmImage::FrmImage()
     _data = nullptr;
     _width = 0;
     _height = 0;
+    _fid = 0;
+    _trueColorPixels = nullptr;
 }
 
 FrmImage::~FrmImage()
@@ -1830,6 +1849,15 @@ bool FrmImage::lock(unsigned int fid)
         return false;
     }
 
+    _fid = fid;
+    HdTrueColorFrameView view;
+    if (artGetTrueColorFrame(fid, view)) {
+        _trueColorPixels = view.pixels;
+        artRegisterTrueColorFrameData(_data, _trueColorPixels, _width, _height);
+    } else {
+        _trueColorPixels = nullptr;
+    }
+
     return true;
 }
 
@@ -1838,10 +1866,100 @@ void FrmImage::unlock()
     if (isLocked()) {
         artUnlock(_key);
         _key = nullptr;
+        if (_trueColorPixels != nullptr && _data != nullptr) {
+            artUnregisterTrueColorFrameData(_data);
+        }
         _data = nullptr;
         _width = 0;
         _height = 0;
+        _fid = 0;
+        _trueColorPixels = nullptr;
     }
+}
+
+bool artGetTrueColorFrame(int fid, HdTrueColorFrameView& out)
+{
+    auto it = gHdTrueColorFrameCache.find(fid);
+    if (it == gHdTrueColorFrameCache.end()) {
+        return false;
+    }
+
+    const HdTrueColorFrame& frame = it->second;
+    if (frame.pixels.empty()) {
+        return false;
+    }
+
+    out.pixels = frame.pixels.data();
+    out.width = frame.width;
+    out.height = frame.height;
+    return true;
+}
+
+static void hdArtStoreTrueColorFrame(int fid, const stbi_uc* pixels, int width, int height)
+{
+    if (pixels == nullptr || width <= 0 || height <= 0) {
+        hdArtClearTrueColorFrame(fid);
+        return;
+    }
+
+    HdTrueColorFrame& frame = gHdTrueColorFrameCache[fid];
+    frame.width = width;
+    frame.height = height;
+    frame.pixels.resize(static_cast<size_t>(width) * height);
+
+    const stbi_uc* src = pixels;
+    uint32_t* dest = frame.pixels.data();
+    const int pixelCount = width * height;
+    for (int index = 0; index < pixelCount; index++) {
+        const stbi_uc* rgba = src + index * 4;
+        uint32_t value = (static_cast<uint32_t>(rgba[3]) << 24)
+            | (static_cast<uint32_t>(rgba[0]) << 16)
+            | (static_cast<uint32_t>(rgba[1]) << 8)
+            | static_cast<uint32_t>(rgba[2]);
+        dest[index] = value;
+    }
+}
+
+static void hdArtClearTrueColorFrame(int fid)
+{
+    gHdTrueColorFrameCache.erase(fid);
+}
+
+void artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t* pixels, int width, int height)
+{
+    if (indexed == nullptr || pixels == nullptr || width <= 0 || height <= 0) {
+        return;
+    }
+
+    HdTrueColorFrameView view;
+    view.pixels = pixels;
+    view.width = width;
+    view.height = height;
+    gRegisteredTrueColorFrameViews[indexed] = view;
+}
+
+void artUnregisterTrueColorFrameData(const unsigned char* indexed)
+{
+    if (indexed == nullptr) {
+        return;
+    }
+
+    gRegisteredTrueColorFrameViews.erase(indexed);
+}
+
+bool artLookupRegisteredTrueColorFrame(const unsigned char* indexed, HdTrueColorFrameView& out)
+{
+    if (indexed == nullptr) {
+        return false;
+    }
+
+    auto it = gRegisteredTrueColorFrameViews.find(indexed);
+    if (it == gRegisteredTrueColorFrameViews.end()) {
+        return false;
+    }
+
+    out = it->second;
+    return true;
 }
 
 } // namespace fallout

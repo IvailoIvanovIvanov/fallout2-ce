@@ -1,6 +1,7 @@
 #ifndef WINDOW_MANAGER_H
 #define WINDOW_MANAGER_H
 
+#include <cstdint>
 #include <stddef.h>
 
 #include "geometry.h"
@@ -106,6 +107,8 @@ typedef struct Window {
     Button* clickedButton;
     MenuBar* menuBar;
     WindowBlitProc* blitProc;
+    uint32_t* trueColorOverlay;
+    unsigned char* trueColorMask;
 } Window;
 
 typedef void ButtonCallback(int btn, int keyCode);
@@ -172,6 +175,7 @@ void windowRefresh(int win);
 void windowRefreshRect(int win, const Rect* rect);
 void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3);
 void windowRefreshAll(Rect* rect);
+void windowNotifyPaletteChanged();
 void _win_get_mouse_buf(unsigned char* a1);
 Window* windowGetWindow(int win);
 unsigned char* windowGetBuffer(int win);
@@ -183,6 +187,10 @@ int windowGetAtPoint(int x, int y);
 int windowGetWidth(int win);
 int windowGetHeight(int win);
 int windowGetRect(int win, Rect* rect);
+bool windowHasTrueColorOverlay(int win);
+uint32_t* windowGetTrueColorOverlay(int win);
+unsigned char* windowGetTrueColorMask(int win);
+void windowClearTrueColorRegion(int win, int left, int top, int width, int height);
 int _win_check_all_buttons();
 int _GNW_check_menu_bars(int input);
 void programWindowSetTitle(const char* title);

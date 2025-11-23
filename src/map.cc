@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <cstdint>
 
 #include <vector>
 
@@ -204,7 +205,7 @@ int isoInit()
 
     debugPrint(">art_init\t\t");
 
-    if (tileInit(_square, SQUARE_GRID_WIDTH, SQUARE_GRID_HEIGHT, HEX_GRID_WIDTH, HEX_GRID_HEIGHT, gIsoWindowBuffer, screenGetWidth(), screenGetVisibleHeight(), screenGetWidth(), isoWindowRefreshRect) != 0) {
+    if (tileInit(_square, SQUARE_GRID_WIDTH, SQUARE_GRID_HEIGHT, HEX_GRID_WIDTH, HEX_GRID_HEIGHT, gIsoWindowBuffer, gIsoWindow, screenGetWidth(), screenGetVisibleHeight(), screenGetWidth(), isoWindowRefreshRect) != 0) {
         debugPrint("tile_init failed in iso_init\n");
         return -1;
     }
@@ -686,6 +687,56 @@ int mapScroll(int dx, int dy)
         memmove(dest, src, width);
         dest += step;
         src += step;
+    }
+
+    if (windowHasTrueColorOverlay(gIsoWindow)) {
+        uint32_t* overlay = windowGetTrueColorOverlay(gIsoWindow);
+        unsigned char* mask = windowGetTrueColorMask(gIsoWindow);
+        int overlayPitch = windowGetWidth(gIsoWindow);
+        int overlayHeight = windowGetHeight(gIsoWindow);
+
+        uint32_t* overlaySrc;
+        uint32_t* overlayDest;
+        unsigned char* maskSrc;
+        unsigned char* maskDest;
+        int overlayStep;
+
+        if (screenDy < 0) {
+            overlaySrc = overlay + overlayPitch * (height - 1);
+            overlayDest = overlay + overlayPitch * (overlayHeight - 1);
+            maskSrc = mask + overlayPitch * (height - 1);
+            maskDest = mask + overlayPitch * (overlayHeight - 1);
+            if (screenDx < 0) {
+                overlayDest -= screenDx;
+                maskDest -= screenDx;
+            } else {
+                overlaySrc += screenDx;
+                maskSrc += screenDx;
+            }
+            overlayStep = -overlayPitch;
+        } else {
+            overlayDest = overlay;
+            overlaySrc = overlay + overlayPitch * screenDy;
+            maskDest = mask;
+            maskSrc = mask + overlayPitch * screenDy;
+            if (screenDx < 0) {
+                overlayDest -= screenDx;
+                maskDest -= screenDx;
+            } else {
+                overlaySrc += screenDx;
+                maskSrc += screenDx;
+            }
+            overlayStep = overlayPitch;
+        }
+
+        for (int y = 0; y < height; y++) {
+            memmove(overlayDest, overlaySrc, width * sizeof(uint32_t));
+            memmove(maskDest, maskSrc, width);
+            overlayDest += overlayStep;
+            overlaySrc += overlayStep;
+            maskDest += overlayStep;
+            maskSrc += overlayStep;
+        }
     }
 
     if (screenDx != 0) {
@@ -1519,6 +1570,12 @@ static void isoWindowRefreshRectGame(Rect* rect)
         rectGetWidth(&gIsoWindowRect),
         0);
 
+    if (windowHasTrueColorOverlay(gIsoWindow)) {
+        int relativeLeft = rectToUpdate.left - gIsoWindowRect.left;
+        int relativeTop = rectToUpdate.top - gIsoWindowRect.top;
+        windowClearTrueColorRegion(gIsoWindow, relativeLeft, relativeTop, rectGetWidth(&rectToUpdate), rectGetHeight(&rectToUpdate));
+    }
+
     tileRenderFloorsInRect(&rectToUpdate, gElevation);
     _obj_render_pre_roof(&rectToUpdate, gElevation);
     tileRenderRoofsInRect(&rectToUpdate, gElevation);
@@ -1538,6 +1595,12 @@ static void isoWindowRefreshRectMapper(Rect* rect)
         rectGetHeight(&rectToUpdate),
         rectGetWidth(&gIsoWindowRect),
         0);
+
+    if (windowHasTrueColorOverlay(gIsoWindow)) {
+        int relativeLeft = rectToUpdate.left - gIsoWindowRect.left;
+        int relativeTop = rectToUpdate.top - gIsoWindowRect.top;
+        windowClearTrueColorRegion(gIsoWindow, relativeLeft, relativeTop, rectGetWidth(&rectToUpdate), rectGetHeight(&rectToUpdate));
+    }
 
     tileRenderFloorsInRect(&rectToUpdate, gElevation);
     _grid_render(&rectToUpdate, gElevation);

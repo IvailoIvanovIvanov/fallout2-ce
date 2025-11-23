@@ -519,9 +519,9 @@ void _colorsClose()
 
 uint32_t paletteIndexToArgb(unsigned char index)
 {
-    unsigned char r6 = _cmap[index * 3 + 0];
-    unsigned char g6 = _cmap[index * 3 + 1];
-    unsigned char b6 = _cmap[index * 3 + 2];
+    unsigned char r6 = _systemCmap[index * 3 + 0];
+    unsigned char g6 = _systemCmap[index * 3 + 1];
+    unsigned char b6 = _systemCmap[index * 3 + 2];
 
     unsigned char r = static_cast<unsigned char>((r6 << 2) | (r6 >> 4));
     unsigned char g = static_cast<unsigned char>((g6 << 2) | (g6 >> 4));
