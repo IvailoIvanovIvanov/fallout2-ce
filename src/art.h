@@ -171,6 +171,8 @@ void artUnregisterTrueColorFrameData(const unsigned char* indexed);
 bool artLookupRegisteredTrueColorFrame(const unsigned char* indexed, HdTrueColorFrameView& out);
 void artTrueColorStatsReset();
 void artTrueColorStatsLog(const char* mapName);
+void artTrueColorMarkActive(int fid);
+bool artTrueColorMarkInactive(int fid, const char* reason = nullptr);
 
 class FrmImage {
 public:

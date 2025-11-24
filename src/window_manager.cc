@@ -3094,4 +3094,71 @@ void windowClearTrueColorRegion(int win, int left, int top, int width, int heigh
     }
 }
 
+void windowDebugStampMissingHdGlyph(int win, int left, int top, int width, int height)
+{
+    if (!settings.debug.hd_missing_watermark) {
+        return;
+    }
+
+    if (!windowHasTrueColorOverlay(win)) {
+        return;
+    }
+
+    Window* window = windowGetWindow(win);
+    if (window == nullptr) {
+        return;
+    }
+
+    int regionLeft = std::clamp(left, 0, window->width);
+    int regionTop = std::clamp(top, 0, window->height);
+    int regionRight = std::clamp(left + width, 0, window->width);
+    int regionBottom = std::clamp(top + height, 0, window->height);
+    if (regionLeft >= regionRight || regionTop >= regionBottom) {
+        return;
+    }
+
+    constexpr int glyphWidth = 6;
+    constexpr int glyphHeight = 6;
+    static const unsigned char glyph[glyphHeight][glyphWidth] = {
+        { 1, 0, 0, 0, 0, 1 },
+        { 1, 1, 0, 0, 1, 1 },
+        { 1, 0, 1, 1, 0, 1 },
+        { 1, 0, 1, 1, 0, 1 },
+        { 1, 1, 0, 0, 1, 1 },
+        { 1, 0, 0, 0, 0, 1 },
+    };
+
+    int regionWidth = regionRight - regionLeft;
+    int regionHeight = regionBottom - regionTop;
+    int drawWidth = std::min(glyphWidth, regionWidth);
+    int drawHeight = std::min(glyphHeight, regionHeight);
+    if (drawWidth <= 0 || drawHeight <= 0) {
+        return;
+    }
+
+    int glyphLeft = regionLeft + (regionWidth - drawWidth) / 2;
+    int glyphTop = regionTop + (regionHeight - drawHeight) / 2;
+
+    uint32_t* overlayRow = window->trueColorOverlay + glyphTop * window->width + glyphLeft;
+    unsigned char* maskRow = window->trueColorMask + glyphTop * window->width + glyphLeft;
+    const uint32_t glyphColor = 0xFFFF40FF;
+
+    for (int y = 0; y < drawHeight; y++) {
+        const unsigned char* glyphRow = glyph[y];
+        uint32_t* overlayPixel = overlayRow;
+        unsigned char* maskPixel = maskRow;
+        for (int x = 0; x < drawWidth; x++) {
+            if (glyphRow[x] != 0) {
+                *overlayPixel = glyphColor;
+                *maskPixel = 1;
+            }
+            overlayPixel++;
+            maskPixel++;
+        }
+
+        overlayRow += window->width;
+        maskRow += window->width;
+    }
+}
+
 } // namespace fallout

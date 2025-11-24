@@ -104,6 +104,7 @@ static void settingsFromConfig()
     settingsRead(GAME_CONFIG_DEBUG_KEY, GAME_CONFIG_SHOW_LOAD_INFO_KEY, settings.debug.show_load_info);
     settingsRead(GAME_CONFIG_DEBUG_KEY, GAME_CONFIG_OUTPUT_MAP_DATA_INFO_KEY, settings.debug.output_map_data_info);
     settingsRead(GAME_CONFIG_DEBUG_KEY, GAME_CONFIG_DEBUG_INPUT_OVERLAY_KEY, settings.debug.input_overlay);
+    settingsRead(GAME_CONFIG_DEBUG_KEY, GAME_CONFIG_HD_MISSING_WATERMARK_KEY, settings.debug.hd_missing_watermark);
 
     settingsRead(GAME_CONFIG_MAPPER_KEY, GAME_CONFIG_OVERRIDE_LIBRARIAN_KEY, settings.mapper.override_librarian);
     settingsRead(GAME_CONFIG_MAPPER_KEY, GAME_CONFIG_LIBRARIAN_KEY, settings.mapper.librarian);
@@ -182,6 +183,7 @@ static void settingsToConfig()
     settingsWrite(GAME_CONFIG_DEBUG_KEY, GAME_CONFIG_SHOW_LOAD_INFO_KEY, settings.debug.show_load_info);
     settingsWrite(GAME_CONFIG_DEBUG_KEY, GAME_CONFIG_OUTPUT_MAP_DATA_INFO_KEY, settings.debug.output_map_data_info);
     settingsWrite(GAME_CONFIG_DEBUG_KEY, GAME_CONFIG_DEBUG_INPUT_OVERLAY_KEY, settings.debug.input_overlay);
+    settingsWrite(GAME_CONFIG_DEBUG_KEY, GAME_CONFIG_HD_MISSING_WATERMARK_KEY, settings.debug.hd_missing_watermark);
 
     settingsWrite(GAME_CONFIG_MAPPER_KEY, GAME_CONFIG_OVERRIDE_LIBRARIAN_KEY, settings.mapper.override_librarian);
     settingsWrite(GAME_CONFIG_MAPPER_KEY, GAME_CONFIG_LIBRARIAN_KEY, settings.mapper.librarian);

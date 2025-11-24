@@ -76,6 +76,7 @@ struct DebugSettings {
     bool show_load_info = false;
     bool output_map_data_info = false;
     bool input_overlay = false;
+    bool hd_missing_watermark = false;
 };
 
 struct MapperSettings {

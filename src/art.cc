@@ -7,6 +7,7 @@
 #include <limits>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "animation.h"
 #include "color.h"
@@ -67,6 +68,7 @@ struct HdTrueColorCacheStats {
     int hits = 0;
 };
 static HdTrueColorCacheStats gHdTrueColorCacheStats;
+static std::unordered_set<int> gHdTrueColorActiveFids;
 static void hdTrueColorRegistryClear()
 {
     gHdTrueColorFrameRegistry.clear();
@@ -383,6 +385,7 @@ void artReset()
 {
     hdTrueColorRegistryClear();
     gHdArtInfoCache.clear();
+    gHdTrueColorActiveFids.clear();
 }
 
 // 0x418EBC
@@ -390,6 +393,7 @@ void artExit()
 {
     hdTrueColorRegistryClear();
     gHdArtInfoCache.clear();
+    gHdTrueColorActiveFids.clear();
 
     cacheFree(&gArtCache);
 
@@ -1945,6 +1949,39 @@ void artTrueColorStatsLog(const char* mapName)
             hits,
             misses);
     }
+}
+
+void artTrueColorMarkActive(int fid)
+{
+    if (fid < 0) {
+        return;
+    }
+
+    gHdTrueColorActiveFids.insert(fid);
+}
+
+bool artTrueColorMarkInactive(int fid, const char* reason)
+{
+    if (fid < 0) {
+        return false;
+    }
+
+    auto it = gHdTrueColorActiveFids.find(fid);
+    if (it == gHdTrueColorActiveFids.end()) {
+        return false;
+    }
+
+    gHdTrueColorActiveFids.erase(it);
+
+    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        diagnosticsLog(DiagnosticsLevel::Info,
+            "SCALER",
+            "hd_overlay disabled fid=%d reason=%s",
+            fid,
+            reason != nullptr ? reason : "unknown");
+    }
+
+    return true;
 }
 
 } // namespace fallout

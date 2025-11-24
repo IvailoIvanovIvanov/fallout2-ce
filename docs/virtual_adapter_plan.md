@@ -67,8 +67,10 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 - [ ] **S4.3** Introduce fallbacks when an HD asset is missing, logging hits/misses for modders.
 	- [x] **Cache scorecards:** count HD hits/misses per map load inside the registry and dump a `SCALER hd_cache map=VaultCity hits=42 misses=3` line right after `mapLoadByName` settles. The Neon Archivist can then tell modders exactly which sprites still need repainting.
 		- `artTrueColorStatsReset/Log` now bookmark every HD lookup and print the scorecard as soon as a map successfully loads (saved games included). The SCALER channel shows `hits`, `misses`, and the map tag so the Archivist can roast lazy repaint crews in release notes.
-	- **Graceful decay:** if a registration vanishes mid-frame (cache eviction, mod reload, feral molerat), auto-disable the overlay for that fid and note it in diagnostics so QA knows why a sprite snapped back to 8-bit.
-	- **Fallback glyphs:** keep a tiny “missing HD” watermark (just a masked debug swatch) that can be toggled via config; scribes testing packs will see instantly when the compositor reverted to indexed art.
+	- [x] **Graceful decay:** if a registration vanishes mid-frame (cache eviction, mod reload, feral molerat), auto-disable the overlay for that fid and note it in diagnostics so QA knows why a sprite snapped back to 8-bit.
+		- The iso renderer now tracks which fids have ever drawn HD pixels; if the registry drops them, we scrub their overlay, stamp a `windowDebugStampMissingHdGlyph` ping, and emit `SCALER hd_overlay disabled fid=... reason=...` exactly once per dropout so QA can track regressions without log spam.
+	- [x] **Fallback glyphs:** keep a tiny “missing HD” watermark (just a masked debug swatch) that can be toggled via config; scribes testing packs will see instantly when the compositor reverted to indexed art.
+		- Flip `[debug] hd_missing_watermark=1` in `fallout2.cfg` to paint the neon chevron any time a tile/object falls back to 8-bit; the helper lives entirely in VRAM, so no 8-bit pixels are harmed.
 
 ## Stage 5 – Stretch Goals & Polish
 - [ ] **S5.1** Add optional shaders/post-effects (CRT, bloom, whatever the Overseer deems tasteful).

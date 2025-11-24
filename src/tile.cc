@@ -1739,6 +1739,7 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
 
     HdTrueColorFrameView trueColorView;
     bool hasTrueColor = false;
+    bool lostTrueColor = false;
 
     if (left < 0) {
         left = 0;
@@ -1771,14 +1772,17 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
                             fid,
                             static_cast<int>(trueColorView.alphaMode));
                     }
+                    lostTrueColor |= artTrueColorMarkInactive(fid, "alpha_mode");
                 } else {
                     hasTrueColor = trueColorView.pixels != nullptr;
-                }
-
-                if (hasTrueColor) {
-                    assert(trueColorView.width == frameWidth && trueColorView.height == frameHeight);
+                    if (hasTrueColor) {
+                        artTrueColorMarkActive(fid);
+                        assert(trueColorView.width == frameWidth && trueColorView.height == frameHeight);
+                    }
                 }
             }
+        } else {
+            lostTrueColor |= artTrueColorMarkInactive(fid, "registry_miss");
         }
     }
 
@@ -1816,6 +1820,17 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
     renderRect.right = x + v77 - 1;
     renderRect.bottom = y + v76 - 1;
     renderTraceRecord(RenderTraceLayer::TileFloor, fid, 0, 0, renderRect, gElevation, renderRect.bottom);
+
+    if (lostTrueColor) {
+        tileClearTrueColorRegion(renderRect);
+        if (gTileWindowId != -1) {
+            windowDebugStampMissingHdGlyph(gTileWindowId,
+                renderRect.left,
+                renderRect.top,
+                rectGetWidth(&renderRect),
+                rectGetHeight(&renderRect));
+        }
+    }
 
     tile = tileFromScreenXY(savedX, savedY + tileScaleValue(13), gElevation);
     if (tile != -1) {

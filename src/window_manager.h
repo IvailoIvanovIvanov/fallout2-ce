@@ -187,6 +187,7 @@ bool windowHasTrueColorOverlay(int win);
 uint32_t* windowGetTrueColorOverlay(int win);
 unsigned char* windowGetTrueColorMask(int win);
 void windowClearTrueColorRegion(int win, int left, int top, int width, int height);
+void windowDebugStampMissingHdGlyph(int win, int left, int top, int width, int height);
 Window* windowGetWindow(int win);
 unsigned char* windowGetBuffer(int win);
 bool windowResolveBufferRect(const unsigned char* buffer, int pitch, int width, int height, Rect* outRect);

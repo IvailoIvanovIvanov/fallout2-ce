@@ -295,6 +295,25 @@ static void objectsBindTrueColorOverlay()
     }
 }
 
+static void objectsClearTrueColorRegion(const Rect& rect)
+{
+    if (!objectsHasTrueColorOverlay()) {
+        return;
+    }
+
+    Rect clippedRect;
+    Rect temp = rect;
+    if (rectIntersection(&temp, &gObjectsWindowRect, &clippedRect) == -1) {
+        return;
+    }
+
+    windowClearTrueColorRegion(gIsoWindow,
+        clippedRect.left - gObjectsWindowRect.left,
+        clippedRect.top - gObjectsWindowRect.top,
+        rectGetWidth(&clippedRect),
+        rectGetHeight(&clippedRect));
+}
+
 static void objectsBlitTrueColorOverlay(const HdTrueColorFrameView& view,
     const unsigned char* indexed,
     int frameWidth,
@@ -5023,6 +5042,7 @@ static void _obj_render_object(Object* object, Rect* rect, int light, RenderTrac
 
     HdTrueColorFrameView trueColorView;
     bool hasTrueColor = false;
+    bool lostTrueColor = false;
     int trueColorOffsetX = 0;
     int trueColorOffsetY = 0;
     if (objectsHasTrueColorOverlay()) {
@@ -5036,6 +5056,7 @@ static void _obj_render_object(Object* object, Rect* rect, int light, RenderTrac
                             object->fid,
                             static_cast<int>(trueColorView.alphaMode));
                     }
+                    lostTrueColor |= artTrueColorMarkInactive(object->fid, "alpha_mode");
                 } else if ((object->flags & OBJECT_FLAG_0xFC000) == 0) {
                     hasTrueColor = trueColorView.pixels != nullptr;
                     trueColorOffsetX = v50;
@@ -5043,7 +5064,10 @@ static void _obj_render_object(Object* object, Rect* rect, int light, RenderTrac
 
                     if (hasTrueColor) {
                         assert(trueColorView.width == frameWidth && trueColorView.height == frameHeight);
+                        artTrueColorMarkActive(object->fid);
                     }
+                } else {
+                    lostTrueColor |= artTrueColorMarkInactive(object->fid, "translucent_object");
                 }
             } else if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
                 diagnosticsLog(DiagnosticsLevel::Info,
@@ -5054,7 +5078,10 @@ static void _obj_render_object(Object* object, Rect* rect, int light, RenderTrac
                     frameHeight,
                     trueColorView.width,
                     trueColorView.height);
+                lostTrueColor |= artTrueColorMarkInactive(object->fid, "dimension_mismatch");
             }
+        } else {
+            lostTrueColor |= artTrueColorMarkInactive(object->fid, "registry_miss");
         }
     }
 
@@ -5219,6 +5246,13 @@ APPLY_TRUE_COLOR_OVERLAY:
             objectWidth,
             objectHeight,
             intensityIndex);
+    } else if (lostTrueColor) {
+        objectsClearTrueColorRegion(objectRect);
+        windowDebugStampMissingHdGlyph(gIsoWindow,
+            objectRect.left - gObjectsWindowRect.left,
+            objectRect.top - gObjectsWindowRect.top,
+            objectWidth,
+            objectHeight);
     }
 
     artUnlock(cacheEntry);
