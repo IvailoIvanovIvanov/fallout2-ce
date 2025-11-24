@@ -47,6 +47,7 @@ static int artReadHeader(Art* art, File* stream);
 static int artGetDataSize(Art* art);
 static int paddingForSize(int size);
 static void artTraceRenderOp(int fid, unsigned char* dest, int pitch, int width, int height);
+static void hdTrueColorRegistryClear();
 
 struct HdArtInfo {
     std::string path;
@@ -59,6 +60,11 @@ struct HdPngStream {
 };
 
 static std::unordered_map<int, HdArtInfo> gHdArtInfoCache;
+static std::unordered_map<const unsigned char*, HdTrueColorFrameView> gHdTrueColorFrameRegistry;
+static void hdTrueColorRegistryClear()
+{
+    gHdTrueColorFrameRegistry.clear();
+}
 
 static bool hdArtSupportedType(int type);
 static bool hdArtBuildPngFilePath(int fid, char* path, size_t size);
@@ -357,12 +363,14 @@ int artInit()
 // 0x418EB8
 void artReset()
 {
+    hdTrueColorRegistryClear();
     gHdArtInfoCache.clear();
 }
 
 // 0x418EBC
 void artExit()
 {
+    hdTrueColorRegistryClear();
     gHdArtInfoCache.clear();
 
     cacheFree(&gArtCache);
@@ -575,6 +583,7 @@ int artUnlock(CacheEntry* handle)
 // 0x41927C
 int artCacheFlush()
 {
+    hdTrueColorRegistryClear();
     return cacheFlush(&gArtCache);
 }
 
@@ -1695,30 +1704,110 @@ void FrmImage::unlock()
 
 // Legacy true-color hooks ---------------------------------------------------
 
-bool artGetTrueColorFrame(int /*fid*/, HdTrueColorFrameView& out)
+bool artGetTrueColorFrame(int fid, HdTrueColorFrameView& out)
 {
     out.pixels = nullptr;
     out.width = 0;
     out.height = 0;
-    return false;
+
+    CacheEntry* cacheEntry = nullptr;
+    int frameWidth = 0;
+    int frameHeight = 0;
+    unsigned char* indexed = artLockFrameDataReturningSize(fid, &cacheEntry, &frameWidth, &frameHeight);
+    if (indexed == nullptr) {
+        return false;
+    }
+
+    HdTrueColorFrameView registeredView;
+    bool found = artLookupRegisteredTrueColorFrame(indexed, registeredView);
+
+    if (cacheEntry != nullptr) {
+        artUnlock(cacheEntry);
+    }
+
+    if (!found) {
+        return false;
+    }
+
+    if (registeredView.width != frameWidth || registeredView.height != frameHeight) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "SCALER",
+                "artGetTrueColorFrame fid=%d rejected HD frame (expected %dx%d, got %dx%d)",
+                fid,
+                frameWidth,
+                frameHeight,
+                registeredView.width,
+                registeredView.height);
+        }
+        return false;
+    }
+
+    out = registeredView;
+    return out.pixels != nullptr;
 }
 
-void artRegisterTrueColorFrameData(const unsigned char* /*indexed*/, const uint32_t* /*pixels*/, int /*width*/, int /*height*/)
+void artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t* pixels, int width, int height)
 {
-    // Placeholder to keep old registration code compilable.
+    if (indexed == nullptr || pixels == nullptr || width <= 0 || height <= 0) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info, "SCALER", "artRegisterTrueColorFrameData rejected invalid input");
+        }
+        return;
+    }
+
+    HdTrueColorFrameView view;
+    view.pixels = pixels;
+    view.width = width;
+    view.height = height;
+
+    gHdTrueColorFrameRegistry[indexed] = view;
+
+    if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        diagnosticsLog(DiagnosticsLevel::Trace,
+            "SCALER",
+            "artRegisterTrueColorFrameData indexed=%p size=%dx%d",
+            indexed,
+            width,
+            height);
+    }
 }
 
-void artUnregisterTrueColorFrameData(const unsigned char* /*indexed*/)
+void artUnregisterTrueColorFrameData(const unsigned char* indexed)
 {
-    // Nothing to clean up while true-color overlays are disabled.
+    if (indexed == nullptr) {
+        return;
+    }
+
+    auto it = gHdTrueColorFrameRegistry.find(indexed);
+    if (it == gHdTrueColorFrameRegistry.end()) {
+        return;
+    }
+
+    gHdTrueColorFrameRegistry.erase(it);
+
+    if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        diagnosticsLog(DiagnosticsLevel::Trace, "SCALER", "artUnregisterTrueColorFrameData indexed=%p", indexed);
+    }
 }
 
-bool artLookupRegisteredTrueColorFrame(const unsigned char* /*indexed*/, HdTrueColorFrameView& out)
+bool artLookupRegisteredTrueColorFrame(const unsigned char* indexed, HdTrueColorFrameView& out)
 {
     out.pixels = nullptr;
     out.width = 0;
     out.height = 0;
-    return false;
+
+    if (indexed == nullptr) {
+        return false;
+    }
+
+    auto it = gHdTrueColorFrameRegistry.find(indexed);
+    if (it == gHdTrueColorFrameRegistry.end()) {
+        return false;
+    }
+
+    out = it->second;
+    return out.pixels != nullptr && out.width > 0 && out.height > 0;
 }
 
 } // namespace fallout
