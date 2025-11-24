@@ -454,6 +454,53 @@ static void artTraceRenderOp(int fid, unsigned char* dest, int pitch, int width,
     renderTraceRecord(RenderTraceLayer::Ui, fid, 0, 0, rect, -1, rect.bottom);
 }
 
+static void artBlitTrueColorUiSprite(const HdTrueColorFrameView& view,
+    const unsigned char* indexed,
+    uint32_t* overlay,
+    unsigned char* mask,
+    int overlayPitch,
+    int width,
+    int height)
+{
+    if (view.pixels == nullptr || overlay == nullptr || mask == nullptr) {
+        return;
+    }
+
+    const int intensityIndex = 128;
+
+    const uint32_t* trueColorRow = view.pixels;
+    const unsigned char* indexedRow = indexed;
+    uint32_t* overlayRow = overlay;
+    unsigned char* maskRow = mask;
+
+    for (int row = 0; row < height; row++) {
+        const uint32_t* trueColorPixel = trueColorRow;
+        const unsigned char* indexedPixel = indexedRow;
+        uint32_t* overlayPixel = overlayRow;
+        unsigned char* maskPixel = maskRow;
+
+        for (int column = 0; column < width; column++) {
+            if (*indexedPixel != 0) {
+                *overlayPixel = colorApplyLightingToArgb(*trueColorPixel, intensityIndex);
+                *maskPixel = 1;
+            } else {
+                *overlayPixel = 0;
+                *maskPixel = 0;
+            }
+
+            indexedPixel++;
+            trueColorPixel++;
+            overlayPixel++;
+            maskPixel++;
+        }
+
+        indexedRow += view.width;
+        trueColorRow += view.width;
+        overlayRow += overlayPitch;
+        maskRow += overlayPitch;
+    }
+}
+
 // 0x418FFC
 void artRender(int fid, unsigned char* dest, int width, int height, int pitch)
 {
@@ -511,6 +558,44 @@ void artRender(int fid, unsigned char* dest, int width, int height, int pitch)
             target,
             pitch);
         artTraceRenderOp(fid, target, pitch, frameWidth, frameHeight);
+
+        HdTrueColorFrameView trueColorView;
+        if (artLookupRegisteredTrueColorFrame(frameData, trueColorView)) {
+            if (trueColorView.width == frameWidth && trueColorView.height == frameHeight) {
+                if (trueColorView.alphaMode != HdAlphaMode::Straight) {
+                    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                        diagnosticsLog(DiagnosticsLevel::Info,
+                            "SCALER",
+                            "artRender fid=%d rejected HD frame due to alphaMode=%d",
+                            fid,
+                            static_cast<int>(trueColorView.alphaMode));
+                    }
+                } else {
+                    Rect overlayRect;
+                    uint32_t* overlayPixels = nullptr;
+                    unsigned char* overlayMask = nullptr;
+                    int overlayPitch = 0;
+                    if (windowResolveTrueColorRegion(target, pitch, frameWidth, frameHeight, &overlayRect, &overlayPixels, &overlayMask, &overlayPitch)) {
+                        artBlitTrueColorUiSprite(trueColorView,
+                            frameData,
+                            overlayPixels,
+                            overlayMask,
+                            overlayPitch,
+                            frameWidth,
+                            frameHeight);
+                    }
+                }
+            } else if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                diagnosticsLog(DiagnosticsLevel::Info,
+                    "SCALER",
+                    "artRender fid=%d rejected HD frame mismatch indexed=%dx%d hd=%dx%d",
+                    fid,
+                    frameWidth,
+                    frameHeight,
+                    trueColorView.width,
+                    trueColorView.height);
+            }
+        }
     }
 
     artUnlock(handle);

@@ -11,6 +11,7 @@
 #include "combat.h"
 #include "critter.h"
 #include "debug.h"
+#include "diagnostics.h"
 #include "draw.h"
 #include "game.h"
 #include "game_mouse.h"
@@ -27,6 +28,7 @@
 #include "svga.h"
 #include "text_object.h"
 #include "tile.h"
+#include "window_manager.h"
 #include "worldmap.h"
 
 namespace fallout {
@@ -271,6 +273,81 @@ static int gObjectsWindowPitch;
 // 0x6610B4
 static int gObjectsWindowWidth;
 
+static uint32_t* gObjectsWindowTrueColorOverlay = nullptr;
+static unsigned char* gObjectsWindowTrueColorMask = nullptr;
+static int gObjectsWindowTrueColorPitch = 0;
+
+static inline bool objectsHasTrueColorOverlay()
+{
+    return gObjectsWindowTrueColorOverlay != nullptr && gObjectsWindowTrueColorMask != nullptr && gObjectsWindowTrueColorPitch > 0;
+}
+
+static void objectsBindTrueColorOverlay()
+{
+    if (windowHasTrueColorOverlay(gIsoWindow)) {
+        gObjectsWindowTrueColorOverlay = windowGetTrueColorOverlay(gIsoWindow);
+        gObjectsWindowTrueColorMask = windowGetTrueColorMask(gIsoWindow);
+        gObjectsWindowTrueColorPitch = windowGetWidth(gIsoWindow);
+    } else {
+        gObjectsWindowTrueColorOverlay = nullptr;
+        gObjectsWindowTrueColorMask = nullptr;
+        gObjectsWindowTrueColorPitch = 0;
+    }
+}
+
+static void objectsBlitTrueColorOverlay(const HdTrueColorFrameView& view,
+    const unsigned char* indexed,
+    int frameWidth,
+    int offsetX,
+    int offsetY,
+    const Rect& objectRect,
+    int objectWidth,
+    int objectHeight,
+    int intensityIndex)
+{
+    if (!objectsHasTrueColorOverlay()) {
+        return;
+    }
+
+    if (view.pixels == nullptr) {
+        return;
+    }
+
+    int clampedIntensity = std::clamp(intensityIndex, 0, 255);
+
+    const uint32_t* trueColorSrcRow = view.pixels + view.width * offsetY + offsetX;
+    const unsigned char* indexedRow = indexed;
+    uint32_t* overlayRow = gObjectsWindowTrueColorOverlay + gObjectsWindowTrueColorPitch * objectRect.top + objectRect.left;
+    unsigned char* maskRow = gObjectsWindowTrueColorMask + gObjectsWindowTrueColorPitch * objectRect.top + objectRect.left;
+
+    for (int row = 0; row < objectHeight; row++) {
+        const uint32_t* trueColorPixel = trueColorSrcRow;
+        const unsigned char* indexedPixel = indexedRow;
+        uint32_t* overlayPixel = overlayRow;
+        unsigned char* maskPixel = maskRow;
+
+        for (int column = 0; column < objectWidth; column++) {
+            if (*indexedPixel != 0) {
+                *overlayPixel = colorApplyLightingToArgb(*trueColorPixel, clampedIntensity);
+                *maskPixel = 1;
+            } else {
+                *overlayPixel = 0;
+                *maskPixel = 0;
+            }
+
+            indexedPixel++;
+            trueColorPixel++;
+            overlayPixel++;
+            maskPixel++;
+        }
+
+        indexedRow += frameWidth;
+        trueColorSrcRow += view.width;
+        overlayRow += gObjectsWindowTrueColorPitch;
+        maskRow += gObjectsWindowTrueColorPitch;
+    }
+}
+
 // obj_dude
 // 0x6610B8
 Object* gDude;
@@ -339,6 +416,8 @@ int objectsInit(unsigned char* buf, int width, int height, int pitch)
     dudeFid = buildFid(OBJ_TYPE_CRITTER, _art_vault_guy_num, 0, 0, 0);
     objectCreateWithFidPid(&gDude, dudeFid, 0x1000000);
 
+    objectsBindTrueColorOverlay();
+
     gDude->flags |= OBJECT_NO_REMOVE;
     gDude->flags |= OBJECT_NO_SAVE;
     gDude->flags |= OBJECT_HIDDEN;
@@ -406,6 +485,10 @@ void objectsExit()
         _obj_order_table_exit();
 
         _obj_offset_table_exit();
+
+        gObjectsWindowTrueColorOverlay = nullptr;
+        gObjectsWindowTrueColorMask = nullptr;
+        gObjectsWindowTrueColorPitch = 0;
     }
 }
 
@@ -4938,6 +5021,39 @@ static void _obj_render_object(Object* object, Rect* rect, int light, RenderTrac
 
     renderTraceRecord(layer, object->fid, object->frame, object->rotation, objectRect, object->elevation, objectRect.bottom);
 
+    HdTrueColorFrameView trueColorView;
+    bool hasTrueColor = false;
+    int trueColorOffsetX = 0;
+    int trueColorOffsetY = 0;
+    if (objectsHasTrueColorOverlay()) {
+        if (artLookupRegisteredTrueColorFrame(src2, trueColorView)) {
+            if (trueColorView.width == frameWidth && trueColorView.height == frameHeight) {
+                if (trueColorView.alphaMode != HdAlphaMode::Straight) {
+                    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                        diagnosticsLog(DiagnosticsLevel::Info,
+                            "SCALER",
+                            "_obj_render_object fid=%d rejected HD frame due to alphaMode=%d",
+                            object->fid,
+                            static_cast<int>(trueColorView.alphaMode));
+                    }
+                } else if ((object->flags & OBJECT_FLAG_0xFC000) == 0) {
+                    hasTrueColor = trueColorView.pixels != nullptr;
+                    trueColorOffsetX = v50;
+                    trueColorOffsetY = v49;
+                }
+            } else if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                diagnosticsLog(DiagnosticsLevel::Info,
+                    "SCALER",
+                    "_obj_render_object fid=%d rejected HD frame mismatch indexed=%dx%d hd=%dx%d",
+                    object->fid,
+                    frameWidth,
+                    frameHeight,
+                    trueColorView.width,
+                    trueColorView.height);
+            }
+        }
+    }
+
     if (type == 6) {
         blitBufferToBufferTrans(src,
             objectWidth,
@@ -4945,8 +5061,7 @@ static void _obj_render_object(Object* object, Rect* rect, int light, RenderTrac
             frameWidth,
             gObjectsWindowBuffer + gObjectsWindowPitch * objectRect.top + objectRect.left,
             gObjectsWindowPitch);
-        artUnlock(cacheEntry);
-        return;
+        goto APPLY_TRUE_COLOR_OVERLAY;
     }
 
     if (type == 2 || type == 3) {
@@ -5058,8 +5173,8 @@ static void _obj_render_object(Object* object, Rect* rect, int light, RenderTrac
                         eggWidth,
                         light);
                     artUnlock(eggHandle);
-                    artUnlock(cacheEntry);
-                    return;
+                    hasTrueColor = false;
+                    goto APPLY_TRUE_COLOR_OVERLAY;
                 }
 
                 artUnlock(eggHandle);
@@ -5086,6 +5201,20 @@ static void _obj_render_object(Object* object, Rect* rect, int light, RenderTrac
     default:
         _dark_trans_buf_to_buf(src, objectWidth, objectHeight, frameWidth, gObjectsWindowBuffer, objectRect.left, objectRect.top, gObjectsWindowPitch, light);
         break;
+    }
+
+APPLY_TRUE_COLOR_OVERLAY:
+    if (hasTrueColor) {
+        int intensityIndex = light / 512;
+        objectsBlitTrueColorOverlay(trueColorView,
+            src,
+            frameWidth,
+            trueColorOffsetX,
+            trueColorOffsetY,
+            objectRect,
+            objectWidth,
+            objectHeight,
+            intensityIndex);
     }
 
     artUnlock(cacheEntry);

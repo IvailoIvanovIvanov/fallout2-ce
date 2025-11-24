@@ -1402,6 +1402,81 @@ bool windowResolveBufferRect(const unsigned char* buffer, int pitch, int width, 
     return false;
 }
 
+bool windowResolveTrueColorRegion(const unsigned char* buffer, int pitch, int width, int height, Rect* outRect, uint32_t** outOverlay, unsigned char** outMask, int* outOverlayPitch)
+{
+    if (!gWindowSystemInitialized) {
+        return false;
+    }
+
+    if (buffer == nullptr || width <= 0 || height <= 0 || pitch <= 0) {
+        return false;
+    }
+
+    for (int index = 0; index < gWindowsLength; index++) {
+        Window* window = gWindows[index];
+        if (window == nullptr || window->buffer == nullptr) {
+            continue;
+        }
+
+        if (window->trueColorOverlay == nullptr || window->trueColorMask == nullptr) {
+            continue;
+        }
+
+        if (pitch != window->width) {
+            continue;
+        }
+
+        ptrdiff_t delta = buffer - window->buffer;
+        if (delta < 0) {
+            continue;
+        }
+
+        const ptrdiff_t limit = static_cast<ptrdiff_t>(window->width) * window->height;
+        if (delta >= limit) {
+            continue;
+        }
+
+        int localY = static_cast<int>(delta / window->width);
+        int localX = static_cast<int>(delta % window->width);
+
+        Rect resolved;
+        resolved.left = window->rect.left + localX;
+        resolved.top = window->rect.top + localY;
+        resolved.right = resolved.left + width - 1;
+        resolved.bottom = resolved.top + height - 1;
+
+        Rect clipped;
+        rectCopy(&clipped, &resolved);
+        if (rectIntersection(&resolved, &(window->rect), &clipped) == -1) {
+            continue;
+        }
+
+        if (clipped.left != resolved.left || clipped.top != resolved.top || clipped.right != resolved.right || clipped.bottom != resolved.bottom) {
+            continue;
+        }
+
+        if (outRect != nullptr) {
+            *outRect = clipped;
+        }
+
+        if (outOverlay != nullptr) {
+            *outOverlay = window->trueColorOverlay + localY * window->width + localX;
+        }
+
+        if (outMask != nullptr) {
+            *outMask = window->trueColorMask + localY * window->width + localX;
+        }
+
+        if (outOverlayPitch != nullptr) {
+            *outOverlayPitch = window->width;
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
 // 0x4D78CC
 int windowGetAtPoint(int x, int y)
 {
