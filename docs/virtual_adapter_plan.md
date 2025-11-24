@@ -65,7 +65,8 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 		- Window compositor now scrubs every overlay/mask pair before an SDL blit, zeroing stale RGBA where the mask went dark and shouting about any sanitized pixels so mask leaks can’t ghost onto the wasteland skyline.
 		- Tile, critter, and UI swap paths all assert that HD sheets match their indexed ancestors the instant they’re accepted, so a malformed pack trips diagnostics immediately instead of smearing magma-colored seams across the Vault wall.
 - [ ] **S4.3** Introduce fallbacks when an HD asset is missing, logging hits/misses for modders.
-	- **Cache scorecards:** count HD hits/misses per map load inside the registry and dump a `SCALER hd_cache map=VaultCity hits=42 misses=3` line right after `mapLoadByName` settles. The Neon Archivist can then tell modders exactly which sprites still need repainting.
+	- [x] **Cache scorecards:** count HD hits/misses per map load inside the registry and dump a `SCALER hd_cache map=VaultCity hits=42 misses=3` line right after `mapLoadByName` settles. The Neon Archivist can then tell modders exactly which sprites still need repainting.
+		- `artTrueColorStatsReset/Log` now bookmark every HD lookup and print the scorecard as soon as a map successfully loads (saved games included). The SCALER channel shows `hits`, `misses`, and the map tag so the Archivist can roast lazy repaint crews in release notes.
 	- **Graceful decay:** if a registration vanishes mid-frame (cache eviction, mod reload, feral molerat), auto-disable the overlay for that fid and note it in diagnostics so QA knows why a sprite snapped back to 8-bit.
 	- **Fallback glyphs:** keep a tiny “missing HD” watermark (just a masked debug swatch) that can be toggled via config; scribes testing packs will see instantly when the compositor reverted to indexed art.
 

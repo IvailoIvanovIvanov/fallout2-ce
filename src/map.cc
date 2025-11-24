@@ -822,7 +822,11 @@ int mapLoadByName(char* fileName)
 
         if (stream != nullptr) {
             fileClose(stream);
+            artTrueColorStatsReset();
             rc = mapLoadSaved(fileName);
+            if (rc == 0) {
+                artTrueColorStatsLog(fileName);
+            }
             wmMapMusicStart();
         }
     }
@@ -831,8 +835,12 @@ int mapLoadByName(char* fileName)
         const char* filePath = mapBuildPath(fileName);
         File* stream = fileOpen(filePath, "rb");
         if (stream != nullptr) {
+            artTrueColorStatsReset();
             rc = mapLoad(stream);
             fileClose(stream);
+            if (rc == 0) {
+                artTrueColorStatsLog(fileName);
+            }
         }
 
         if (rc == 0) {

@@ -62,6 +62,11 @@ struct HdPngStream {
 
 static std::unordered_map<int, HdArtInfo> gHdArtInfoCache;
 static std::unordered_map<const unsigned char*, HdTrueColorFrameView> gHdTrueColorFrameRegistry;
+struct HdTrueColorCacheStats {
+    int requests = 0;
+    int hits = 0;
+};
+static HdTrueColorCacheStats gHdTrueColorCacheStats;
 static void hdTrueColorRegistryClear()
 {
     gHdTrueColorFrameRegistry.clear();
@@ -1902,13 +1907,44 @@ bool artLookupRegisteredTrueColorFrame(const unsigned char* indexed, HdTrueColor
         return false;
     }
 
+    gHdTrueColorCacheStats.requests++;
+
     auto it = gHdTrueColorFrameRegistry.find(indexed);
     if (it == gHdTrueColorFrameRegistry.end()) {
         return false;
     }
 
     out = it->second;
-    return out.pixels != nullptr && out.width > 0 && out.height > 0;
+    bool hit = out.pixels != nullptr && out.width > 0 && out.height > 0;
+    if (hit) {
+        gHdTrueColorCacheStats.hits++;
+    }
+    return hit;
+}
+
+void artTrueColorStatsReset()
+{
+    gHdTrueColorCacheStats.requests = 0;
+    gHdTrueColorCacheStats.hits = 0;
+}
+
+void artTrueColorStatsLog(const char* mapName)
+{
+    int requests = gHdTrueColorCacheStats.requests;
+    int hits = gHdTrueColorCacheStats.hits;
+    int misses = requests - hits;
+    if (misses < 0) {
+        misses = 0;
+    }
+
+    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        diagnosticsLog(DiagnosticsLevel::Info,
+            "SCALER",
+            "hd_cache map=%s hits=%d misses=%d",
+            mapName != nullptr ? mapName : "<unknown>",
+            hits,
+            misses);
+    }
 }
 
 } // namespace fallout

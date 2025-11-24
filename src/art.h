@@ -169,6 +169,8 @@ bool artGetTrueColorFrame(int fid, HdTrueColorFrameView& out);
 void artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t* pixels, int width, int height, HdAlphaMode alphaMode = HdAlphaMode::Straight);
 void artUnregisterTrueColorFrameData(const unsigned char* indexed);
 bool artLookupRegisteredTrueColorFrame(const unsigned char* indexed, HdTrueColorFrameView& out);
+void artTrueColorStatsReset();
+void artTrueColorStatsLog(const char* mapName);
 
 class FrmImage {
 public:
