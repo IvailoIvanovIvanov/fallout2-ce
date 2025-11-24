@@ -1774,6 +1774,10 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
                 } else {
                     hasTrueColor = trueColorView.pixels != nullptr;
                 }
+
+                if (hasTrueColor) {
+                    assert(trueColorView.width == frameWidth && trueColorView.height == frameHeight);
+                }
             }
         }
     }

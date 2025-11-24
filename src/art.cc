@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <assert.h>
 #include <limits>
 #include <string>
 #include <unordered_map>
@@ -571,6 +572,7 @@ void artRender(int fid, unsigned char* dest, int width, int height, int pitch)
                             static_cast<int>(trueColorView.alphaMode));
                     }
                 } else {
+                    assert(trueColorView.width == frameWidth && trueColorView.height == frameHeight);
                     Rect overlayRect;
                     uint32_t* overlayPixels = nullptr;
                     unsigned char* overlayMask = nullptr;

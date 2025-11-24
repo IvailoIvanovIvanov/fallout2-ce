@@ -5040,6 +5040,10 @@ static void _obj_render_object(Object* object, Rect* rect, int light, RenderTrac
                     hasTrueColor = trueColorView.pixels != nullptr;
                     trueColorOffsetX = v50;
                     trueColorOffsetY = v49;
+
+                    if (hasTrueColor) {
+                        assert(trueColorView.width == frameWidth && trueColorView.height == frameHeight);
+                    }
                 }
             } else if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
                 diagnosticsLog(DiagnosticsLevel::Info,

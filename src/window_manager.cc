@@ -50,6 +50,7 @@ static void virtualScreenResetDirty();
 static void virtualScreenInvalidateRect(const Rect* rect);
 static void virtualScreenInvalidateAll();
 static int windowCompositeTrueColorOverlays(const Rect& rect);
+static int windowScrubTrueColorMask(uint32_t* overlayStart, unsigned char* maskStart, int pitch, int width, int height);
 
 // 0x50FA30
 static char _path_patches[] = "";
@@ -173,6 +174,37 @@ static void virtualScreenInvalidateAll()
     virtualScreenInvalidateRect(&bounds);
 }
 
+static int windowScrubTrueColorMask(uint32_t* overlayStart, unsigned char* maskStart, int pitch, int width, int height)
+{
+    int sanitized = 0;
+
+    for (int row = 0; row < height; row++) {
+        uint32_t* overlayRow = overlayStart + row * pitch;
+        unsigned char* maskRow = maskStart + row * pitch;
+
+        for (int column = 0; column < width; column++) {
+            if (maskRow[column] == 0) {
+                if (overlayRow[column] != 0) {
+                    overlayRow[column] = 0;
+                }
+                continue;
+            }
+
+            if (maskRow[column] != 1) {
+                maskRow[column] = 1;
+            }
+
+            if ((overlayRow[column] >> 24) == 0) {
+                maskRow[column] = 0;
+                overlayRow[column] = 0;
+                sanitized++;
+            }
+        }
+    }
+
+    return sanitized;
+}
+
 static int windowCompositeTrueColorOverlays(const Rect& rect)
 {
     if (!gVirtualScreenEnabled) {
@@ -200,8 +232,21 @@ static int windowCompositeTrueColorOverlays(const Rect& rect)
 
         int offsetX = clipped.left - window->rect.left;
         int offsetY = clipped.top - window->rect.top;
-        const uint32_t* overlayStart = window->trueColorOverlay + offsetY * window->width + offsetX;
-        const unsigned char* maskStart = window->trueColorMask + offsetY * window->width + offsetX;
+        uint32_t* overlayStart = window->trueColorOverlay + offsetY * window->width + offsetX;
+        unsigned char* maskStart = window->trueColorMask + offsetY * window->width + offsetX;
+
+        int sanitized = windowScrubTrueColorMask(overlayStart, maskStart, window->width, width, height);
+        if (sanitized > 0 && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "SCALER",
+                "windowCompositeTrueColorOverlays scrubbed=%d window=%d rect=(%d,%d %dx%d)",
+                sanitized,
+                window->id,
+                clipped.left,
+                clipped.top,
+                width,
+                height);
+        }
 
         pixelsOverridden += blitTrueColorRectToTexture(overlayStart, maskStart, window->width, clipped);
     }
