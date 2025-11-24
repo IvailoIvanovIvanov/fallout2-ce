@@ -456,6 +456,48 @@ void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect
     }
 }
 
+int blitTrueColorRectToTexture(const uint32_t* src, const unsigned char* mask, int srcPitch, const Rect& rect)
+{
+    if (src == nullptr || gSdlTextureSurface == nullptr) {
+        return 0;
+    }
+
+    const int width = rectGetWidth(&rect);
+    const int height = rectGetHeight(&rect);
+    if (width <= 0 || height <= 0) {
+        return 0;
+    }
+
+    if (gSdlTextureSurface->format == nullptr || gSdlTextureSurface->format->BytesPerPixel != 4) {
+        return 0;
+    }
+
+    const int bytesPerPixel = gSdlTextureSurface->format->BytesPerPixel;
+    unsigned char* destPixels = static_cast<unsigned char*>(gSdlTextureSurface->pixels);
+    int pixelsWritten = 0;
+
+    for (int row = 0; row < height; row++) {
+        const uint32_t* srcRow = src + row * srcPitch;
+        const unsigned char* maskRow = mask != nullptr ? mask + row * srcPitch : nullptr;
+        uint32_t* destRow = reinterpret_cast<uint32_t*>(destPixels + (rect.top + row) * gSdlTextureSurface->pitch + rect.left * bytesPerPixel);
+
+        if (maskRow == nullptr) {
+            memcpy(destRow, srcRow, width * sizeof(uint32_t));
+            pixelsWritten += width;
+            continue;
+        }
+
+        for (int column = 0; column < width; column++) {
+            if (maskRow[column] != 0) {
+                destRow[column] = srcRow[column];
+                pixelsWritten++;
+            }
+        }
+    }
+
+    return pixelsWritten;
+}
+
 // Clears drawing surface.
 //
 // 0x4CBBC8

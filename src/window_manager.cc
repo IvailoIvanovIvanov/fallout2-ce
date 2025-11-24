@@ -49,6 +49,7 @@ static void _GNW_button_refresh(Window* window, Rect* rect);
 static void virtualScreenResetDirty();
 static void virtualScreenInvalidateRect(const Rect* rect);
 static void virtualScreenInvalidateAll();
+static int windowCompositeTrueColorOverlays(const Rect& rect);
 
 // 0x50FA30
 static char _path_patches[] = "";
@@ -170,6 +171,42 @@ static void virtualScreenInvalidateAll()
 
     Rect bounds = displayScalerGetLogicalBounds();
     virtualScreenInvalidateRect(&bounds);
+}
+
+static int windowCompositeTrueColorOverlays(const Rect& rect)
+{
+    if (!gVirtualScreenEnabled) {
+        return 0;
+    }
+
+    int pixelsOverridden = 0;
+
+    for (int index = 0; index < gWindowsLength; index++) {
+        Window* window = gWindows[index];
+        if (window == nullptr || window->trueColorOverlay == nullptr || window->trueColorMask == nullptr) {
+            continue;
+        }
+
+        Rect clipped;
+        if (rectIntersection(&(window->rect), &rect, &clipped) == -1) {
+            continue;
+        }
+
+        int width = rectGetWidth(&clipped);
+        int height = rectGetHeight(&clipped);
+        if (width <= 0 || height <= 0) {
+            continue;
+        }
+
+        int offsetX = clipped.left - window->rect.left;
+        int offsetY = clipped.top - window->rect.top;
+        const uint32_t* overlayStart = window->trueColorOverlay + offsetY * window->width + offsetX;
+        const unsigned char* maskStart = window->trueColorMask + offsetY * window->width + offsetX;
+
+        pixelsOverridden += blitTrueColorRectToTexture(overlayStart, maskStart, window->width, clipped);
+    }
+
+    return pixelsOverridden;
 }
 
 // 0x4D5C30
@@ -318,6 +355,8 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
     window->tx = 0;
     window->ty = 0;
     window->buffer = nullptr;
+    window->trueColorOverlay = nullptr;
+    window->trueColorMask = nullptr;
     window->buttonListHead = nullptr;
     window->hoveredButton = nullptr;
     window->clickedButton = nullptr;
@@ -426,12 +465,49 @@ int windowCreate(int x, int y, int width, int height, int color, int flags)
         return -1;
     }
 
+    window->trueColorOverlay = nullptr;
+    window->trueColorMask = nullptr;
+
     int id = 1;
     while (windowGetWindow(id) != nullptr) {
         id++;
     }
 
     window->id = id;
+
+    if (gVirtualScreenEnabled) {
+        size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
+        size_t overlayBytes = pixelCount * sizeof(uint32_t);
+        uint32_t* overlay = nullptr;
+        unsigned char* mask = nullptr;
+
+        if (pixelCount > 0) {
+            overlay = (uint32_t*)internal_malloc(overlayBytes);
+            mask = (unsigned char*)internal_malloc(pixelCount);
+        }
+
+        if (overlay == nullptr || mask == nullptr) {
+            if (overlay != nullptr) {
+                internal_free(overlay);
+            }
+            if (mask != nullptr) {
+                internal_free(mask);
+            }
+
+            if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                diagnosticsLog(DiagnosticsLevel::Info,
+                    "SCALER",
+                    "windowCreate id=%d unable to allocate %zu byte true-color overlay",
+                    window->id,
+                    overlayBytes + pixelCount);
+            }
+        } else {
+            memset(overlay, 0, overlayBytes);
+            memset(mask, 0, pixelCount);
+            window->trueColorOverlay = overlay;
+            window->trueColorMask = mask;
+        }
+    }
 
     if ((flags & WINDOW_USE_DEFAULTS) != 0) {
         flags |= _window_flags;
@@ -537,6 +613,14 @@ void windowFree(int win)
 
     if (window->buffer != nullptr) {
         internal_free(window->buffer);
+    }
+
+    if (window->trueColorOverlay != nullptr) {
+        internal_free(window->trueColorOverlay);
+    }
+
+    if (window->trueColorMask != nullptr) {
+        internal_free(window->trueColorMask);
     }
 
     if (window->menuBar != nullptr) {
@@ -2777,6 +2861,18 @@ void windowPresentVirtualScreen()
 
     blitIndexedRectToTexture(_screen_buffer, _screen_buffer_pitch, rect);
 
+    int overlayPixels = windowCompositeTrueColorOverlays(rect);
+    if (overlayPixels > 0 && diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        diagnosticsLog(DiagnosticsLevel::Trace,
+            "SCALER",
+            "hd_overlay virtual=(%d,%d %dx%d) pixels_overridden=%d",
+            rect.left,
+            rect.top,
+            width,
+            height,
+            overlayPixels);
+    }
+
     if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
         const Rect& viewport = displayScalerGetPhysicalViewport();
         diagnosticsLog(
@@ -2803,7 +2899,7 @@ void windowTrueColorSetPaletteBaseline(const unsigned char* /*palette*/)
 
 bool isTrueColorRendererActive()
 {
-    return false;
+    return gVirtualScreenEnabled;
 }
 
 unsigned char* windowGetScreenBuffer()
@@ -2816,24 +2912,66 @@ int windowGetScreenPitch()
     return _screen_buffer != nullptr ? _screen_buffer_pitch : 0;
 }
 
-bool windowHasTrueColorOverlay(int /*win*/)
+bool windowHasTrueColorOverlay(int win)
 {
-    return false;
+    if (!gVirtualScreenEnabled) {
+        return false;
+    }
+
+    Window* window = windowGetWindow(win);
+    if (window == nullptr) {
+        return false;
+    }
+
+    return window->trueColorOverlay != nullptr && window->trueColorMask != nullptr;
 }
 
-uint32_t* windowGetTrueColorOverlay(int /*win*/)
+uint32_t* windowGetTrueColorOverlay(int win)
 {
-    return nullptr;
+    if (!windowHasTrueColorOverlay(win)) {
+        return nullptr;
+    }
+
+    Window* window = windowGetWindow(win);
+    return window != nullptr ? window->trueColorOverlay : nullptr;
 }
 
-unsigned char* windowGetTrueColorMask(int /*win*/)
+unsigned char* windowGetTrueColorMask(int win)
 {
-    return nullptr;
+    if (!windowHasTrueColorOverlay(win)) {
+        return nullptr;
+    }
+
+    Window* window = windowGetWindow(win);
+    return window != nullptr ? window->trueColorMask : nullptr;
 }
 
-void windowClearTrueColorRegion(int /*win*/, int /*left*/, int /*top*/, int /*width*/, int /*height*/)
+void windowClearTrueColorRegion(int win, int left, int top, int width, int height)
 {
-    // Nothing to clear when overlays are disabled.
+    if (!windowHasTrueColorOverlay(win) || width <= 0 || height <= 0) {
+        return;
+    }
+
+    Window* window = windowGetWindow(win);
+    if (window == nullptr) {
+        return;
+    }
+
+    int startX = std::clamp(left, 0, window->width);
+    int startY = std::clamp(top, 0, window->height);
+    int endX = std::clamp(left + width, 0, window->width);
+    int endY = std::clamp(top + height, 0, window->height);
+
+    if (startX >= endX || startY >= endY) {
+        return;
+    }
+
+    int rowWidth = endX - startX;
+    for (int y = startY; y < endY; y++) {
+        int offset = y * window->width + startX;
+        memset(window->trueColorMask + offset, 0, rowWidth);
+        memset(window->trueColorOverlay + offset, 0, rowWidth * sizeof(uint32_t));
+    }
 }
 
 } // namespace fallout

@@ -99,6 +99,8 @@ typedef struct Window {
     int tx;
     int ty;
     unsigned char* buffer;
+    uint32_t* trueColorOverlay;
+    unsigned char* trueColorMask;
     Button* buttonListHead;
     Button* hoveredButton;
     Button* clickedButton;
