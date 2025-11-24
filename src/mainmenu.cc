@@ -1,17 +1,21 @@
 #include "mainmenu.h"
 
 #include <ctype.h>
+#include <stddef.h>
 
 #include "art.h"
 #include "color.h"
+#include "diagnostics.h"
 #include "draw.h"
 #include "game.h"
 #include "game_sound.h"
+#include "geometry.h"
 #include "input.h"
 #include "kb.h"
 #include "mouse.h"
 #include "palette.h"
 #include "preferences.h"
+#include "settings.h"
 #include "sfall_config.h"
 #include "svga.h"
 #include "text_font.h"
@@ -80,6 +84,7 @@ static bool gMainMenuWindowHidden;
 static FrmImage _mainMenuBackgroundFrmImage;
 static FrmImage _mainMenuButtonNormalFrmImage;
 static FrmImage _mainMenuButtonPressedFrmImage;
+static void logMainMenuBufferDiagnostics(const Rect& rect);
 
 // 0x481650
 int mainMenuWindowInit()
@@ -278,6 +283,13 @@ void mainMenuWindowUnhide(bool animate)
         return;
     }
 
+    diagnosticsLog(DiagnosticsLevel::Trace,
+        "WINDOW",
+        "mainMenuWindowUnhide hidden=%d animate=%d virtual_adapter=%d",
+        gMainMenuWindowHidden,
+        animate,
+        settings.system.virtual_adapter ? 1 : 0);
+
     if (!gMainMenuWindowHidden) {
         return;
     }
@@ -290,6 +302,30 @@ void mainMenuWindowUnhide(bool animate)
     }
 
     gMainMenuWindowHidden = false;
+
+    if (settings.system.virtual_adapter) {
+        Rect refreshRect;
+        if (windowGetRect(gMainMenuWindow, &refreshRect) != 0) {
+            refreshRect.left = 0;
+            refreshRect.top = 0;
+            refreshRect.right = screenGetWidth() - 1;
+            refreshRect.bottom = screenGetHeight() - 1;
+        }
+
+        logMainMenuBufferDiagnostics(refreshRect);
+
+        diagnosticsLog(DiagnosticsLevel::Trace,
+            "WINDOW",
+            "mainMenuWindowUnhide forcing refresh window=%d rect=(%d,%d %dx%d)",
+            gMainMenuWindow,
+            refreshRect.left,
+            refreshRect.top,
+            rectGetWidth(&refreshRect),
+            rectGetHeight(&refreshRect));
+
+        windowRefresh(gMainMenuWindow);
+        windowRefreshAll(&refreshRect);
+    }
 }
 
 // 0x481AA8
@@ -394,6 +430,65 @@ static int main_menu_fatal_error()
 static void main_menu_play_sound(const char* fileName)
 {
     soundPlayFile(fileName);
+}
+
+static void logMainMenuBufferDiagnostics(const Rect& rect)
+{
+    if (!diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        return;
+    }
+
+    const size_t bufferSize = MAIN_MENU_WINDOW_WIDTH * MAIN_MENU_WINDOW_HEIGHT;
+    if (bufferSize == 0) {
+        return;
+    }
+
+    unsigned char* currentBuffer = windowGetBuffer(gMainMenuWindow);
+    if (currentBuffer == nullptr || gMainMenuWindowBuffer == nullptr) {
+        diagnosticsLog(DiagnosticsLevel::Trace,
+            "WINDOW",
+            "mainMenuWindow buffer unavailable stored=%p current=%p",
+            gMainMenuWindowBuffer,
+            currentBuffer);
+        return;
+    }
+
+    unsigned int minValue = 0xFF;
+    unsigned int maxValue = 0;
+    unsigned long long checksum = 0;
+
+    for (size_t index = 0; index < bufferSize; index++) {
+        unsigned int value = currentBuffer[index];
+        checksum += value;
+        if (value < minValue) {
+            minValue = value;
+        }
+        if (value > maxValue) {
+            maxValue = value;
+        }
+    }
+
+    size_t middleIndex = bufferSize / 2;
+    unsigned int firstSample = currentBuffer[0];
+    unsigned int middleSample = currentBuffer[middleIndex];
+    unsigned int lastSample = currentBuffer[bufferSize - 1];
+
+    diagnosticsLog(DiagnosticsLevel::Trace,
+        "WINDOW",
+        "mainMenuWindow buffer stats stored=%p current=%p size=%zu min=%u max=%u checksum=0x%llX samples=%u,%u,%u rect=(%d,%d %dx%d)",
+        gMainMenuWindowBuffer,
+        currentBuffer,
+        bufferSize,
+        minValue,
+        maxValue,
+        checksum,
+        firstSample,
+        middleSample,
+        lastSample,
+        rect.left,
+        rect.top,
+        rectGetWidth(&rect),
+        rectGetHeight(&rect));
 }
 
 } // namespace fallout

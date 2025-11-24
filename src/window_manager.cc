@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <cstddef>
 
 #include <SDL.h>
 
@@ -12,6 +13,7 @@
 #include "debug.h"
 #include "dinput.h"
 #include "draw.h"
+#include "geometry.h"
 #include "input.h"
 #include "memory.h"
 #include "mouse.h"
@@ -49,6 +51,7 @@ static void _GNW_button_refresh(Window* window, Rect* rect);
 static void virtualScreenResetDirty();
 static void virtualScreenInvalidateRect(const Rect* rect);
 static void virtualScreenInvalidateAll();
+static void logVirtualScreenRectStats(const Rect& rect);
 static int windowCompositeTrueColorOverlays(const Rect& rect);
 static int windowScrubTrueColorMask(uint32_t* overlayStart, unsigned char* maskStart, int pitch, int width, int height);
 
@@ -121,6 +124,79 @@ static void* _GNW_texture;
 
 // 0x6ADF40
 static ButtonGroup gButtonGroups[BUTTON_GROUP_LIST_CAPACITY];
+static const int kVirtualScreenTraceMinArea = 10000;
+
+static void logVirtualScreenRectStats(const Rect& rect)
+{
+    if (!diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        return;
+    }
+
+    if (_screen_buffer == nullptr || _screen_buffer_pitch == 0) {
+        return;
+    }
+
+    int width = rectGetWidth(&rect);
+    int height = rectGetHeight(&rect);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    size_t totalPixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (totalPixels == 0) {
+        return;
+    }
+
+    unsigned int minValue = 0xFF;
+    unsigned int maxValue = 0;
+    unsigned long long checksum = 0;
+
+    size_t sampleFirstIndex = 0;
+    size_t sampleMiddleIndex = totalPixels / 2;
+    size_t sampleLastIndex = totalPixels - 1;
+    unsigned int firstSample = 0;
+    unsigned int middleSample = 0;
+    unsigned int lastSample = 0;
+
+    size_t currentIndex = 0;
+    for (int y = 0; y < height; y++) {
+        const unsigned char* row = _screen_buffer + (rect.top + y) * _screen_buffer_pitch + rect.left;
+        for (int x = 0; x < width; x++, currentIndex++) {
+            unsigned int value = row[x];
+            checksum += value;
+            if (value < minValue) {
+                minValue = value;
+            }
+            if (value > maxValue) {
+                maxValue = value;
+            }
+
+            if (currentIndex == sampleFirstIndex) {
+                firstSample = value;
+            }
+            if (currentIndex == sampleMiddleIndex) {
+                middleSample = value;
+            }
+            if (currentIndex == sampleLastIndex) {
+                lastSample = value;
+            }
+        }
+    }
+
+    diagnosticsLog(DiagnosticsLevel::Trace,
+        "WINDOW",
+        "virtualScreen stats rect=(%d,%d %dx%d) min=%u max=%u checksum=0x%llX samples=%u,%u,%u",
+        rect.left,
+        rect.top,
+        width,
+        height,
+        minValue,
+        maxValue,
+        checksum,
+        firstSample,
+        middleSample,
+        lastSample);
+}
 
 static void virtualScreenResetDirty()
 {
@@ -1155,6 +1231,24 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
 
                 if (_buffering && !a3) {
                     if (gVirtualScreenEnabled) {
+                        if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+                            const int width = rectGetWidth(&(v23->rect));
+                            const int height = rectGetHeight(&(v23->rect));
+                            const int area = width * height;
+                            if (area >= kVirtualScreenTraceMinArea) {
+                                diagnosticsLog(DiagnosticsLevel::Trace,
+                                    "WINDOW",
+                                    "virtualScreenInvalidate window=%d area=%d rect=(%d,%d %dx%d) buffering=%d refresh_all=%d",
+                                    window->id,
+                                    area,
+                                    v23->rect.left,
+                                    v23->rect.top,
+                                    width,
+                                    height,
+                                    _buffering ? 1 : 0,
+                                    _doing_refresh_all ? 1 : 0);
+                            }
+                        }
                         virtualScreenInvalidateRect(&(v23->rect));
                     } else {
                         _scr_blit(
@@ -2979,6 +3073,8 @@ void windowPresentVirtualScreen()
         return;
     }
 
+    logVirtualScreenRectStats(rect);
+
     blitIndexedRectToTexture(_screen_buffer, _screen_buffer_pitch, rect);
 
     int overlayPixels = windowCompositeTrueColorOverlays(rect);
@@ -3008,6 +3104,11 @@ void windowPresentVirtualScreen()
             rectGetWidth(&viewport),
             rectGetHeight(&viewport));
     }
+}
+
+void windowVirtualScreenInvalidateAll()
+{
+    virtualScreenInvalidateAll();
 }
 
 // Legacy true-color compatibility layer ------------------------------------

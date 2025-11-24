@@ -1,6 +1,7 @@
 #include "svga.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <limits.h>
 #include <string.h>
 
@@ -27,11 +28,273 @@ static void destroyRenderer();
 static void syncPhysicalSizeWithRenderer();
 static bool rectEquals(const Rect& a, const Rect& b);
 static void logViewportIfChanged(const Rect& viewport);
+static bool copySurfaceRectToTexture(SDL_Texture* texture, SDL_Surface* surface, const Rect& rect);
+static void logTextureSurfaceRectStats(const Rect& rect, const char* label);
+static void logTextureUploadRectStats(const Rect& rect, const char* label);
+static uint8_t expandPaletteComponent(uint8_t value);
+static void logPaletteUploadSamples(int start, int count, const unsigned char* palette);
 static void updateTexturePaletteRange(int start, int count, const unsigned char* palette);
 
 static Rect gLastRenderViewport = { 0, 0, -1, -1 };
 static bool gHasRenderViewport = false;
 static uint32_t gTexturePalette[256] = {};
+static int gTextureSurfaceLogBudget = 16;
+static int gTextureUploadLogBudget = 8;
+static int gPaletteUploadLogBudget = 64;
+static int gTextureUploadFailureLogBudget = 4;
+static int gTextureUploadFallbackLogBudget = 4;
+static int gIndexedBlitLogBudget = 16;
+static int gIndexedPaletteMismatchLogBudget = 4;
+
+static Rect makeSurfaceBoundsRect(int width, int height)
+{
+    Rect bounds = { 0, 0, -1, -1 };
+    if (width > 0 && height > 0) {
+        bounds.right = width - 1;
+        bounds.bottom = height - 1;
+    }
+    return bounds;
+}
+
+static bool clipRectToSurface(Rect* rect, const Rect& logicalBounds, const Rect& surfaceBounds)
+{
+    Rect clipped;
+    if (rectIntersection(rect, &logicalBounds, &clipped) == -1) {
+        return false;
+    }
+
+    if (rectIntersection(&clipped, &surfaceBounds, rect) == -1) {
+        return false;
+    }
+
+    return true;
+}
+
+static bool copySurfaceRectToTexture(SDL_Texture* texture, SDL_Surface* surface, const Rect& rect)
+{
+    if (texture == nullptr || surface == nullptr || surface->format == nullptr) {
+        return false;
+    }
+
+    const int width = rectGetWidth(&rect);
+    const int height = rectGetHeight(&rect);
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
+
+    SDL_Rect sdlRect;
+    sdlRect.x = rect.left;
+    sdlRect.y = rect.top;
+    sdlRect.w = width;
+    sdlRect.h = height;
+
+    void* destination = nullptr;
+    int destinationPitch = 0;
+    if (SDL_LockTexture(texture, &sdlRect, &destination, &destinationPitch) != 0 || destination == nullptr) {
+        return false;
+    }
+
+    const uint8_t* sourcePixels = static_cast<const uint8_t*>(surface->pixels);
+    const int sourcePitch = surface->pitch;
+    const int bytesPerPixel = surface->format->BytesPerPixel;
+    uint8_t* destPixels = static_cast<uint8_t*>(destination);
+    for (int row = 0; row < height; row++) {
+        const uint8_t* sourceRow = sourcePixels + (rect.top + row) * sourcePitch + rect.left * bytesPerPixel;
+        memcpy(destPixels + row * destinationPitch, sourceRow, width * bytesPerPixel);
+    }
+
+    SDL_UnlockTexture(texture);
+    return true;
+}
+
+static void logTextureSurfaceRectStats(const Rect& rect, const char* label)
+{
+    if (!diagnosticsWouldLog(DiagnosticsLevel::Trace) || label == nullptr || gSdlTextureSurface == nullptr || gTextureSurfaceLogBudget <= 0) {
+        return;
+    }
+
+    SDL_PixelFormat* format = gSdlTextureSurface->format;
+    if (format == nullptr || format->BytesPerPixel != 4) {
+        return;
+    }
+
+    Rect clipped;
+    rectCopy(&clipped, &rect);
+
+    const Rect logicalBounds = displayScalerGetLogicalBounds();
+    Rect surfaceBounds = makeSurfaceBoundsRect(gSdlTextureSurface->w, gSdlTextureSurface->h);
+    if (!clipRectToSurface(&clipped, logicalBounds, surfaceBounds)) {
+        return;
+    }
+
+    const int width = rectGetWidth(&clipped);
+    const int height = rectGetHeight(&clipped);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    const size_t totalPixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (totalPixels == 0) {
+        return;
+    }
+
+    const uint8_t* pixels = static_cast<const uint8_t*>(gSdlTextureSurface->pixels);
+    if (pixels == nullptr) {
+        return;
+    }
+
+    const int pitch = gSdlTextureSurface->pitch;
+    const int bytesPerPixel = format->BytesPerPixel;
+
+    uint32_t minValue = 0xFFFFFFFF;
+    uint32_t maxValue = 0x00000000;
+    unsigned long long checksum = 0;
+
+    const size_t sampleStart = 0;
+    const size_t sampleMiddle = totalPixels / 2;
+    const size_t sampleEnd = totalPixels - 1;
+    uint32_t sampleStartValue = 0;
+    uint32_t sampleMiddleValue = 0;
+    uint32_t sampleEndValue = 0;
+
+    size_t currentIndex = 0;
+    for (int y = 0; y < height; y++) {
+        const uint32_t* row = reinterpret_cast<const uint32_t*>(pixels + (clipped.top + y) * pitch + clipped.left * bytesPerPixel);
+        for (int x = 0; x < width; x++, currentIndex++) {
+            const uint32_t value = row[x];
+            checksum += value;
+            minValue = std::min(minValue, value);
+            maxValue = std::max(maxValue, value);
+
+            if (currentIndex == sampleStart) {
+                sampleStartValue = value;
+            }
+            if (currentIndex == sampleMiddle) {
+                sampleMiddleValue = value;
+            }
+            if (currentIndex == sampleEnd) {
+                sampleEndValue = value;
+            }
+        }
+    }
+
+    diagnosticsLog(DiagnosticsLevel::Trace,
+        "RENDERER",
+        "texture_surface stats label=%s rect=(%d,%d %dx%d) min=0x%08X max=0x%08X checksum=0x%llX samples=0x%08X,0x%08X,0x%08X",
+        label,
+        clipped.left,
+        clipped.top,
+        width,
+        height,
+        minValue,
+        maxValue,
+        checksum,
+        sampleStartValue,
+        sampleMiddleValue,
+        sampleEndValue);
+
+    gTextureSurfaceLogBudget--;
+    if (gTextureSurfaceLogBudget == 0) {
+        diagnosticsLog(DiagnosticsLevel::Trace, "RENDERER", "texture_surface logging budget exhausted");
+    }
+}
+
+static void logTextureUploadRectStats(const Rect& rect, const char* label)
+{
+    if (!diagnosticsWouldLog(DiagnosticsLevel::Trace) || label == nullptr || gSdlTexture == nullptr || gTextureUploadLogBudget <= 0) {
+        return;
+    }
+
+    Rect clipped;
+    rectCopy(&clipped, &rect);
+
+    const Rect logicalBounds = displayScalerGetLogicalBounds();
+    int textureWidth = 0;
+    int textureHeight = 0;
+    if (SDL_QueryTexture(gSdlTexture, nullptr, nullptr, &textureWidth, &textureHeight) != 0) {
+        return;
+    }
+
+    Rect textureBounds = makeSurfaceBoundsRect(textureWidth, textureHeight);
+    if (!clipRectToSurface(&clipped, logicalBounds, textureBounds)) {
+        return;
+    }
+
+    const int width = rectGetWidth(&clipped);
+    const int height = rectGetHeight(&clipped);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    SDL_Rect sdlRect;
+    sdlRect.x = clipped.left;
+    sdlRect.y = clipped.top;
+    sdlRect.w = width;
+    sdlRect.h = height;
+
+    void* pixels = nullptr;
+    int pitch = 0;
+    if (SDL_LockTexture(gSdlTexture, &sdlRect, &pixels, &pitch) != 0 || pixels == nullptr) {
+        return;
+    }
+
+    const uint8_t* base = static_cast<const uint8_t*>(pixels);
+    const size_t totalPixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+
+    uint32_t minValue = 0xFFFFFFFF;
+    uint32_t maxValue = 0x00000000;
+    unsigned long long checksum = 0;
+
+    const size_t sampleStart = 0;
+    const size_t sampleMiddle = totalPixels / 2;
+    const size_t sampleEnd = totalPixels - 1;
+    uint32_t sampleStartValue = 0;
+    uint32_t sampleMiddleValue = 0;
+    uint32_t sampleEndValue = 0;
+
+    size_t currentIndex = 0;
+    for (int y = 0; y < height; y++) {
+        const uint32_t* row = reinterpret_cast<const uint32_t*>(base + y * pitch);
+        for (int x = 0; x < width; x++, currentIndex++) {
+            const uint32_t value = row[x];
+            checksum += value;
+            minValue = std::min(minValue, value);
+            maxValue = std::max(maxValue, value);
+
+            if (currentIndex == sampleStart) {
+                sampleStartValue = value;
+            }
+            if (currentIndex == sampleMiddle) {
+                sampleMiddleValue = value;
+            }
+            if (currentIndex == sampleEnd) {
+                sampleEndValue = value;
+            }
+        }
+    }
+
+    SDL_UnlockTexture(gSdlTexture);
+
+    diagnosticsLog(DiagnosticsLevel::Trace,
+        "RENDERER",
+        "texture_upload stats label=%s rect=(%d,%d %dx%d) min=0x%08X max=0x%08X checksum=0x%llX samples=0x%08X,0x%08X,0x%08X",
+        label,
+        clipped.left,
+        clipped.top,
+        width,
+        height,
+        minValue,
+        maxValue,
+        checksum,
+        sampleStartValue,
+        sampleMiddleValue,
+        sampleEndValue);
+
+    gTextureUploadLogBudget--;
+    if (gTextureUploadLogBudget == 0) {
+        diagnosticsLog(DiagnosticsLevel::Trace, "RENDERER", "texture_upload logging budget exhausted");
+    }
+}
 
 // Legacy screen rect maintained for existing code. Tracks logical bounds.
 Rect _scr_size;
@@ -345,6 +608,10 @@ void directDrawSetPaletteInRange(unsigned char* palette, int start, int count)
         SDL_SetPaletteColors(gSdlSurface->format->palette, colors, start, count);
         SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
         updateTexturePaletteRange(start, count, palette);
+
+        if (windowIsVirtualScreenEnabled()) {
+            windowVirtualScreenInvalidateAll();
+        }
     }
 }
 
@@ -364,6 +631,10 @@ void directDrawSetPalette(unsigned char* palette)
         SDL_SetPaletteColors(gSdlSurface->format->palette, colors, 0, 256);
         SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
         updateTexturePaletteRange(0, 256, palette);
+
+        if (windowIsVirtualScreenEnabled()) {
+            windowVirtualScreenInvalidateAll();
+        }
     }
 }
 
@@ -439,6 +710,11 @@ void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect
         return;
     }
 
+    const size_t totalPixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (totalPixels == 0) {
+        return;
+    }
+
     if (gSdlTextureSurface->format == nullptr || gSdlTextureSurface->format->BytesPerPixel != 4) {
         return;
     }
@@ -446,14 +722,99 @@ void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect
     const int bytesPerPixel = gSdlTextureSurface->format->BytesPerPixel;
     unsigned char* destPixels = static_cast<unsigned char*>(gSdlTextureSurface->pixels);
 
+    const bool logBlitStats = diagnosticsWouldLog(DiagnosticsLevel::Trace) && gIndexedBlitLogBudget > 0;
+    unsigned int srcMin = 255;
+    unsigned int srcMax = 0;
+    unsigned int srcSampleStart = 0;
+    unsigned int srcSampleMiddle = 0;
+    unsigned int srcSampleEnd = 0;
+    uint32_t mappedSampleStart = 0;
+    uint32_t mappedSampleMiddle = 0;
+    uint32_t mappedSampleEnd = 0;
+    const size_t sampleStart = 0;
+    const size_t sampleMiddle = totalPixels / 2;
+    const size_t sampleEnd = totalPixels - 1;
+    size_t currentIndex = 0;
+
     for (int row = 0; row < height; row++) {
         const unsigned char* srcRow = src + (rect.top + row) * srcPitch + rect.left;
         uint32_t* destRow = reinterpret_cast<uint32_t*>(destPixels + (rect.top + row) * gSdlTextureSurface->pitch + rect.left * bytesPerPixel);
 
         for (int column = 0; column < width; column++) {
-            destRow[column] = gTexturePalette[srcRow[column]];
+            const unsigned int paletteIndex = srcRow[column];
+            const uint32_t mappedColor = gTexturePalette[paletteIndex];
+            destRow[column] = mappedColor;
+
+            if (logBlitStats) {
+                srcMin = std::min(srcMin, paletteIndex);
+                srcMax = std::max(srcMax, paletteIndex);
+
+                if (currentIndex == sampleStart) {
+                    srcSampleStart = paletteIndex;
+                    mappedSampleStart = mappedColor;
+                }
+                if (currentIndex == sampleMiddle) {
+                    srcSampleMiddle = paletteIndex;
+                    mappedSampleMiddle = mappedColor;
+                }
+                if (currentIndex == sampleEnd) {
+                    srcSampleEnd = paletteIndex;
+                    mappedSampleEnd = mappedColor;
+                }
+            }
+
+            currentIndex++;
         }
     }
+
+    if (logBlitStats) {
+        diagnosticsLog(DiagnosticsLevel::Trace,
+            "RENDERER",
+            "indexed_blit stats rect=(%d,%d %dx%d) src_min=%u src_max=%u src_samples=%u,%u,%u mapped_samples=0x%08X,0x%08X,0x%08X",
+            rect.left,
+            rect.top,
+            width,
+            height,
+            srcMin,
+            srcMax,
+            srcSampleStart,
+            srcSampleMiddle,
+            srcSampleEnd,
+            mappedSampleStart,
+            mappedSampleMiddle,
+            mappedSampleEnd);
+
+        const bool srcHasNonZeroSample = srcMax > 0 || srcSampleStart > 0 || srcSampleMiddle > 0 || srcSampleEnd > 0;
+        const bool allMappedZero = mappedSampleStart == 0 && mappedSampleMiddle == 0 && mappedSampleEnd == 0;
+        const bool sampleMismatch = (srcSampleStart > 0 && mappedSampleStart == 0) || (srcSampleMiddle > 0 && mappedSampleMiddle == 0)
+            || (srcSampleEnd > 0 && mappedSampleEnd == 0);
+        if (srcHasNonZeroSample && (allMappedZero || sampleMismatch) && gIndexedPaletteMismatchLogBudget > 0) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "RENDERER",
+                "indexed_blit palette mismatch rect=(%d,%d %dx%d) src_samples=%u,%u,%u mapped=0x%08X,0x%08X,0x%08X",
+                rect.left,
+                rect.top,
+                width,
+                height,
+                srcSampleStart,
+                srcSampleMiddle,
+                srcSampleEnd,
+                mappedSampleStart,
+                mappedSampleMiddle,
+                mappedSampleEnd);
+            gIndexedPaletteMismatchLogBudget--;
+            if (gIndexedPaletteMismatchLogBudget == 0) {
+                diagnosticsLog(DiagnosticsLevel::Info, "RENDERER", "indexed_blit palette mismatch logging budget exhausted");
+            }
+        }
+
+        gIndexedBlitLogBudget--;
+        if (gIndexedBlitLogBudget == 0) {
+            diagnosticsLog(DiagnosticsLevel::Trace, "RENDERER", "indexed_blit logging budget exhausted");
+        }
+    }
+
+    logTextureSurfaceRectStats(rect, "after_indexed_blit");
 }
 
 int blitTrueColorRectToTexture(const uint32_t* src, const unsigned char* mask, int srcPitch, const Rect& rect)
@@ -623,6 +984,86 @@ static void syncPhysicalSizeWithRenderer()
     }
 }
 
+static uint8_t expandPaletteComponent(uint8_t value)
+{
+    if (value > 63) {
+        return value;
+    }
+
+    return static_cast<uint8_t>((value << 2) | (value >> 4));
+}
+
+static void logPaletteUploadSamples(int start, int count, const unsigned char* palette)
+{
+    if (!diagnosticsWouldLog(DiagnosticsLevel::Trace) || palette == nullptr || count <= 0) {
+        return;
+    }
+
+    if (gPaletteUploadLogBudget <= 0) {
+        return;
+    }
+
+    static const int kSampleIndices[] = { 0, 1, 11, 110, 111, 205, 226, 255 };
+    bool loggedSamples = false;
+
+    for (int sampleIndex : kSampleIndices) {
+        if (sampleIndex < start || sampleIndex >= start + count) {
+            continue;
+        }
+
+        int paletteOffset = (sampleIndex - start) * 3;
+        uint8_t rawR = palette[paletteOffset + 0];
+        uint8_t rawG = palette[paletteOffset + 1];
+        uint8_t rawB = palette[paletteOffset + 2];
+
+        uint8_t expandedR = expandPaletteComponent(rawR);
+        uint8_t expandedG = expandPaletteComponent(rawG);
+        uint8_t expandedB = expandPaletteComponent(rawB);
+
+        uint32_t argb = gTexturePalette[sampleIndex];
+
+        diagnosticsLog(DiagnosticsLevel::Trace,
+            "RENDERER",
+            "palette_upload index=%3d raw=(%3u,%3u,%3u) expanded=(%3u,%3u,%3u) argb=0x%08X",
+            sampleIndex,
+            rawR,
+            rawG,
+            rawB,
+            expandedR,
+            expandedG,
+            expandedB,
+            argb);
+
+        loggedSamples = true;
+    }
+
+    if (!loggedSamples) {
+        return;
+    }
+
+    int rawMin = 255;
+    int rawMax = 0;
+    const int totalComponents = count * 3;
+    for (int offset = 0; offset < totalComponents; offset++) {
+        rawMin = std::min(rawMin, static_cast<int>(palette[offset]));
+        rawMax = std::max(rawMax, static_cast<int>(palette[offset]));
+    }
+
+    diagnosticsLog(DiagnosticsLevel::Trace,
+        "RENDERER",
+        "palette_upload range start=%d count=%d raw_bounds=%d-%d",
+        start,
+        count,
+        rawMin,
+        rawMax);
+
+    gPaletteUploadLogBudget--;
+
+    if (gPaletteUploadLogBudget == 0) {
+        diagnosticsLog(DiagnosticsLevel::Trace, "RENDERER", "palette_upload logging budget exhausted");
+    }
+}
+
 static void updateTexturePaletteRange(int start, int count, const unsigned char* palette)
 {
     if (palette == nullptr || count <= 0 || gSdlTextureSurface == nullptr || gSdlTextureSurface->format == nullptr) {
@@ -630,12 +1071,6 @@ static void updateTexturePaletteRange(int start, int count, const unsigned char*
     }
 
     SDL_PixelFormat* format = gSdlTextureSurface->format;
-    auto expand = [](uint8_t value) {
-        if (value > 63) {
-            return value;
-        }
-        return static_cast<uint8_t>((value << 2) | (value >> 4));
-    };
     for (int index = 0; index < count; index++) {
         int paletteIndex = start + index;
         if (paletteIndex < 0 || paletteIndex >= 256) {
@@ -643,12 +1078,14 @@ static void updateTexturePaletteRange(int start, int count, const unsigned char*
         }
 
         int paletteOffset = index * 3;
-        uint8_t r = expand(palette[paletteOffset + 0]);
-        uint8_t g = expand(palette[paletteOffset + 1]);
-        uint8_t b = expand(palette[paletteOffset + 2]);
+        uint8_t r = expandPaletteComponent(palette[paletteOffset + 0]);
+        uint8_t g = expandPaletteComponent(palette[paletteOffset + 1]);
+        uint8_t b = expandPaletteComponent(palette[paletteOffset + 2]);
 
         gTexturePalette[paletteIndex] = SDL_MapRGB(format, r, g, b);
     }
+
+    logPaletteUploadSamples(start, count, palette);
 }
 
 static bool rectEquals(const Rect& a, const Rect& b)
@@ -732,7 +1169,46 @@ void renderPresent()
     srcRect.w = logicalSpace.width;
     srcRect.h = logicalSpace.height;
 
-    SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch);
+    Rect uploadRect;
+    uploadRect.left = 0;
+    uploadRect.top = 0;
+    uploadRect.right = logicalSpace.width - 1;
+    uploadRect.bottom = logicalSpace.height - 1;
+
+    int textureUpdateResult = SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch);
+    bool textureUploadOk = textureUpdateResult == 0;
+    bool textureUploadFallbackUsed = false;
+    if (!textureUploadOk) {
+        if (gTextureUploadFailureLogBudget > 0 && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info, "RENDERER", "SDL_UpdateTexture failed: %s", SDL_GetError());
+            gTextureUploadFailureLogBudget--;
+            if (gTextureUploadFailureLogBudget == 0) {
+                diagnosticsLog(DiagnosticsLevel::Info, "RENDERER", "texture upload failure logging budget exhausted");
+            }
+        }
+
+        if (copySurfaceRectToTexture(gSdlTexture, gSdlTextureSurface, uploadRect)) {
+            textureUploadFallbackUsed = true;
+            if (gTextureUploadFallbackLogBudget > 0 && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                diagnosticsLog(DiagnosticsLevel::Info, "RENDERER", "SDL_UpdateTexture fallback copy succeeded for %dx%d", logicalSpace.width, logicalSpace.height);
+            }
+        } else if (gTextureUploadFallbackLogBudget > 0 && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info, "RENDERER", "SDL_UpdateTexture fallback copy failed for %dx%d", logicalSpace.width, logicalSpace.height);
+        }
+
+        if (gTextureUploadFallbackLogBudget > 0) {
+            gTextureUploadFallbackLogBudget--;
+            if (gTextureUploadFallbackLogBudget == 0) {
+                diagnosticsLog(DiagnosticsLevel::Info, "RENDERER", "texture upload fallback logging budget exhausted");
+            }
+        }
+    }
+
+    const char* textureUploadLabel = "after_texture_upload";
+    if (!textureUploadOk) {
+        textureUploadLabel = textureUploadFallbackUsed ? "after_texture_fallback_upload" : "after_texture_upload_failed";
+    }
+    logTextureUploadRectStats(uploadRect, textureUploadLabel);
     const Rect& viewport = displayScalerGetPhysicalViewport();
     logViewportIfChanged(viewport);
     SDL_Rect destRect;
