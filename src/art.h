@@ -118,10 +118,16 @@ extern int _art_vault_person_nums[DUDE_NATIVE_LOOK_COUNT][GENDER_COUNT];
 
 extern Cache gArtCache;
 
+enum class HdAlphaMode {
+    Straight,
+    Premultiplied,
+};
+
 struct HdTrueColorFrameView {
     const uint32_t* pixels = nullptr;
     int width = 0;
     int height = 0;
+    HdAlphaMode alphaMode = HdAlphaMode::Straight;
 };
 
 int artInit();
@@ -160,7 +166,7 @@ Art* artLoad(const char* path);
 int artRead(const char* path, unsigned char* data);
 int artWrite(const char* path, unsigned char* data);
 bool artGetTrueColorFrame(int fid, HdTrueColorFrameView& out);
-void artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t* pixels, int width, int height);
+void artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t* pixels, int width, int height, HdAlphaMode alphaMode = HdAlphaMode::Straight);
 void artUnregisterTrueColorFrameData(const unsigned char* indexed);
 bool artLookupRegisteredTrueColorFrame(const unsigned char* indexed, HdTrueColorFrameView& out);
 

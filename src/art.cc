@@ -66,6 +66,18 @@ static void hdTrueColorRegistryClear()
     gHdTrueColorFrameRegistry.clear();
 }
 
+static const char* hdAlphaModeToString(HdAlphaMode mode)
+{
+    switch (mode) {
+    case HdAlphaMode::Straight:
+        return "straight";
+    case HdAlphaMode::Premultiplied:
+        return "premult";
+    }
+
+    return "unknown";
+}
+
 static bool hdArtSupportedType(int type);
 static bool hdArtBuildPngFilePath(int fid, char* path, size_t size);
 static bool hdArtProbe(int fid, HdArtInfo& info);
@@ -1747,7 +1759,7 @@ bool artGetTrueColorFrame(int fid, HdTrueColorFrameView& out)
     return out.pixels != nullptr;
 }
 
-void artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t* pixels, int width, int height)
+void artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t* pixels, int width, int height, HdAlphaMode alphaMode)
 {
     if (indexed == nullptr || pixels == nullptr || width <= 0 || height <= 0) {
         if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
@@ -1760,16 +1772,18 @@ void artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t*
     view.pixels = pixels;
     view.width = width;
     view.height = height;
+    view.alphaMode = alphaMode;
 
     gHdTrueColorFrameRegistry[indexed] = view;
 
     if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
         diagnosticsLog(DiagnosticsLevel::Trace,
             "SCALER",
-            "artRegisterTrueColorFrameData indexed=%p size=%dx%d",
+            "artRegisterTrueColorFrameData indexed=%p size=%dx%d mode=%s",
             indexed,
             width,
-            height);
+            height,
+            hdAlphaModeToString(alphaMode));
     }
 }
 

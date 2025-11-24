@@ -12,6 +12,7 @@
 #include "color.h"
 #include "config.h"
 #include "debug.h"
+#include "diagnostics.h"
 #include "draw.h"
 #include "game_mouse.h"
 #include "light.h"
@@ -346,43 +347,6 @@ static void tileClearTrueColorRegion(const Rect& rect)
         overlayRow += gTileWindowWidth;
         maskRow += gTileWindowWidth;
     }
-}
-
-static inline uint8_t applyIntensityToChannel(uint8_t value, int intensityIndex)
-{
-    if (intensityIndex <= 0) {
-        return 0;
-    }
-
-    if (intensityIndex >= 255) {
-        return 255;
-    }
-
-    if (intensityIndex < 128) {
-        return static_cast<uint8_t>((value * intensityIndex) / 128);
-    }
-
-    int lighten = intensityIndex - 128;
-    return static_cast<uint8_t>(value + ((255 - value) * lighten) / 128);
-}
-
-static inline uint32_t applyTileLightingToArgb(uint32_t color, int intensityIndex)
-{
-    intensityIndex = std::clamp(intensityIndex, 0, 255);
-
-    uint8_t a = static_cast<uint8_t>(color >> 24);
-    uint8_t r = static_cast<uint8_t>((color >> 16) & 0xFF);
-    uint8_t g = static_cast<uint8_t>((color >> 8) & 0xFF);
-    uint8_t b = static_cast<uint8_t>(color & 0xFF);
-
-    r = applyIntensityToChannel(r, intensityIndex);
-    g = applyIntensityToChannel(g, intensityIndex);
-    b = applyIntensityToChannel(b, intensityIndex);
-
-    return (static_cast<uint32_t>(a) << 24)
-        | (static_cast<uint32_t>(r) << 16)
-        | (static_cast<uint32_t>(g) << 8)
-        | static_cast<uint32_t>(b);
 }
 
 static void tileUpdatePixelScale(int windowWidth, int windowHeight)
@@ -1773,6 +1737,9 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
     int savedX = x;
     int savedY = y;
 
+    HdTrueColorFrameView trueColorView;
+    bool hasTrueColor = false;
+
     if (left < 0) {
         left = 0;
     }
@@ -1793,13 +1760,20 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
 
     frameWidth = artGetWidth(art, 0, 0);
     frameHeight = artGetHeight(art, 0, 0);
-
-    HdTrueColorFrameView trueColorView;
-    bool hasTrueColor = false;
     if (tileHasTrueColorOverlay()) {
         if (artGetTrueColorFrame(fid, trueColorView)) {
             if (trueColorView.width == frameWidth && trueColorView.height == frameHeight) {
-                hasTrueColor = trueColorView.pixels != nullptr;
+                if (trueColorView.alphaMode != HdAlphaMode::Straight) {
+                    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                        diagnosticsLog(DiagnosticsLevel::Info,
+                            "SCALER",
+                            "tileRenderFloor fid=%d rejected HD frame due to alphaMode=%d",
+                            fid,
+                            static_cast<int>(trueColorView.alphaMode));
+                    }
+                } else {
+                    hasTrueColor = trueColorView.pixels != nullptr;
+                }
             }
         }
     }
@@ -1876,7 +1850,7 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
 
                     for (int col = 0; col < v77; col++) {
                         if (*indexedPixel != 0) {
-                            *trueColorDestPixel = applyTileLightingToArgb(*trueColorSrcPixel, intensityIndex);
+                            *trueColorDestPixel = colorApplyLightingToArgb(*trueColorSrcPixel, intensityIndex);
                             *trueColorMaskPixel = 1;
                         } else {
                             *trueColorDestPixel = 0;
@@ -2034,7 +2008,7 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
                     int intensityIndex = *v68 >> 9;
                     *v66 = intensityColorTable[paletteIndex][intensityIndex];
                     if (hasTrueColor) {
-                        *trueColorDestPixel = applyTileLightingToArgb(*trueColorSrcPixel, intensityIndex);
+                        *trueColorDestPixel = colorApplyLightingToArgb(*trueColorSrcPixel, intensityIndex);
                         *trueColorMaskPixel = 1;
                     }
                 } else if (hasTrueColor) {
