@@ -532,4 +532,66 @@ uint32_t paletteIndexToArgb(unsigned char index)
     return 0xFF000000 | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | b;
 }
 
+uint8_t colorApplyIntensityToChannel(uint8_t value, int intensityIndex)
+{
+    if (intensityIndex <= 0) {
+        return 0;
+    }
+
+    if (intensityIndex >= 255) {
+        return 255;
+    }
+
+    if (intensityIndex < 128) {
+        return static_cast<uint8_t>((value * intensityIndex) / 128);
+    }
+
+    int lighten = intensityIndex - 128;
+    return static_cast<uint8_t>(value + ((255 - value) * lighten) / 128);
+}
+
+uint32_t colorApplyLightingToArgb(uint32_t color, int intensityIndex)
+{
+    intensityIndex = std::clamp(intensityIndex, 0, 255);
+
+    uint8_t a = static_cast<uint8_t>(color >> 24);
+    uint8_t r = static_cast<uint8_t>((color >> 16) & 0xFF);
+    uint8_t g = static_cast<uint8_t>((color >> 8) & 0xFF);
+    uint8_t b = static_cast<uint8_t>(color & 0xFF);
+
+    r = colorApplyIntensityToChannel(r, intensityIndex);
+    g = colorApplyIntensityToChannel(g, intensityIndex);
+    b = colorApplyIntensityToChannel(b, intensityIndex);
+
+    return (static_cast<uint32_t>(a) << 24)
+        | (static_cast<uint32_t>(r) << 16)
+        | (static_cast<uint32_t>(g) << 8)
+        | static_cast<uint32_t>(b);
+}
+
+uint32_t colorPremultiplyArgb(uint32_t color)
+{
+    uint8_t a = static_cast<uint8_t>(color >> 24);
+    uint8_t r = static_cast<uint8_t>((color >> 16) & 0xFF);
+    uint8_t g = static_cast<uint8_t>((color >> 8) & 0xFF);
+    uint8_t b = static_cast<uint8_t>(color & 0xFF);
+
+    if (a == 0) {
+        return 0;
+    }
+
+    auto premultiplyChannel = [a](uint8_t channel) -> uint8_t {
+        return static_cast<uint8_t>((channel * a + 127) / 255);
+    };
+
+    uint8_t pr = premultiplyChannel(r);
+    uint8_t pg = premultiplyChannel(g);
+    uint8_t pb = premultiplyChannel(b);
+
+    return (static_cast<uint32_t>(a) << 24)
+        | (static_cast<uint32_t>(pr) << 16)
+        | (static_cast<uint32_t>(pg) << 8)
+        | static_cast<uint32_t>(pb);
+}
+
 } // namespace fallout
