@@ -28,6 +28,7 @@ namespace fallout {
 static bool createRenderer();
 static void destroyRenderer();
 static void syncPhysicalSizeWithRenderer();
+static bool ensurePresenterSurfaceMatchesBounds();
 static bool rectEquals(const Rect& a, const Rect& b);
 static void logViewportIfChanged(const Rect& viewport);
 static bool copySurfaceRectToTexture(SDL_Texture* texture, SDL_Surface* surface, const Rect& rect);
@@ -323,7 +324,26 @@ static bool isFullResPresenterActive()
     }
 
     double scale = displayScalerGetScale();
-    return scale >= 1.0 - 1.0e-4;
+    if (scale < 1.0 - 1.0e-4) {
+        return false;
+    }
+
+    if (gSdlTexture == nullptr || gSdlTextureSurface == nullptr) {
+        return false;
+    }
+
+    const Rect& viewport = displayScalerGetPhysicalViewport();
+    const int viewportWidth = rectGetWidth(&viewport);
+    const int viewportHeight = rectGetHeight(&viewport);
+    if (viewportWidth <= 0 || viewportHeight <= 0) {
+        return false;
+    }
+
+    if (gSdlTextureSurface->w != viewportWidth || gSdlTextureSurface->h != viewportHeight) {
+        return false;
+    }
+
+    return true;
 }
 
 static Rect getPresenterSurfaceBounds()
@@ -1169,6 +1189,105 @@ static void destroyRenderer()
     }
 }
 
+static bool ensurePresenterSurfaceMatchesBounds()
+{
+    if (gSdlRenderer == nullptr) {
+        return false;
+    }
+
+    int desiredWidth = 0;
+    int desiredHeight = 0;
+
+    if (settings.system.virtual_adapter && settings.system.virtual_adapter_fullres) {
+        const double scale = displayScalerGetScale();
+        if (scale >= 1.0 - 1.0e-4) {
+            const Rect& viewport = displayScalerGetPhysicalViewport();
+            desiredWidth = rectGetWidth(&viewport);
+            desiredHeight = rectGetHeight(&viewport);
+        }
+    }
+
+    if (desiredWidth <= 0 || desiredHeight <= 0) {
+        const Rect& logicalBounds = displayScalerGetLogicalBounds();
+        desiredWidth = rectGetWidth(&logicalBounds);
+        desiredHeight = rectGetHeight(&logicalBounds);
+    }
+
+    if (desiredWidth <= 0 || desiredHeight <= 0) {
+        return false;
+    }
+
+    const int currentWidth = gSdlTextureSurface != nullptr ? gSdlTextureSurface->w : 0;
+    const int currentHeight = gSdlTextureSurface != nullptr ? gSdlTextureSurface->h : 0;
+    if (gSdlTexture != nullptr && gSdlTextureSurface != nullptr && currentWidth == desiredWidth && currentHeight == desiredHeight) {
+        return true;
+    }
+
+    SDL_Texture* newTexture = SDL_CreateTexture(gSdlRenderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, desiredWidth, desiredHeight);
+    if (newTexture == nullptr) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "RENDERER",
+                "failed to resize presenter texture %dx%d: %s",
+                desiredWidth,
+                desiredHeight,
+                SDL_GetError());
+        }
+        return false;
+    }
+
+    Uint32 format;
+    if (SDL_QueryTexture(newTexture, &format, nullptr, nullptr, nullptr) != 0) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "RENDERER",
+                "SDL_QueryTexture failed during presenter resize: %s",
+                SDL_GetError());
+        }
+        SDL_DestroyTexture(newTexture);
+        return false;
+    }
+
+    SDL_Surface* newSurface = SDL_CreateRGBSurfaceWithFormat(0, desiredWidth, desiredHeight, SDL_BITSPERPIXEL(format), format);
+    if (newSurface == nullptr) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "RENDERER",
+                "failed to allocate presenter surface %dx%d: %s",
+                desiredWidth,
+                desiredHeight,
+                SDL_GetError());
+        }
+        SDL_DestroyTexture(newTexture);
+        return false;
+    }
+
+    SDL_FillRect(newSurface, nullptr, 0);
+
+    if (gSdlTextureSurface != nullptr) {
+        SDL_FreeSurface(gSdlTextureSurface);
+    }
+
+    if (gSdlTexture != nullptr) {
+        SDL_DestroyTexture(gSdlTexture);
+    }
+
+    gSdlTexture = newTexture;
+    gSdlTextureSurface = newSurface;
+
+    windowVirtualScreenInvalidateAll();
+
+    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        diagnosticsLog(DiagnosticsLevel::Info,
+            "RENDERER",
+            "presenter surface resized to %dx%d",
+            desiredWidth,
+            desiredHeight);
+    }
+
+    return true;
+}
+
 static void syncPhysicalSizeWithRenderer()
 {
     if (gSdlRenderer == nullptr) {
@@ -1373,6 +1492,7 @@ void handleWindowSizeChanged()
 void renderPresent()
 {
     syncPhysicalSizeWithRenderer();
+    ensurePresenterSurfaceMatchesBounds();
     renderTraceCommitFrame();
     windowPresentVirtualScreen();
 
