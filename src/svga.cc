@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <limits.h>
 #include <string.h>
 
@@ -35,6 +36,8 @@ static void logViewportIfChanged(const Rect& viewport);
 static bool copySurfaceRectToTexture(SDL_Texture* texture, SDL_Surface* surface, const Rect& rect);
 static void logTextureSurfaceRectStats(const Rect& rect, const char* label);
 static void logTextureUploadRectStats(const Rect& rect, const char* label);
+static bool virtualAdapterTraceChannelEnabled();
+static void logVirtualAdapterSourceSamples(const char* stage, const unsigned char* src, int width, int height, int pitch);
 static uint8_t expandPaletteComponent(uint8_t value);
 static void logPaletteUploadSamples(int start, int count, const unsigned char* palette);
 static void updateTexturePaletteRange(int start, int count, const unsigned char* palette);
@@ -323,6 +326,83 @@ static void logTextureUploadRectStats(const Rect& rect, const char* label)
     if (gTextureUploadLogBudget == 0) {
         diagnosticsLog(DiagnosticsLevel::Trace, "RENDERER", "texture_upload logging budget exhausted");
     }
+}
+
+static bool virtualAdapterTraceChannelEnabled()
+{
+    if (!settings.debug.virtual_adapter_trace) {
+        return false;
+    }
+
+    if (!windowIsVirtualScreenEnabled()) {
+        return false;
+    }
+
+    return diagnosticsWouldLog(DiagnosticsLevel::Trace);
+}
+
+static void logVirtualAdapterSourceSamples(const char* stage, const unsigned char* src, int width, int height, int pitch)
+{
+    if (!virtualAdapterTraceChannelEnabled() || stage == nullptr || src == nullptr) {
+        return;
+    }
+
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    const size_t totalPixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (totalPixels == 0) {
+        return;
+    }
+
+    unsigned int minValue = 0xFF;
+    unsigned int maxValue = 0;
+    unsigned long long checksum = 0;
+    const size_t sampleStart = 0;
+    const size_t sampleMiddle = totalPixels / 2;
+    const size_t sampleEnd = totalPixels - 1;
+    unsigned int sampleStartValue = 0;
+    unsigned int sampleMiddleValue = 0;
+    unsigned int sampleEndValue = 0;
+
+    size_t currentIndex = 0;
+    for (int row = 0; row < height; row++) {
+        const unsigned char* srcRow = src + row * pitch;
+        for (int column = 0; column < width; column++, currentIndex++) {
+            unsigned int value = srcRow[column];
+            checksum += value;
+            if (value < minValue) {
+                minValue = value;
+            }
+            if (value > maxValue) {
+                maxValue = value;
+            }
+
+            if (currentIndex == sampleStart) {
+                sampleStartValue = value;
+            }
+            if (currentIndex == sampleMiddle) {
+                sampleMiddleValue = value;
+            }
+            if (currentIndex == sampleEnd) {
+                sampleEndValue = value;
+            }
+        }
+    }
+
+    diagnosticsLog(DiagnosticsLevel::Trace,
+        "VA_TRACE",
+        "%s size=%dx%d min=%u max=%u checksum=0x%llX samples=%u,%u,%u",
+        stage,
+        width,
+        height,
+        minValue,
+        maxValue,
+        checksum,
+        sampleStartValue,
+        sampleMiddleValue,
+        sampleEndValue);
 }
 
 static bool isFullResPresenterActive()
@@ -816,6 +896,12 @@ void _GNW95_ShowRect(unsigned char* src, int srcPitch, int a3, int srcX, int src
                 const unsigned char* srcRow = srcStart + row * srcPitch;
                 unsigned char* destRow = virtualBuffer + (destRect.top + row) * virtualPitch + destRect.left;
                 memcpy(destRow, srcRow, clippedWidth);
+            }
+
+            if (virtualAdapterTraceChannelEnabled()) {
+                char stage[96];
+                std::snprintf(stage, sizeof(stage), "show_rect dst=(%d,%d %dx%d)", destRect.left, destRect.top, clippedWidth, clippedHeight);
+                logVirtualAdapterSourceSamples(stage, srcStart, clippedWidth, clippedHeight, srcPitch);
             }
 
             windowVirtualScreenInvalidateRect(destRect);

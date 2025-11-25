@@ -74,6 +74,7 @@ namespace fallout {
 #define GAME_CONFIG_OUTPUT_MAP_DATA_INFO_KEY "output_map_data_info"
 #define GAME_CONFIG_DEBUG_INPUT_OVERLAY_KEY "debug_input_overlay"
 #define GAME_CONFIG_HD_MISSING_WATERMARK_KEY "hd_missing_watermark"
+#define GAME_CONFIG_VIRTUAL_ADAPTER_TRACE_KEY "virtual_adapter_trace"
 #define GAME_CONFIG_EXECUTABLE_KEY "executable"
 #define GAME_CONFIG_OVERRIDE_LIBRARIAN_KEY "override_librarian"
 #define GAME_CONFIG_LIBRARIAN_KEY "librarian"

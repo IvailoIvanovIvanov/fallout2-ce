@@ -78,6 +78,7 @@ struct DebugSettings {
     bool output_map_data_info = false;
     bool input_overlay = false;
     bool hd_missing_watermark = false;
+    bool virtual_adapter_trace = false;
 };
 
 struct MapperSettings {

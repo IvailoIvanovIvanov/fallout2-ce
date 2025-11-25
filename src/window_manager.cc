@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
+#include <cstdio>
 
 #include <SDL.h>
 
@@ -68,6 +69,8 @@ static void windowAccumulatePhysicalRectStats(const Rect& rect);
 static void windowAccumulateHdLogicalPixels(int count);
 static void windowAccumulateHdPhysicalPixels(int count);
 static void windowLogPresentStats(const Rect& logicalRect, const Rect& physicalRect);
+static bool virtualAdapterTraceEnabled();
+static void logVirtualAdapterTraceRect(const char* stage, const Rect& rect);
 
 // 0x50FA30
 static char _path_patches[] = "";
@@ -216,6 +219,99 @@ static void windowLogPresentStats(const Rect& logicalRect, const Rect& physicalR
         static_cast<unsigned long long>(gWindowPresentStats.hdLogicalPixels),
         static_cast<unsigned long long>(gWindowPresentStats.hdPhysicalPixels + gWindowPresentStats.hdLogicalPixels),
         scale);
+}
+
+static bool virtualAdapterTraceEnabled()
+{
+    if (!gVirtualScreenEnabled) {
+        return false;
+    }
+
+    if (!settings.debug.virtual_adapter_trace) {
+        return false;
+    }
+
+    if (_screen_buffer == nullptr || _screen_buffer_pitch <= 0) {
+        return false;
+    }
+
+    return diagnosticsWouldLog(DiagnosticsLevel::Trace);
+}
+
+static void logVirtualAdapterTraceRect(const char* stage, const Rect& rect)
+{
+    if (!virtualAdapterTraceEnabled() || stage == nullptr) {
+        return;
+    }
+
+    Rect clipped;
+    rectCopy(&clipped, &rect);
+    const Rect& bounds = displayScalerGetLogicalBounds();
+    if (rectIntersection(&clipped, &bounds, &clipped) == -1) {
+        return;
+    }
+
+    const int width = rectGetWidth(&clipped);
+    const int height = rectGetHeight(&clipped);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    const size_t totalPixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (totalPixels == 0) {
+        return;
+    }
+
+    unsigned int minValue = 0xFF;
+    unsigned int maxValue = 0;
+    unsigned long long checksum = 0;
+
+    const size_t sampleStart = 0;
+    const size_t sampleMiddle = totalPixels / 2;
+    const size_t sampleEnd = totalPixels - 1;
+    unsigned int sampleStartValue = 0;
+    unsigned int sampleMiddleValue = 0;
+    unsigned int sampleEndValue = 0;
+
+    size_t currentIndex = 0;
+    for (int y = 0; y < height; y++) {
+        const unsigned char* row = _screen_buffer + (clipped.top + y) * _screen_buffer_pitch + clipped.left;
+        for (int x = 0; x < width; x++, currentIndex++) {
+            unsigned int value = row[x];
+            checksum += value;
+            if (value < minValue) {
+                minValue = value;
+            }
+            if (value > maxValue) {
+                maxValue = value;
+            }
+
+            if (currentIndex == sampleStart) {
+                sampleStartValue = value;
+            }
+            if (currentIndex == sampleMiddle) {
+                sampleMiddleValue = value;
+            }
+            if (currentIndex == sampleEnd) {
+                sampleEndValue = value;
+            }
+        }
+    }
+
+    diagnosticsLog(DiagnosticsLevel::Trace,
+        "VA_TRACE",
+        "%s rect=(%d,%d %dx%d) min=%u max=%u checksum=0x%llX samples=%u,%u,%u",
+        stage,
+        clipped.left,
+        clipped.top,
+        width,
+        height,
+        minValue,
+        maxValue,
+        checksum,
+        sampleStartValue,
+        sampleMiddleValue,
+        sampleEndValue);
 }
 
 static void logVirtualScreenRectStats(const Rect& rect)
@@ -1620,6 +1716,11 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
 
                 if (_buffering && !a3) {
                     if (gVirtualScreenEnabled) {
+                        if (virtualAdapterTraceEnabled()) {
+                            char stage[64];
+                            std::snprintf(stage, sizeof(stage), "gnw_refresh win=%d", window->id);
+                            logVirtualAdapterTraceRect(stage, v23->rect);
+                        }
                         if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
                             const int width = rectGetWidth(&(v23->rect));
                             const int height = rectGetHeight(&(v23->rect));
@@ -3466,10 +3567,27 @@ void windowPresentVirtualScreen()
         return;
     }
 
+    if (virtualAdapterTraceEnabled()) {
+        logVirtualAdapterTraceRect("present_dirty", rect);
+    }
+
     logVirtualScreenRectStats(rect);
     windowAccumulateLogicalRectStats(rect);
 
     Rect physicalDirtyRect = displayScalerLogicalToPhysical(rect);
+    if (virtualAdapterTraceEnabled()) {
+        diagnosticsLog(DiagnosticsLevel::Trace,
+            "VA_TRACE",
+            "present_map logical=(%d,%d %dx%d) physical=(%d,%d %dx%d)",
+            rect.left,
+            rect.top,
+            width,
+            height,
+            physicalDirtyRect.left,
+            physicalDirtyRect.top,
+            rectGetWidth(&physicalDirtyRect),
+            rectGetHeight(&physicalDirtyRect));
+    }
     windowAccumulatePhysicalRectStats(physicalDirtyRect);
 
     blitIndexedRectToTexture(_screen_buffer, _screen_buffer_pitch, rect);
