@@ -82,8 +82,10 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 	- `blitIndexedRectToTexture` now chews through the scaler’s per-axis span tables, expands each logical pixel into its physical block, and writes straight into the resized presenter surface—no more SDL post-scaling, no more shimmering outlines.
 	- `SCALER` logs picked up min/mid/max palette sampling so QA can spot color drift the moment a viewport clips a row; the stats stay wired even when a column gets fully clipped by the letterbox.
 	- Alternate twist (if QA hates the new crispness): flip `system.virtual_adapter_fullres=0` and the path auto-falls back to SDL’s scaler, which lets you A/B the difference before we wire up true-color overlays in S5.4.
-- [ ] **S5.3** Store and bind true-color overlays at physical resolution.
-	- When `system.virtual_adapter=1`, have `windowCreate`/`objectsBindTrueColorOverlay`/`tileBindTrueColorOverlay` allocate overlay+mask grids big enough for the physical viewport and expose helper structs so renderers can convert logical coordinates (plus letterbox offsets) into physical offsets.
+- [x] **S5.3** Store and bind true-color overlays at physical resolution.
+	- `windowCreate` now spins up a second true-color backing store sized to `displayScalerGetPhysicalViewport()` whenever the full-res presenter is active; the new `windowGetPhysicalTrueColorOverlay` API hands out the pixel pointer, mask, pitch, and the viewport offsets so no one has to guess where the letterbox begins.
+	- `objectsBindTrueColorOverlay` and `tileInit` cache those physical bindings up front and log a `SCALER` breadcrumb if the viewport-sized buffers go missing, giving Stage 5.4’s blitters a clean, ready-to-map struct before they start chewing on HD sprites.
+	- Logical overlays still stick around for Stage 4 compatibility, so QA can flip the full-res switch without watching the Overseer’s HUD implode while we rewire the rest of the pipeline.
 - [ ] **S5.4** Render HD sprites directly into that physical grid.
 	- Update `objectsBlitTrueColorOverlay` and the tile HD path to march over the physical rect returned by `displayScalerLogicalToPhysical`, sampling `HdTrueColorFrameView` with true per-pixel math instead of averaging back to logical resolution.
 - [ ] **S5.5** Composite everything in physical space and keep SDL honest.

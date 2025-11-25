@@ -257,6 +257,21 @@ static unsigned char* gTileWindowBuffer;
 static int gTileWindowId = -1;
 static uint32_t* gTileWindowTrueColorOverlay = nullptr;
 static unsigned char* gTileWindowTrueColorMask = nullptr;
+struct TilePhysicalOverlayView {
+    uint32_t* pixels = nullptr;
+    unsigned char* mask = nullptr;
+    int pitch = 0;
+    Rect viewport = { 0, 0, -1, -1 };
+    int width = 0;
+    int height = 0;
+
+    bool valid() const
+    {
+        return pixels != nullptr && mask != nullptr && pitch > 0 && width > 0 && height > 0;
+    }
+};
+
+static TilePhysicalOverlayView gTilePhysicalOverlayView;
 
 // Number of tiles vertically.
 //
@@ -322,6 +337,11 @@ static inline int tileScaleDown(int value)
 static inline bool tileHasTrueColorOverlay()
 {
     return gTileWindowTrueColorOverlay != nullptr && gTileWindowTrueColorMask != nullptr;
+}
+
+static inline const TilePhysicalOverlayView* tileGetPhysicalOverlayView()
+{
+    return gTilePhysicalOverlayView.valid() ? &gTilePhysicalOverlayView : nullptr;
 }
 
 static void tileClearTrueColorRegion(const Rect& rect)
@@ -398,6 +418,22 @@ int tileInit(TileData** a1, int squareGridWidth, int squareGridHeight, int hexGr
     } else {
         gTileWindowTrueColorOverlay = nullptr;
         gTileWindowTrueColorMask = nullptr;
+    }
+
+    gTilePhysicalOverlayView = {};
+    WindowPhysicalTrueColorBuffer physicalBuffer;
+    if (windowId != -1 && windowGetPhysicalTrueColorOverlay(windowId, &physicalBuffer)) {
+        gTilePhysicalOverlayView.pixels = physicalBuffer.pixels;
+        gTilePhysicalOverlayView.mask = physicalBuffer.mask;
+        gTilePhysicalOverlayView.pitch = physicalBuffer.pitch;
+        gTilePhysicalOverlayView.viewport = physicalBuffer.viewport;
+        gTilePhysicalOverlayView.width = physicalBuffer.width;
+        gTilePhysicalOverlayView.height = physicalBuffer.height;
+    } else if (windowId != -1 && diagnosticsWouldLog(DiagnosticsLevel::Trace) && windowHasTrueColorOverlay(windowId)) {
+        diagnosticsLog(DiagnosticsLevel::Trace,
+            "SCALER",
+            "tileInit window=%d missing physical overlay",
+            windowId);
     }
     _dir_tile2[0][0] = -1;
     gTileWindowWidth = windowWidth;

@@ -101,12 +101,27 @@ typedef struct Window {
     unsigned char* buffer;
     uint32_t* trueColorOverlay;
     unsigned char* trueColorMask;
+    uint32_t* trueColorPhysicalOverlay;
+    unsigned char* trueColorPhysicalMask;
+    int trueColorPhysicalPitch;
+    int trueColorPhysicalWidth;
+    int trueColorPhysicalHeight;
+    Rect trueColorPhysicalViewport;
     Button* buttonListHead;
     Button* hoveredButton;
     Button* clickedButton;
     MenuBar* menuBar;
     WindowBlitProc* blitProc;
 } Window;
+
+typedef struct WindowPhysicalTrueColorBuffer {
+    uint32_t* pixels;
+    unsigned char* mask;
+    int pitch;
+    int width;
+    int height;
+    Rect viewport;
+} WindowPhysicalTrueColorBuffer;
 
 typedef void ButtonCallback(int btn, int keyCode);
 typedef void RadioButtonCallback(int btn);
@@ -187,6 +202,8 @@ int windowGetScreenPitch();
 bool windowHasTrueColorOverlay(int win);
 uint32_t* windowGetTrueColorOverlay(int win);
 unsigned char* windowGetTrueColorMask(int win);
+bool windowHasPhysicalTrueColorOverlay(int win);
+bool windowGetPhysicalTrueColorOverlay(int win, WindowPhysicalTrueColorBuffer* outBuffer);
 void windowClearTrueColorRegion(int win, int left, int top, int width, int height);
 void windowDebugStampMissingHdGlyph(int win, int left, int top, int width, int height);
 Window* windowGetWindow(int win);

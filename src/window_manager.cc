@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cmath>
 
 #include <SDL.h>
 
@@ -54,6 +55,7 @@ static void virtualScreenInvalidateAll();
 static void logVirtualScreenRectStats(const Rect& rect);
 static int windowCompositeTrueColorOverlays(const Rect& rect);
 static int windowScrubTrueColorMask(uint32_t* overlayStart, unsigned char* maskStart, int pitch, int width, int height);
+static bool shouldAllocatePhysicalTrueColorOverlay();
 
 // 0x50FA30
 static char _path_patches[] = "";
@@ -281,6 +283,21 @@ static int windowScrubTrueColorMask(uint32_t* overlayStart, unsigned char* maskS
     return sanitized;
 }
 
+static bool shouldAllocatePhysicalTrueColorOverlay()
+{
+    if (!gVirtualScreenEnabled) {
+        return false;
+    }
+
+    if (!settings.system.virtual_adapter_fullres) {
+        return false;
+    }
+
+    constexpr double kScaleEpsilon = 1.0e-4;
+    const double scale = displayScalerGetScale();
+    return scale >= 1.0 - kScaleEpsilon;
+}
+
 static int windowCompositeTrueColorOverlays(const Rect& rect)
 {
     if (!gVirtualScreenEnabled) {
@@ -478,6 +495,18 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
     window->buffer = nullptr;
     window->trueColorOverlay = nullptr;
     window->trueColorMask = nullptr;
+    window->trueColorPhysicalOverlay = nullptr;
+    window->trueColorPhysicalMask = nullptr;
+    window->trueColorPhysicalPitch = 0;
+    window->trueColorPhysicalWidth = 0;
+    window->trueColorPhysicalHeight = 0;
+    window->trueColorPhysicalViewport = { 0, 0, -1, -1 };
+    window->trueColorPhysicalOverlay = nullptr;
+    window->trueColorPhysicalMask = nullptr;
+    window->trueColorPhysicalPitch = 0;
+    window->trueColorPhysicalWidth = 0;
+    window->trueColorPhysicalHeight = 0;
+    window->trueColorPhysicalViewport = { 0, 0, -1, -1 };
     window->buttonListHead = nullptr;
     window->hoveredButton = nullptr;
     window->clickedButton = nullptr;
@@ -630,6 +659,44 @@ int windowCreate(int x, int y, int width, int height, int color, int flags)
         }
     }
 
+    if (shouldAllocatePhysicalTrueColorOverlay()) {
+        const Rect& viewport = displayScalerGetPhysicalViewport();
+        const int viewportWidth = rectGetWidth(&viewport);
+        const int viewportHeight = rectGetHeight(&viewport);
+        if (viewportWidth > 0 && viewportHeight > 0) {
+            size_t pixelCount = static_cast<size_t>(viewportWidth) * static_cast<size_t>(viewportHeight);
+            size_t overlayBytes = pixelCount * sizeof(uint32_t);
+            uint32_t* overlay = (uint32_t*)internal_malloc(overlayBytes);
+            unsigned char* mask = (unsigned char*)internal_malloc(pixelCount);
+
+            if (overlay == nullptr || mask == nullptr) {
+                if (overlay != nullptr) {
+                    internal_free(overlay);
+                }
+                if (mask != nullptr) {
+                    internal_free(mask);
+                }
+
+                if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                    diagnosticsLog(DiagnosticsLevel::Info,
+                        "SCALER",
+                        "windowCreate id=%d unable to allocate %zu byte physical true-color overlay",
+                        window->id,
+                        overlayBytes + pixelCount);
+                }
+            } else {
+                memset(overlay, 0, overlayBytes);
+                memset(mask, 0, pixelCount);
+                window->trueColorPhysicalOverlay = overlay;
+                window->trueColorPhysicalMask = mask;
+                window->trueColorPhysicalPitch = viewportWidth;
+                window->trueColorPhysicalWidth = viewportWidth;
+                window->trueColorPhysicalHeight = viewportHeight;
+                window->trueColorPhysicalViewport = viewport;
+            }
+        }
+    }
+
     if ((flags & WINDOW_USE_DEFAULTS) != 0) {
         flags |= _window_flags;
     }
@@ -742,6 +809,14 @@ void windowFree(int win)
 
     if (window->trueColorMask != nullptr) {
         internal_free(window->trueColorMask);
+    }
+
+    if (window->trueColorPhysicalOverlay != nullptr) {
+        internal_free(window->trueColorPhysicalOverlay);
+    }
+
+    if (window->trueColorPhysicalMask != nullptr) {
+        internal_free(window->trueColorPhysicalMask);
     }
 
     if (window->menuBar != nullptr) {
@@ -3165,6 +3240,43 @@ unsigned char* windowGetTrueColorMask(int win)
 
     Window* window = windowGetWindow(win);
     return window != nullptr ? window->trueColorMask : nullptr;
+}
+
+bool windowHasPhysicalTrueColorOverlay(int win)
+{
+    if (!gVirtualScreenEnabled) {
+        return false;
+    }
+
+    Window* window = windowGetWindow(win);
+    if (window == nullptr) {
+        return false;
+    }
+
+    return window->trueColorPhysicalOverlay != nullptr && window->trueColorPhysicalMask != nullptr && window->trueColorPhysicalPitch > 0;
+}
+
+bool windowGetPhysicalTrueColorOverlay(int win, WindowPhysicalTrueColorBuffer* outBuffer)
+{
+    if (!windowHasPhysicalTrueColorOverlay(win)) {
+        return false;
+    }
+
+    Window* window = windowGetWindow(win);
+    if (window == nullptr) {
+        return false;
+    }
+
+    if (outBuffer != nullptr) {
+        outBuffer->pixels = window->trueColorPhysicalOverlay;
+        outBuffer->mask = window->trueColorPhysicalMask;
+        outBuffer->pitch = window->trueColorPhysicalPitch;
+        outBuffer->width = window->trueColorPhysicalWidth;
+        outBuffer->height = window->trueColorPhysicalHeight;
+        outBuffer->viewport = window->trueColorPhysicalViewport;
+    }
+
+    return true;
 }
 
 void windowClearTrueColorRegion(int win, int left, int top, int width, int height)

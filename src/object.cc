@@ -277,9 +277,30 @@ static uint32_t* gObjectsWindowTrueColorOverlay = nullptr;
 static unsigned char* gObjectsWindowTrueColorMask = nullptr;
 static int gObjectsWindowTrueColorPitch = 0;
 
+struct ObjectsPhysicalOverlayView {
+    uint32_t* pixels = nullptr;
+    unsigned char* mask = nullptr;
+    int pitch = 0;
+    Rect viewport = { 0, 0, -1, -1 };
+    int width = 0;
+    int height = 0;
+
+    bool valid() const
+    {
+        return pixels != nullptr && mask != nullptr && pitch > 0 && width > 0 && height > 0;
+    }
+};
+
+static ObjectsPhysicalOverlayView gObjectsPhysicalOverlayView;
+
 static inline bool objectsHasTrueColorOverlay()
 {
     return gObjectsWindowTrueColorOverlay != nullptr && gObjectsWindowTrueColorMask != nullptr && gObjectsWindowTrueColorPitch > 0;
+}
+
+static inline const ObjectsPhysicalOverlayView* objectsGetPhysicalOverlayView()
+{
+    return gObjectsPhysicalOverlayView.valid() ? &gObjectsPhysicalOverlayView : nullptr;
 }
 
 static void objectsBindTrueColorOverlay()
@@ -292,6 +313,22 @@ static void objectsBindTrueColorOverlay()
         gObjectsWindowTrueColorOverlay = nullptr;
         gObjectsWindowTrueColorMask = nullptr;
         gObjectsWindowTrueColorPitch = 0;
+    }
+
+    gObjectsPhysicalOverlayView = {};
+    WindowPhysicalTrueColorBuffer buffer;
+    if (windowGetPhysicalTrueColorOverlay(gIsoWindow, &buffer)) {
+        gObjectsPhysicalOverlayView.pixels = buffer.pixels;
+        gObjectsPhysicalOverlayView.mask = buffer.mask;
+        gObjectsPhysicalOverlayView.pitch = buffer.pitch;
+        gObjectsPhysicalOverlayView.viewport = buffer.viewport;
+        gObjectsPhysicalOverlayView.width = buffer.width;
+        gObjectsPhysicalOverlayView.height = buffer.height;
+    } else if (diagnosticsWouldLog(DiagnosticsLevel::Trace) && windowHasTrueColorOverlay(gIsoWindow)) {
+        diagnosticsLog(DiagnosticsLevel::Trace,
+            "SCALER",
+            "objectsBindTrueColorOverlay no physical buffer isoWindow=%d",
+            gIsoWindow);
     }
 }
 
