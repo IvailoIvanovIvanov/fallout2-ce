@@ -29,6 +29,7 @@ static bool createRenderer();
 static void destroyRenderer();
 static void syncPhysicalSizeWithRenderer();
 static bool ensurePresenterSurfaceMatchesBounds();
+static void logPresenterSurfaceState(const char* reason, bool fullRes, int width, int height);
 static bool rectEquals(const Rect& a, const Rect& b);
 static void logViewportIfChanged(const Rect& viewport);
 static bool copySurfaceRectToTexture(SDL_Texture* texture, SDL_Surface* surface, const Rect& rect);
@@ -51,6 +52,13 @@ static int gTextureUploadFailureLogBudget = 4;
 static int gTextureUploadFallbackLogBudget = 4;
 static int gIndexedBlitLogBudget = 16;
 static int gIndexedPaletteMismatchLogBudget = 4;
+static bool gPresenterSurfaceFullRes = false;
+static int gPresenterSurfaceWidth = 0;
+static int gPresenterSurfaceHeight = 0;
+static bool gPresenterSurfaceLogInitialized = false;
+static bool gPresenterSurfaceLastFullRes = false;
+static int gPresenterSurfaceLastWidth = 0;
+static int gPresenterSurfaceLastHeight = 0;
 
 static Rect makeSurfaceBoundsRect(int width, int height)
 {
@@ -339,7 +347,7 @@ static bool isFullResPresenterActive()
         return false;
     }
 
-    if (gSdlTextureSurface->w != viewportWidth || gSdlTextureSurface->h != viewportHeight) {
+    if (gSdlTextureSurface->w < viewportWidth || gSdlTextureSurface->h < viewportHeight) {
         return false;
     }
 
@@ -796,7 +804,14 @@ void _GNW95_ShowRect(unsigned char* src, int srcPitch, int a3, int srcX, int src
     const int srcOffsetY = destRect.top - destY;
     unsigned char* srcStart = src + srcPitch * (srcY + srcOffsetY) + (srcX + srcOffsetX);
 
-    blitBufferToBuffer(srcStart, clippedWidth, clippedHeight, srcPitch, (unsigned char*)gSdlSurface->pixels + gSdlSurface->pitch * destRect.top + destRect.left, gSdlSurface->pitch);
+    unsigned char* surfacePixels = static_cast<unsigned char*>(gSdlSurface->pixels);
+    blitBufferToBuffer(srcStart, clippedWidth, clippedHeight, srcPitch, surfacePixels + gSdlSurface->pitch * destRect.top + destRect.left, gSdlSurface->pitch);
+
+    if (isFullResPresenterActive()) {
+        Rect blitRect = destRect;
+        blitIndexedRectToTexture(surfacePixels, gSdlSurface->pitch, blitRect);
+        return;
+    }
 
     SDL_Rect sdlRect;
     sdlRect.x = destRect.left;
@@ -1187,16 +1202,52 @@ static void destroyRenderer()
         SDL_DestroyRenderer(gSdlRenderer);
         gSdlRenderer = nullptr;
     }
+
+    logPresenterSurfaceState("renderer_destroy", false, 0, 0);
+}
+
+static void logPresenterSurfaceState(const char* reason, bool fullRes, int width, int height)
+{
+    gPresenterSurfaceFullRes = fullRes;
+    gPresenterSurfaceWidth = width;
+    gPresenterSurfaceHeight = height;
+
+    if (!diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        return;
+    }
+
+    if (gPresenterSurfaceLogInitialized
+        && gPresenterSurfaceLastFullRes == fullRes
+        && gPresenterSurfaceLastWidth == width
+        && gPresenterSurfaceLastHeight == height) {
+        return;
+    }
+
+    gPresenterSurfaceLogInitialized = true;
+    gPresenterSurfaceLastFullRes = fullRes;
+    gPresenterSurfaceLastWidth = width;
+    gPresenterSurfaceLastHeight = height;
+
+    diagnosticsLog(DiagnosticsLevel::Info,
+        "RENDERER",
+        "presenter surface mode=%s size=%dx%d reason=%s",
+        fullRes ? "fullres" : "logical",
+        width,
+        height,
+        reason != nullptr ? reason : "update");
 }
 
 static bool ensurePresenterSurfaceMatchesBounds()
 {
     if (gSdlRenderer == nullptr) {
+        logPresenterSurfaceState("renderer_missing", false, 0, 0);
         return false;
     }
 
+    bool wantFullResPresenter = false;
     int desiredWidth = 0;
     int desiredHeight = 0;
+    const char* stateReason = nullptr;
 
     if (settings.system.virtual_adapter && settings.system.virtual_adapter_fullres) {
         const double scale = displayScalerGetScale();
@@ -1204,22 +1255,33 @@ static bool ensurePresenterSurfaceMatchesBounds()
             const Rect& viewport = displayScalerGetPhysicalViewport();
             desiredWidth = rectGetWidth(&viewport);
             desiredHeight = rectGetHeight(&viewport);
+            wantFullResPresenter = desiredWidth > 0 && desiredHeight > 0;
+            if (wantFullResPresenter) {
+                stateReason = "fullres_requested";
+            }
+        } else {
+            stateReason = "scale_below_one";
+        }
+    }
+
+    if (!wantFullResPresenter) {
+        const Rect& logicalBounds = displayScalerGetLogicalBounds();
+        desiredWidth = rectGetWidth(&logicalBounds);
+        desiredHeight = rectGetHeight(&logicalBounds);
+        if (stateReason == nullptr) {
+            stateReason = settings.system.virtual_adapter_fullres ? "viewport_invalid" : "fullres_disabled";
         }
     }
 
     if (desiredWidth <= 0 || desiredHeight <= 0) {
-        const Rect& logicalBounds = displayScalerGetLogicalBounds();
-        desiredWidth = rectGetWidth(&logicalBounds);
-        desiredHeight = rectGetHeight(&logicalBounds);
-    }
-
-    if (desiredWidth <= 0 || desiredHeight <= 0) {
+        logPresenterSurfaceState("invalid_dimensions", false, desiredWidth, desiredHeight);
         return false;
     }
 
     const int currentWidth = gSdlTextureSurface != nullptr ? gSdlTextureSurface->w : 0;
     const int currentHeight = gSdlTextureSurface != nullptr ? gSdlTextureSurface->h : 0;
     if (gSdlTexture != nullptr && gSdlTextureSurface != nullptr && currentWidth == desiredWidth && currentHeight == desiredHeight) {
+        logPresenterSurfaceState(wantFullResPresenter ? "fullres_ready" : stateReason, wantFullResPresenter, desiredWidth, desiredHeight);
         return true;
     }
 
@@ -1233,6 +1295,7 @@ static bool ensurePresenterSurfaceMatchesBounds()
                 desiredHeight,
                 SDL_GetError());
         }
+        logPresenterSurfaceState("texture_alloc_failed", false, currentWidth, currentHeight);
         return false;
     }
 
@@ -1245,6 +1308,7 @@ static bool ensurePresenterSurfaceMatchesBounds()
                 SDL_GetError());
         }
         SDL_DestroyTexture(newTexture);
+        logPresenterSurfaceState("query_failed", false, currentWidth, currentHeight);
         return false;
     }
 
@@ -1259,6 +1323,7 @@ static bool ensurePresenterSurfaceMatchesBounds()
                 SDL_GetError());
         }
         SDL_DestroyTexture(newTexture);
+            logPresenterSurfaceState("surface_alloc_failed", false, currentWidth, currentHeight);
         return false;
     }
 
@@ -1277,13 +1342,7 @@ static bool ensurePresenterSurfaceMatchesBounds()
 
     windowVirtualScreenInvalidateAll();
 
-    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-        diagnosticsLog(DiagnosticsLevel::Info,
-            "RENDERER",
-            "presenter surface resized to %dx%d",
-            desiredWidth,
-            desiredHeight);
-    }
+    logPresenterSurfaceState(wantFullResPresenter ? "resized_fullres" : "resized_logical", wantFullResPresenter, desiredWidth, desiredHeight);
 
     return true;
 }
