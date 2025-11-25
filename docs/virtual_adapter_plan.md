@@ -72,12 +72,28 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 	- [x] **Fallback glyphs:** keep a tiny “missing HD” watermark (just a masked debug swatch) that can be toggled via config; scribes testing packs will see instantly when the compositor reverted to indexed art.
 		- Flip `[debug] hd_missing_watermark=1` in `fallout2.cfg` to paint the neon chevron any time a tile/object falls back to 8-bit; the helper lives entirely in VRAM, so no 8-bit pixels are harmed.
 
-## Stage 5 – Stretch Goals & Polish
-- [ ] **S5.1** Add optional shaders/post-effects (CRT, bloom, whatever the Overseer deems tasteful).
+## Stage 5 – Break the 640×480 Ceiling
+- [ ] **S5.1** Give the virtual adapter its own physical-resolution playground.
+	- Allocate a dedicated ARGB surface sized to `displayScalerGetPhysicalViewport()` alongside the legacy `_screen_buffer`, track per-axis scale tables, and let `windowPresentVirtualScreen()` map logical dirty rects into physical space before the SDL texture ever sees them.
+- [ ] **S5.2** Stretch classic palette assets deliberately instead of letting SDL smear them.
+	- During the logical→physical blit, expand each indexed pixel into an integer `scale × scale` block (or nearest-neighbor if fractional), so the original art simply grows to fit the viewport while preserving crisp edges.
+- [ ] **S5.3** Store and bind true-color overlays at physical resolution.
+	- When `system.virtual_adapter=1`, have `windowCreate`/`objectsBindTrueColorOverlay`/`tileBindTrueColorOverlay` allocate overlay+mask grids big enough for the physical viewport and expose helper structs so renderers can convert logical coordinates (plus letterbox offsets) into physical offsets.
+- [ ] **S5.4** Render HD sprites directly into that physical grid.
+	- Update `objectsBlitTrueColorOverlay` and the tile HD path to march over the physical rect returned by `displayScalerLogicalToPhysical`, sampling `HdTrueColorFrameView` with true per-pixel math instead of averaging back to logical resolution.
+- [ ] **S5.5** Composite everything in physical space and keep SDL honest.
+	- Rewrite `windowCompositeTrueColorOverlays` to feed `blitTrueColorRectToTexture` the pre-scaled ARGB buffers, so SDL becomes a dumb present-only stage and never re-scales our handiwork.
+- [ ] **S5.6** Handle letterboxing, fractional scales, and clean fallbacks.
+	- Respect `displayScalerGetLetterboxOffset`, short-circuit when scale < 1.0, and ensure `isoDisable`/`tileDisable` clear the enlarged overlays so scene changes don’t leave ghosts.
+- [ ] **S5.7** Instrument the new pipeline.
+	- Emit `SCALER` logs for logical vs. physical rects, track HD pixels written per frame, and add a config toggle (`virtual_adapter_fullres=0/1`) so QA can revert instantly when debugging.
+
+## Stage 6 – Stretch Goals & Polish
+- [ ] **S6.1** Add optional shaders/post-effects (CRT, bloom, whatever the Overseer deems tasteful).
 	- **TODO:** prototype shader toggles in `preferences.cc`, defaulting them off for potato-mode rigs.
-- [ ] **S5.2** Benchmark CPU/GPU impact; add settings for throttling HD overlays on low-end hardware.
+- [ ] **S6.2** Benchmark CPU/GPU impact; add settings for throttling HD overlays on low-end hardware.
 	- **TODO:** hook the existing diagnostics profiler so we can compare frame times with/without HD overlays.
-- [ ] **S5.3** Document the modder-facing HD asset pipeline and expose toggles in the config UI.
+- [ ] **S6.3** Document the modder-facing HD asset pipeline and expose toggles in the config UI.
 	- **TODO:** extend this roadmap with a “Modder Addendum” once the asset loader stabilizes.
 
 *Check off each task as we conquer it—leave witty notes if a deathclaw was involved.*
