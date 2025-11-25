@@ -583,6 +583,14 @@ void tileExit()
 // 0x4B12A8
 void tileDisable()
 {
+    if (gTileEnabled) {
+        if (gTileWindowId != -1 && windowHasTrueColorOverlay(gTileWindowId)) {
+            windowClearTrueColorRegion(gTileWindowId, 0, 0, gTileWindowWidth, gTileWindowHeight);
+        } else if (tileHasTrueColorOverlay()) {
+            tileClearTrueColorRegion(gTileWindowRect);
+        }
+    }
+
     gTileEnabled = false;
 }
 

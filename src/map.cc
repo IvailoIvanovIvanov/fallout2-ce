@@ -349,6 +349,10 @@ bool isoDisable()
 
     gIsoEnabled = false;
 
+    if (gIsoWindow != -1 && windowHasTrueColorOverlay(gIsoWindow)) {
+        windowClearTrueColorRegion(gIsoWindow, 0, 0, windowGetWidth(gIsoWindow), windowGetHeight(gIsoWindow));
+    }
+
     return true;
 }
 
