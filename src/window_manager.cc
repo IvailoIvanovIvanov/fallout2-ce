@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <cmath>
 
 #include <SDL.h>
@@ -61,6 +62,12 @@ static void windowClearPhysicalTrueColorOverlay(Window* window);
 static void windowFreePhysicalTrueColorOverlay(Window* window);
 static bool windowEnsurePhysicalTrueColorOverlay(Window* window, const Rect& viewport, bool viewportChanged);
 static void windowSyncPhysicalTrueColorBuffersIfNeeded();
+static void windowResetPresentStats();
+static void windowAccumulateLogicalRectStats(const Rect& rect);
+static void windowAccumulatePhysicalRectStats(const Rect& rect);
+static void windowAccumulateHdLogicalPixels(int count);
+static void windowAccumulateHdPhysicalPixels(int count);
+static void windowLogPresentStats(const Rect& logicalRect, const Rect& physicalRect);
 
 // 0x50FA30
 static char _path_patches[] = "";
@@ -135,10 +142,80 @@ static const int kVirtualScreenTraceMinArea = 10000;
 static Rect gPhysicalTrueColorViewport = { 0, 0, -1, -1 };
 static bool gPhysicalTrueColorViewportValid = false;
 static uint32_t gPhysicalTrueColorOverlayRevision = 1;
+struct WindowPresentStats {
+    uint64_t logicalPixels = 0;
+    uint64_t physicalPixels = 0;
+    uint64_t hdLogicalPixels = 0;
+    uint64_t hdPhysicalPixels = 0;
+};
+static WindowPresentStats gWindowPresentStats;
 
 static bool rectEquals(const Rect& a, const Rect& b)
 {
     return a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom;
+}
+
+static void windowResetPresentStats()
+{
+    gWindowPresentStats = {};
+}
+
+static void windowAccumulateLogicalRectStats(const Rect& rect)
+{
+    int width = rectGetWidth(&rect);
+    int height = rectGetHeight(&rect);
+    if (width > 0 && height > 0) {
+        gWindowPresentStats.logicalPixels += static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
+    }
+}
+
+static void windowAccumulatePhysicalRectStats(const Rect& rect)
+{
+    int width = rectGetWidth(&rect);
+    int height = rectGetHeight(&rect);
+    if (width > 0 && height > 0) {
+        gWindowPresentStats.physicalPixels += static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
+    }
+}
+
+static void windowAccumulateHdLogicalPixels(int count)
+{
+    if (count > 0) {
+        gWindowPresentStats.hdLogicalPixels += static_cast<uint64_t>(count);
+    }
+}
+
+static void windowAccumulateHdPhysicalPixels(int count)
+{
+    if (count > 0) {
+        gWindowPresentStats.hdPhysicalPixels += static_cast<uint64_t>(count);
+    }
+}
+
+static void windowLogPresentStats(const Rect& logicalRect, const Rect& physicalRect)
+{
+    if (!diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        return;
+    }
+
+    const double scale = displayScalerGetScale();
+    diagnosticsLog(DiagnosticsLevel::Trace,
+        "SCALER",
+        "present_stats logical=(%d,%d %dx%d) physical=(%d,%d %dx%d) logical_px=%llu physical_px=%llu hd_physical=%llu hd_logical=%llu hd_total=%llu scale=%.4f",
+        logicalRect.left,
+        logicalRect.top,
+        rectGetWidth(&logicalRect),
+        rectGetHeight(&logicalRect),
+        physicalRect.left,
+        physicalRect.top,
+        rectGetWidth(&physicalRect),
+        rectGetHeight(&physicalRect),
+        static_cast<unsigned long long>(gWindowPresentStats.logicalPixels),
+        static_cast<unsigned long long>(gWindowPresentStats.physicalPixels),
+        static_cast<unsigned long long>(gWindowPresentStats.hdPhysicalPixels),
+        static_cast<unsigned long long>(gWindowPresentStats.hdLogicalPixels),
+        static_cast<unsigned long long>(gWindowPresentStats.hdPhysicalPixels + gWindowPresentStats.hdLogicalPixels),
+        scale);
 }
 
 static void logVirtualScreenRectStats(const Rect& rect)
@@ -547,7 +624,9 @@ static int windowCompositeTrueColorOverlays(const Rect& rect)
 
                     Rect presenterRect = physicalRect;
                     rectOffset(&presenterRect, -viewport.left, -viewport.top);
-                    pixelsOverridden += blitPhysicalTrueColorRectToTexture(overlayStart, maskStart, window->trueColorPhysicalPitch, presenterRect);
+                    int written = blitPhysicalTrueColorRectToTexture(overlayStart, maskStart, window->trueColorPhysicalPitch, presenterRect);
+                    windowAccumulateHdPhysicalPixels(written);
+                    pixelsOverridden += written;
                 }
             }
         }
@@ -574,7 +653,9 @@ static int windowCompositeTrueColorOverlays(const Rect& rect)
                 height);
         }
 
-        pixelsOverridden += blitTrueColorRectToTexture(overlayStart, maskStart, window->width, clipped);
+        int written = blitTrueColorRectToTexture(overlayStart, maskStart, window->width, clipped);
+        windowAccumulateHdLogicalPixels(written);
+        pixelsOverridden += written;
     }
 
     return pixelsOverridden;
@@ -3363,6 +3444,8 @@ void windowPresentVirtualScreen()
         return;
     }
 
+    windowResetPresentStats();
+
     Rect rect = gVirtualScreenDirtyRect;
     virtualScreenResetDirty();
 
@@ -3378,6 +3461,10 @@ void windowPresentVirtualScreen()
     }
 
     logVirtualScreenRectStats(rect);
+    windowAccumulateLogicalRectStats(rect);
+
+    Rect physicalDirtyRect = displayScalerLogicalToPhysical(rect);
+    windowAccumulatePhysicalRectStats(physicalDirtyRect);
 
     blitIndexedRectToTexture(_screen_buffer, _screen_buffer_pitch, rect);
 
@@ -3408,6 +3495,8 @@ void windowPresentVirtualScreen()
             rectGetWidth(&viewport),
             rectGetHeight(&viewport));
     }
+
+    windowLogPresentStats(rect, physicalDirtyRect);
 }
 
 void windowVirtualScreenInvalidateAll()
