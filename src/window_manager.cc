@@ -814,13 +814,10 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
     window->trueColorPhysicalPitch = 0;
     window->trueColorPhysicalWidth = 0;
     window->trueColorPhysicalHeight = 0;
-    window->trueColorPhysicalViewport = { 0, 0, -1, -1 };
-    window->trueColorPhysicalOverlay = nullptr;
-    window->trueColorPhysicalMask = nullptr;
-    window->trueColorPhysicalPitch = 0;
-    window->trueColorPhysicalWidth = 0;
-    window->trueColorPhysicalHeight = 0;
-    window->trueColorPhysicalViewport = { 0, 0, -1, -1 };
+    window->trueColorPhysicalViewport.left = 0;
+    window->trueColorPhysicalViewport.top = 0;
+    window->trueColorPhysicalViewport.right = -1;
+    window->trueColorPhysicalViewport.bottom = -1;
     window->buttonListHead = nullptr;
     window->hoveredButton = nullptr;
     window->clickedButton = nullptr;
@@ -931,6 +928,15 @@ int windowCreate(int x, int y, int width, int height, int color, int flags)
 
     window->trueColorOverlay = nullptr;
     window->trueColorMask = nullptr;
+    window->trueColorPhysicalOverlay = nullptr;
+    window->trueColorPhysicalMask = nullptr;
+    window->trueColorPhysicalPitch = 0;
+    window->trueColorPhysicalWidth = 0;
+    window->trueColorPhysicalHeight = 0;
+    window->trueColorPhysicalViewport.left = 0;
+    window->trueColorPhysicalViewport.top = 0;
+    window->trueColorPhysicalViewport.right = -1;
+    window->trueColorPhysicalViewport.bottom = -1;
 
     int id = 1;
     while (windowGetWindow(id) != nullptr) {

@@ -723,7 +723,9 @@ void directDrawSetPaletteInRange(unsigned char* palette, int start, int count)
         }
 
         SDL_SetPaletteColors(gSdlSurface->format->palette, colors, start, count);
-        SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+        if (!windowIsVirtualScreenEnabled()) {
+            SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+        }
         updateTexturePaletteRange(start, count, palette);
 
         if (windowIsVirtualScreenEnabled()) {
@@ -746,7 +748,9 @@ void directDrawSetPalette(unsigned char* palette)
         }
 
         SDL_SetPaletteColors(gSdlSurface->format->palette, colors, 0, 256);
-        SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+        if (!windowIsVirtualScreenEnabled()) {
+            SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+        }
         updateTexturePaletteRange(0, 256, palette);
 
         if (windowIsVirtualScreenEnabled()) {
@@ -804,23 +808,25 @@ void _GNW95_ShowRect(unsigned char* src, int srcPitch, int a3, int srcX, int src
     const int srcOffsetY = destRect.top - destY;
     unsigned char* srcStart = src + srcPitch * (srcY + srcOffsetY) + (srcX + srcOffsetX);
 
-    unsigned char* surfacePixels = static_cast<unsigned char*>(gSdlSurface->pixels);
-    blitBufferToBuffer(srcStart, clippedWidth, clippedHeight, srcPitch, surfacePixels + gSdlSurface->pitch * destRect.top + destRect.left, gSdlSurface->pitch);
-
     if (windowIsVirtualScreenEnabled()) {
-        unsigned char* virtualBuffer = windowGetScreenBuffer();
-        const int virtualPitch = windowGetScreenPitch();
+        unsigned char* virtualBuffer = windowGetVirtualScreenBuffer();
+        const int virtualPitch = windowGetVirtualScreenPitch();
         if (virtualBuffer != nullptr && virtualPitch > 0) {
             for (int row = 0; row < clippedHeight; row++) {
                 const unsigned char* srcRow = srcStart + row * srcPitch;
                 unsigned char* destRow = virtualBuffer + (destRect.top + row) * virtualPitch + destRect.left;
                 memcpy(destRow, srcRow, clippedWidth);
             }
+
             windowVirtualScreenInvalidateRect(destRect);
             windowPresentVirtualScreen();
         }
+
         return;
     }
+
+    unsigned char* surfacePixels = static_cast<unsigned char*>(gSdlSurface->pixels);
+    blitBufferToBuffer(srcStart, clippedWidth, clippedHeight, srcPitch, surfacePixels + gSdlSurface->pitch * destRect.top + destRect.left, gSdlSurface->pitch);
 
     if (isFullResPresenterActive()) {
         Rect blitRect = destRect;
@@ -1120,6 +1126,28 @@ int blitPhysicalTrueColorRectToTexture(const uint32_t* src, const unsigned char*
 void _GNW95_zero_vid_mem()
 {
     if (!gProgramIsActive) {
+        return;
+    }
+
+    if (windowIsVirtualScreenEnabled()) {
+        unsigned char* virtualBuffer = windowGetVirtualScreenBuffer();
+        int virtualPitch = windowGetVirtualScreenPitch();
+        if (virtualBuffer != nullptr && virtualPitch > 0) {
+            const Rect& logicalBounds = displayScalerGetLogicalBounds();
+            const int width = rectGetWidth(&logicalBounds);
+            const int height = rectGetHeight(&logicalBounds);
+            for (int y = 0; y < height; y++) {
+                memset(virtualBuffer + y * virtualPitch, 0, width);
+            }
+
+            windowVirtualScreenInvalidateAll();
+            windowPresentVirtualScreen();
+        }
+
+        return;
+    }
+
+    if (gSdlSurface == nullptr || gSdlTextureSurface == nullptr) {
         return;
     }
 
@@ -1557,7 +1585,12 @@ void handleWindowSizeChanged()
     createRenderer();
 
     if (gSdlTextureSurface != nullptr && gSdlSurface != nullptr) {
-        SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+        if (!windowIsVirtualScreenEnabled()) {
+            SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+        } else {
+            windowVirtualScreenInvalidateAll();
+            windowPresentVirtualScreen();
+        }
     }
 
     syncPhysicalSizeWithRenderer();
