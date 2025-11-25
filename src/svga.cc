@@ -1007,6 +1007,63 @@ int blitTrueColorRectToTexture(const uint32_t* src, const unsigned char* mask, i
     return pixelsWritten;
 }
 
+int blitPhysicalTrueColorRectToTexture(const uint32_t* src, const unsigned char* mask, int srcPitch, const Rect& rect)
+{
+    if (src == nullptr || gSdlTextureSurface == nullptr) {
+        return 0;
+    }
+
+    if (!isFullResPresenterActive()) {
+        return 0;
+    }
+
+    Rect presenterBounds = getPresenterSurfaceBounds();
+    Rect presenterRect;
+    rectCopy(&presenterRect, &rect);
+    if (rectIntersection(&presenterRect, &presenterBounds, &presenterRect) == -1) {
+        return 0;
+    }
+
+    const int width = rectGetWidth(&presenterRect);
+    const int height = rectGetHeight(&presenterRect);
+    if (width <= 0 || height <= 0) {
+        return 0;
+    }
+
+    if (gSdlTextureSurface->format == nullptr || gSdlTextureSurface->format->BytesPerPixel != 4) {
+        return 0;
+    }
+
+    const int bytesPerPixel = gSdlTextureSurface->format->BytesPerPixel;
+    unsigned char* destPixels = static_cast<unsigned char*>(gSdlTextureSurface->pixels);
+    const int deltaLeft = presenterRect.left - rect.left;
+    const int deltaTop = presenterRect.top - rect.top;
+    const uint32_t* presenterSrc = src + deltaTop * srcPitch + deltaLeft;
+    const unsigned char* presenterMask = mask != nullptr ? mask + deltaTop * srcPitch + deltaLeft : nullptr;
+
+    int pixelsWritten = 0;
+    for (int row = 0; row < height; row++) {
+        const uint32_t* srcRow = presenterSrc + row * srcPitch;
+        const unsigned char* maskRow = presenterMask != nullptr ? presenterMask + row * srcPitch : nullptr;
+        uint32_t* destRow = reinterpret_cast<uint32_t*>(destPixels + (presenterRect.top + row) * gSdlTextureSurface->pitch + presenterRect.left * bytesPerPixel);
+
+        if (maskRow == nullptr) {
+            memcpy(destRow, srcRow, width * sizeof(uint32_t));
+            pixelsWritten += width;
+            continue;
+        }
+
+        for (int column = 0; column < width; column++) {
+            if (maskRow[column] != 0) {
+                destRow[column] = srcRow[column];
+                pixelsWritten++;
+            }
+        }
+    }
+
+    return pixelsWritten;
+}
+
 // Clears drawing surface.
 //
 // 0x4CBBC8

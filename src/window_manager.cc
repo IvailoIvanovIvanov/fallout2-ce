@@ -308,7 +308,18 @@ static int windowCompositeTrueColorOverlays(const Rect& rect)
 
     for (int index = 0; index < gWindowsLength; index++) {
         Window* window = gWindows[index];
-        if (window == nullptr || window->trueColorOverlay == nullptr || window->trueColorMask == nullptr) {
+        if (window == nullptr) {
+            continue;
+        }
+
+        const bool hasLogicalOverlay = window->trueColorOverlay != nullptr && window->trueColorMask != nullptr;
+        const bool hasPhysicalOverlay = window->trueColorPhysicalOverlay != nullptr
+            && window->trueColorPhysicalMask != nullptr
+            && window->trueColorPhysicalPitch > 0
+            && window->trueColorPhysicalWidth > 0
+            && window->trueColorPhysicalHeight > 0;
+
+        if (!hasLogicalOverlay && !hasPhysicalOverlay) {
             continue;
         }
 
@@ -323,6 +334,44 @@ static int windowCompositeTrueColorOverlays(const Rect& rect)
             continue;
         }
 
+        bool attemptedPhysicalComposite = false;
+        if (hasPhysicalOverlay) {
+            Rect physicalRect = displayScalerLogicalToPhysical(clipped);
+            Rect viewport = window->trueColorPhysicalViewport;
+            if (rectIntersection(&physicalRect, &viewport, &physicalRect) != -1) {
+                int physicalWidth = rectGetWidth(&physicalRect);
+                int physicalHeight = rectGetHeight(&physicalRect);
+                if (physicalWidth > 0 && physicalHeight > 0) {
+                    attemptedPhysicalComposite = true;
+                    int destLeft = physicalRect.left - viewport.left;
+                    int destTop = physicalRect.top - viewport.top;
+                    uint32_t* overlayStart = window->trueColorPhysicalOverlay + destTop * window->trueColorPhysicalPitch + destLeft;
+                    unsigned char* maskStart = window->trueColorPhysicalMask + destTop * window->trueColorPhysicalPitch + destLeft;
+
+                    int sanitized = windowScrubTrueColorMask(overlayStart, maskStart, window->trueColorPhysicalPitch, physicalWidth, physicalHeight);
+                    if (sanitized > 0 && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                        diagnosticsLog(DiagnosticsLevel::Info,
+                            "SCALER",
+                            "windowCompositeTrueColorOverlays scrubbed=%d window=%d physical=(%d,%d %dx%d)",
+                            sanitized,
+                            window->id,
+                            physicalRect.left,
+                            physicalRect.top,
+                            physicalWidth,
+                            physicalHeight);
+                    }
+
+                    Rect presenterRect = physicalRect;
+                    rectOffset(&presenterRect, -viewport.left, -viewport.top);
+                    pixelsOverridden += blitPhysicalTrueColorRectToTexture(overlayStart, maskStart, window->trueColorPhysicalPitch, presenterRect);
+                }
+            }
+        }
+
+        if (attemptedPhysicalComposite || !hasLogicalOverlay) {
+            continue;
+        }
+
         int offsetX = clipped.left - window->rect.left;
         int offsetY = clipped.top - window->rect.top;
         uint32_t* overlayStart = window->trueColorOverlay + offsetY * window->width + offsetX;
@@ -332,7 +381,7 @@ static int windowCompositeTrueColorOverlays(const Rect& rect)
         if (sanitized > 0 && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
             diagnosticsLog(DiagnosticsLevel::Info,
                 "SCALER",
-                "windowCompositeTrueColorOverlays scrubbed=%d window=%d rect=(%d,%d %dx%d)",
+                "windowCompositeTrueColorOverlays scrubbed=%d window=%d logical=(%d,%d %dx%d)",
                 sanitized,
                 window->id,
                 clipped.left,

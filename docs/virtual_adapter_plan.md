@@ -90,8 +90,9 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 	- `objectsBlitTrueColorOverlay` now paints every HD critter twice: once into the legacy 640×480 overlay (to keep Stage 4 alive) and once into the viewport-scale buffer using the scaler tables, so each physical pixel grabs the exact HD texel it deserves.
 	- Tile floors/roofs follow suit whether they’re basking in constant light or the per-pixel intensity map—the helper chews through the same span math, feeds `colorApplyLightingToArgb`, and drops the results straight into the viewport-sized mask.
 	- Scrub/clear paths were updated too, so whenever an overlay falls back to indexed art the physical grid gets wiped in lockstep; no more ghost HD pixels haunting the Overseer’s retina.
-- [ ] **S5.5** Composite everything in physical space and keep SDL honest.
-	- Rewrite `windowCompositeTrueColorOverlays` to feed `blitTrueColorRectToTexture` the pre-scaled ARGB buffers, so SDL becomes a dumb present-only stage and never re-scales our handiwork.
+- [x] **S5.5** Composite everything in physical space and keep SDL honest.
+	- `windowCompositeTrueColorOverlays` now prioritizes the viewport-sized overlay buffers, scrubs them for stale alpha, and ships them straight into a new `blitPhysicalTrueColorRectToTexture` helper so the SDL presenter merely flips bytes.
+	- If the physical buffers aren’t around (or we’re testing with `virtual_adapter_fullres=0`), the compositor automatically falls back to the Stage 4 logical overlays, so QA can still chase ghosts without losing coverage.
 - [ ] **S5.6** Handle letterboxing, fractional scales, and clean fallbacks.
 	- Respect `displayScalerGetLetterboxOffset`, short-circuit when scale < 1.0, and ensure `isoDisable`/`tileDisable` clear the enlarged overlays so scene changes don’t leave ghosts.
 - [ ] **S5.7** Instrument the new pipeline.
