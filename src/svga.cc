@@ -1354,6 +1354,7 @@ void handleWindowSizeChanged()
     }
 
     displayScalerUpdatePhysicalSize(physicalWidth, physicalHeight);
+    windowRefreshPhysicalTrueColorBuffers();
 
     destroyRenderer();
 

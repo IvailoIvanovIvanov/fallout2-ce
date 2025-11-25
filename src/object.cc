@@ -62,6 +62,7 @@ static int _obj_adjust_light(Object* obj, int a2, Rect* rect);
 static void objectDrawOutline(Object* object, Rect* rect);
 static void _obj_render_object(Object* object, Rect* rect, int light, RenderTraceLayer layer);
 static int _obj_preload_sort(const void* a1, const void* a2);
+static void objectsBindTrueColorOverlay();
 
 // 0x5195F8
 static bool gObjectsInitialized = false;
@@ -293,6 +294,7 @@ struct ObjectsPhysicalOverlayView {
 };
 
 static ObjectsPhysicalOverlayView gObjectsPhysicalOverlayView;
+static uint32_t gObjectsPhysicalOverlayRevision = 0;
 
 static inline bool objectsHasTrueColorOverlay()
 {
@@ -301,6 +303,11 @@ static inline bool objectsHasTrueColorOverlay()
 
 static inline const ObjectsPhysicalOverlayView* objectsGetPhysicalOverlayView()
 {
+    uint32_t revision = windowGetPhysicalTrueColorOverlayRevision();
+    if (!gObjectsPhysicalOverlayView.valid() || revision != gObjectsPhysicalOverlayRevision) {
+        objectsBindTrueColorOverlay();
+    }
+
     return gObjectsPhysicalOverlayView.valid() ? &gObjectsPhysicalOverlayView : nullptr;
 }
 
@@ -371,6 +378,8 @@ static void objectsBindTrueColorOverlay()
             "objectsBindTrueColorOverlay no physical buffer isoWindow=%d",
             gIsoWindow);
     }
+
+    gObjectsPhysicalOverlayRevision = windowGetPhysicalTrueColorOverlayRevision();
 }
 
 static void objectsClearTrueColorRegion(const Rect& rect)

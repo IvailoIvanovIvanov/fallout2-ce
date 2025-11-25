@@ -273,6 +273,7 @@ struct TilePhysicalOverlayView {
 };
 
 static TilePhysicalOverlayView gTilePhysicalOverlayView;
+static uint32_t gTilePhysicalOverlayRevision = 0;
 
 // Number of tiles vertically.
 //
@@ -342,6 +343,28 @@ static inline bool tileHasTrueColorOverlay()
 
 static inline const TilePhysicalOverlayView* tileGetPhysicalOverlayView()
 {
+    uint32_t revision = windowGetPhysicalTrueColorOverlayRevision();
+    if (!gTilePhysicalOverlayView.valid() || revision != gTilePhysicalOverlayRevision) {
+        WindowPhysicalTrueColorBuffer physicalBuffer;
+        gTilePhysicalOverlayView = {};
+
+        if (gTileWindowId != -1 && windowGetPhysicalTrueColorOverlay(gTileWindowId, &physicalBuffer)) {
+            gTilePhysicalOverlayView.pixels = physicalBuffer.pixels;
+            gTilePhysicalOverlayView.mask = physicalBuffer.mask;
+            gTilePhysicalOverlayView.pitch = physicalBuffer.pitch;
+            gTilePhysicalOverlayView.viewport = physicalBuffer.viewport;
+            gTilePhysicalOverlayView.width = physicalBuffer.width;
+            gTilePhysicalOverlayView.height = physicalBuffer.height;
+        } else if (gTileWindowId != -1 && diagnosticsWouldLog(DiagnosticsLevel::Trace) && windowHasTrueColorOverlay(gTileWindowId)) {
+            diagnosticsLog(DiagnosticsLevel::Trace,
+                "SCALER",
+                "tileBindPhysicalOverlayView window=%d missing physical overlay",
+                gTileWindowId);
+        }
+
+        gTilePhysicalOverlayRevision = windowGetPhysicalTrueColorOverlayRevision();
+    }
+
     return gTilePhysicalOverlayView.valid() ? &gTilePhysicalOverlayView : nullptr;
 }
 
@@ -563,19 +586,9 @@ int tileInit(TileData** a1, int squareGridWidth, int squareGridHeight, int hexGr
     }
 
     gTilePhysicalOverlayView = {};
-    WindowPhysicalTrueColorBuffer physicalBuffer;
-    if (windowId != -1 && windowGetPhysicalTrueColorOverlay(windowId, &physicalBuffer)) {
-        gTilePhysicalOverlayView.pixels = physicalBuffer.pixels;
-        gTilePhysicalOverlayView.mask = physicalBuffer.mask;
-        gTilePhysicalOverlayView.pitch = physicalBuffer.pitch;
-        gTilePhysicalOverlayView.viewport = physicalBuffer.viewport;
-        gTilePhysicalOverlayView.width = physicalBuffer.width;
-        gTilePhysicalOverlayView.height = physicalBuffer.height;
-    } else if (windowId != -1 && diagnosticsWouldLog(DiagnosticsLevel::Trace) && windowHasTrueColorOverlay(windowId)) {
-        diagnosticsLog(DiagnosticsLevel::Trace,
-            "SCALER",
-            "tileInit window=%d missing physical overlay",
-            windowId);
+    gTilePhysicalOverlayRevision = 0;
+    if (windowId != -1) {
+        tileGetPhysicalOverlayView();
     }
     _dir_tile2[0][0] = -1;
     gTileWindowWidth = windowWidth;
@@ -756,6 +769,7 @@ void tileExit()
     gTileWindowTrueColorOverlay = nullptr;
     gTileWindowTrueColorMask = nullptr;
     gTilePhysicalOverlayView = {};
+    gTilePhysicalOverlayRevision = 0;
     _tile_reset_();
 }
 

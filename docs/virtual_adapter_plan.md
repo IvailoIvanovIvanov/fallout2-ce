@@ -93,8 +93,10 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 - [x] **S5.5** Composite everything in physical space and keep SDL honest.
 	- `windowCompositeTrueColorOverlays` now prioritizes the viewport-sized overlay buffers, scrubs them for stale alpha, and ships them straight into a new `blitPhysicalTrueColorRectToTexture` helper so the SDL presenter merely flips bytes.
 	- If the physical buffers aren’t around (or we’re testing with `virtual_adapter_fullres=0`), the compositor automatically falls back to the Stage 4 logical overlays, so QA can still chase ghosts without losing coverage.
-- [ ] **S5.6** Handle letterboxing, fractional scales, and clean fallbacks.
-	- Respect `displayScalerGetLetterboxOffset`, short-circuit when scale < 1.0, and ensure `isoDisable`/`tileDisable` clear the enlarged overlays so scene changes don’t leave ghosts.
+- [x] **S5.6** Handle letterboxing, fractional scales, and clean fallbacks.
+	- `windowRefreshPhysicalTrueColorBuffers` now watches the scaler every frame (and on resize), reallocates or clears the viewport-sized buffers whenever scale/letterbox math changes, and bumps a global revision so anything holding cached pointers knows to rebind before scribbling.
+	- Objects and tiles subscribe to that revision, so the moment scale dips below 1.0 (or the viewport slides for letterboxing) they drop the physical view, fall back to the logical overlay, and rebalance their scaler tables without touching SDL’s blitter.
+	- `isoDisable`/`tileDisable` already rode shotgun on the logical clears; the shared clear helper now wipes the physical grids in lockstep, so UI swaps or map transitions cannot leave UHD ghosts roasting in the letterbox.
 - [ ] **S5.7** Instrument the new pipeline.
 	- Emit `SCALER` logs for logical vs. physical rects, track HD pixels written per frame, and add a config toggle (`virtual_adapter_fullres=0/1`) so QA can revert instantly when debugging.
 		- Toggle shipped during **S5.1**; the Overseer still wants per-frame counters before we call this stage done.

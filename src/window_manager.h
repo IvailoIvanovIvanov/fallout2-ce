@@ -204,6 +204,8 @@ uint32_t* windowGetTrueColorOverlay(int win);
 unsigned char* windowGetTrueColorMask(int win);
 bool windowHasPhysicalTrueColorOverlay(int win);
 bool windowGetPhysicalTrueColorOverlay(int win, WindowPhysicalTrueColorBuffer* outBuffer);
+void windowRefreshPhysicalTrueColorBuffers();
+uint32_t windowGetPhysicalTrueColorOverlayRevision();
 void windowClearTrueColorRegion(int win, int left, int top, int width, int height);
 void windowDebugStampMissingHdGlyph(int win, int left, int top, int width, int height);
 Window* windowGetWindow(int win);
