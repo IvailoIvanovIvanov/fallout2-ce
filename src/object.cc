@@ -369,9 +369,45 @@ static void objectsBlitTrueColorOverlay(const HdTrueColorFrameView& view,
         }
 
         indexedRow += frameWidth;
+        trueColorBaseRow += rowAdvance;
         overlayRow += gObjectsWindowTrueColorPitch;
         maskRow += gObjectsWindowTrueColorPitch;
-        trueColorBaseRow += rowAdvance;
+    }
+}
+
+static void objectsScrubTrueColorMaskForIndexedBlit(const unsigned char* indexed,
+    int frameWidth,
+    const Rect& objectRect,
+    int objectWidth,
+    int objectHeight)
+{
+    if (!objectsHasTrueColorOverlay() || indexed == nullptr) {
+        return;
+    }
+
+    uint32_t* overlayRow = gObjectsWindowTrueColorOverlay + gObjectsWindowTrueColorPitch * objectRect.top + objectRect.left;
+    unsigned char* maskRow = gObjectsWindowTrueColorMask + gObjectsWindowTrueColorPitch * objectRect.top + objectRect.left;
+    const unsigned char* indexedRow = indexed;
+
+    for (int row = 0; row < objectHeight; row++) {
+        const unsigned char* indexedPixel = indexedRow;
+        uint32_t* overlayPixel = overlayRow;
+        unsigned char* maskPixel = maskRow;
+
+        for (int column = 0; column < objectWidth; column++) {
+            if (*indexedPixel != 0) {
+                *overlayPixel = 0;
+                *maskPixel = 0;
+            }
+
+            indexedPixel++;
+            overlayPixel++;
+            maskPixel++;
+        }
+
+        indexedRow += frameWidth;
+        overlayRow += gObjectsWindowTrueColorPitch;
+        maskRow += gObjectsWindowTrueColorPitch;
     }
 }
 
@@ -5235,6 +5271,10 @@ static void _obj_render_object(Object* object, Rect* rect, int light, RenderTrac
     }
 
 APPLY_TRUE_COLOR_OVERLAY:
+    if (!hasTrueColor) {
+        objectsScrubTrueColorMaskForIndexedBlit(src, frameWidth, objectRect, objectWidth, objectHeight);
+    }
+
     if (hasTrueColor) {
         int intensityIndex = light / 512;
         objectsBlitTrueColorOverlay(trueColorView,
