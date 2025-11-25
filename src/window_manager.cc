@@ -3305,6 +3305,31 @@ void windowClearTrueColorRegion(int win, int left, int top, int width, int heigh
         memset(window->trueColorMask + offset, 0, rowWidth);
         memset(window->trueColorOverlay + offset, 0, rowWidth * sizeof(uint32_t));
     }
+
+    if (window->trueColorPhysicalOverlay != nullptr && window->trueColorPhysicalMask != nullptr && window->trueColorPhysicalPitch > 0 && window->trueColorPhysicalWidth > 0 && window->trueColorPhysicalHeight > 0) {
+        Rect logicalRect;
+        logicalRect.left = window->rect.left + startX;
+        logicalRect.top = window->rect.top + startY;
+        logicalRect.right = logicalRect.left + (rowWidth - 1);
+        logicalRect.bottom = logicalRect.top + (endY - startY - 1);
+
+        Rect physicalRect = displayScalerLogicalToPhysical(logicalRect);
+        Rect viewport = window->trueColorPhysicalViewport;
+        if (rectIntersection(&physicalRect, &viewport, &physicalRect) != -1) {
+            int physicalWidth = rectGetWidth(&physicalRect);
+            int physicalHeight = rectGetHeight(&physicalRect);
+            if (physicalWidth > 0 && physicalHeight > 0) {
+                int destLeft = physicalRect.left - viewport.left;
+                int destTop = physicalRect.top - viewport.top;
+                for (int row = 0; row < physicalHeight; row++) {
+                    uint32_t* overlayRow = window->trueColorPhysicalOverlay + (destTop + row) * window->trueColorPhysicalPitch + destLeft;
+                    unsigned char* maskRow = window->trueColorPhysicalMask + (destTop + row) * window->trueColorPhysicalPitch + destLeft;
+                    memset(overlayRow, 0, physicalWidth * sizeof(uint32_t));
+                    memset(maskRow, 0, physicalWidth);
+                }
+            }
+        }
+    }
 }
 
 void windowDebugStampMissingHdGlyph(int win, int left, int top, int width, int height)

@@ -30,6 +30,7 @@
 #include "tile.h"
 #include "window_manager.h"
 #include "worldmap.h"
+#include "display_scaler.h"
 
 namespace fallout {
 
@@ -303,6 +304,46 @@ static inline const ObjectsPhysicalOverlayView* objectsGetPhysicalOverlayView()
     return gObjectsPhysicalOverlayView.valid() ? &gObjectsPhysicalOverlayView : nullptr;
 }
 
+static inline int objectsSelectSampleIndex(int position, int spanLength, int sampleCount)
+{
+    if (sampleCount <= 1 || spanLength <= 0) {
+        return 0;
+    }
+
+    if (spanLength == 1) {
+        return 0;
+    }
+
+    const int numerator = (2 * position + 1) * sampleCount;
+    const int denominator = 2 * spanLength;
+    int index = numerator / denominator;
+    if (index < 0) {
+        return 0;
+    }
+    if (index >= sampleCount) {
+        return sampleCount - 1;
+    }
+    return index;
+}
+
+static void objectsBlitTrueColorOverlayPhysical(const ObjectsPhysicalOverlayView& physicalView,
+    const HdTrueColorFrameView& view,
+    const unsigned char* indexed,
+    int frameWidth,
+    int offsetX,
+    int offsetY,
+    const Rect& objectRect,
+    int objectWidth,
+    int objectHeight,
+    int clampedIntensity);
+
+static void objectsScrubPhysicalTrueColorMaskForIndexedBlit(const ObjectsPhysicalOverlayView& physicalView,
+    const Rect& objectRect,
+    const unsigned char* indexed,
+    int frameWidth,
+    int objectWidth,
+    int objectHeight);
+
 static void objectsBindTrueColorOverlay()
 {
     if (windowHasTrueColorOverlay(gIsoWindow)) {
@@ -361,7 +402,10 @@ static void objectsBlitTrueColorOverlay(const HdTrueColorFrameView& view,
     int objectHeight,
     int intensityIndex)
 {
-    if (!objectsHasTrueColorOverlay()) {
+    const bool hasLogicalOverlay = objectsHasTrueColorOverlay();
+    const ObjectsPhysicalOverlayView* physicalView = objectsGetPhysicalOverlayView();
+
+    if (!hasLogicalOverlay && physicalView == nullptr) {
         return;
     }
 
@@ -371,44 +415,212 @@ static void objectsBlitTrueColorOverlay(const HdTrueColorFrameView& view,
 
     int clampedIntensity = std::clamp(intensityIndex, 0, 255);
 
-    const int srcStride = view.width;
-    const int stepX = std::max(1, view.scaleX);
-    const int stepY = std::max(1, view.scaleY);
-    const int rowAdvance = srcStride * stepY;
-    const int sampleOffsetX = stepX > 1 ? std::min(stepX / 2, stepX - 1) : 0;
-    const int sampleOffsetY = stepY > 1 ? std::min(stepY / 2, stepY - 1) : 0;
-    const int sampleYOffset = sampleOffsetY * srcStride;
+    if (hasLogicalOverlay) {
+        const int srcStride = view.width;
+        const int stepX = std::max(1, view.scaleX);
+        const int stepY = std::max(1, view.scaleY);
+        const int rowAdvance = srcStride * stepY;
+        const int sampleOffsetX = stepX > 1 ? std::min(stepX / 2, stepX - 1) : 0;
+        const int sampleOffsetY = stepY > 1 ? std::min(stepY / 2, stepY - 1) : 0;
+        const int sampleYOffset = sampleOffsetY * srcStride;
 
-    const uint32_t* trueColorBaseRow = view.pixels + offsetY * rowAdvance + offsetX * stepX;
-    const unsigned char* indexedRow = indexed;
-    uint32_t* overlayRow = gObjectsWindowTrueColorOverlay + gObjectsWindowTrueColorPitch * objectRect.top + objectRect.left;
-    unsigned char* maskRow = gObjectsWindowTrueColorMask + gObjectsWindowTrueColorPitch * objectRect.top + objectRect.left;
+        const uint32_t* trueColorBaseRow = view.pixels + offsetY * rowAdvance + offsetX * stepX;
+        const unsigned char* indexedRow = indexed;
+        uint32_t* overlayRow = gObjectsWindowTrueColorOverlay + gObjectsWindowTrueColorPitch * objectRect.top + objectRect.left;
+        unsigned char* maskRow = gObjectsWindowTrueColorMask + gObjectsWindowTrueColorPitch * objectRect.top + objectRect.left;
 
-    for (int row = 0; row < objectHeight; row++) {
-        const unsigned char* indexedPixel = indexedRow;
-        uint32_t* overlayPixel = overlayRow;
-        unsigned char* maskPixel = maskRow;
-        const uint32_t* trueColorPixel = trueColorBaseRow + sampleYOffset + sampleOffsetX;
+        for (int row = 0; row < objectHeight; row++) {
+            const unsigned char* indexedPixel = indexedRow;
+            uint32_t* overlayPixel = overlayRow;
+            unsigned char* maskPixel = maskRow;
+            const uint32_t* trueColorPixel = trueColorBaseRow + sampleYOffset + sampleOffsetX;
 
-        for (int column = 0; column < objectWidth; column++) {
-            if (*indexedPixel != 0) {
-                *overlayPixel = colorApplyLightingToArgb(*trueColorPixel, clampedIntensity);
-                *maskPixel = 1;
-            } else {
-                *overlayPixel = 0;
-                *maskPixel = 0;
+            for (int column = 0; column < objectWidth; column++) {
+                if (*indexedPixel != 0) {
+                    *overlayPixel = colorApplyLightingToArgb(*trueColorPixel, clampedIntensity);
+                    *maskPixel = 1;
+                } else {
+                    *overlayPixel = 0;
+                    *maskPixel = 0;
+                }
+
+                indexedPixel++;
+                trueColorPixel += stepX;
+                overlayPixel++;
+                maskPixel++;
             }
 
-            indexedPixel++;
-            trueColorPixel += stepX;
-            overlayPixel++;
-            maskPixel++;
+            indexedRow += frameWidth;
+            trueColorBaseRow += rowAdvance;
+            overlayRow += gObjectsWindowTrueColorPitch;
+            maskRow += gObjectsWindowTrueColorPitch;
+        }
+    }
+
+    if (physicalView != nullptr) {
+        objectsBlitTrueColorOverlayPhysical(*physicalView,
+            view,
+            indexed,
+            frameWidth,
+            offsetX,
+            offsetY,
+            objectRect,
+            objectWidth,
+            objectHeight,
+            clampedIntensity);
+    }
+}
+
+static void objectsBlitTrueColorOverlayPhysical(const ObjectsPhysicalOverlayView& physicalView,
+    const HdTrueColorFrameView& view,
+    const unsigned char* indexed,
+    int frameWidth,
+    int offsetX,
+    int offsetY,
+    const Rect& objectRect,
+    int objectWidth,
+    int objectHeight,
+    int clampedIntensity)
+{
+    if (indexed == nullptr || objectWidth <= 0 || objectHeight <= 0 || physicalView.pixels == nullptr || physicalView.mask == nullptr || physicalView.pitch <= 0 || physicalView.width <= 0 || physicalView.height <= 0) {
+        return;
+    }
+
+    const DisplayScalerScaleTable& scaleTable = displayScalerGetScaleTable();
+    const Rect& viewport = physicalView.viewport;
+    const int horizontalLimit = static_cast<int>(scaleTable.horizontal.starts.size());
+    const int verticalLimit = static_cast<int>(scaleTable.vertical.starts.size());
+
+    const int hdScaleX = std::max(1, view.scaleX);
+    const int hdScaleY = std::max(1, view.scaleY);
+    const int hdStride = view.width;
+    const uint32_t* hdBase = view.pixels + offsetY * hdStride * hdScaleY + offsetX * hdScaleX;
+
+    for (int logicalRowIndex = 0; logicalRowIndex < objectHeight; logicalRowIndex++) {
+        int logicalY = objectRect.top + logicalRowIndex;
+        if (logicalY < 0 || logicalY >= verticalLimit) {
+            continue;
         }
 
-        indexedRow += frameWidth;
-        trueColorBaseRow += rowAdvance;
-        overlayRow += gObjectsWindowTrueColorPitch;
-        maskRow += gObjectsWindowTrueColorPitch;
+        int physicalRowStart = scaleTable.vertical.starts[logicalY] - viewport.top;
+        int physicalRowEnd = scaleTable.vertical.ends[logicalY] - viewport.top;
+        physicalRowStart = std::max(physicalRowStart, 0);
+        physicalRowEnd = std::min(physicalRowEnd, physicalView.height - 1);
+        if (physicalRowStart > physicalRowEnd) {
+            continue;
+        }
+
+        const int rowSpanHeight = physicalRowEnd - physicalRowStart + 1;
+        const unsigned char* indexedRow = indexed + logicalRowIndex * frameWidth;
+
+        for (int spanRow = 0; spanRow < rowSpanHeight; spanRow++) {
+            const int physicalRow = physicalRowStart + spanRow;
+            const int hdRowOffset = objectsSelectSampleIndex(spanRow, rowSpanHeight, hdScaleY);
+            const uint32_t* hdRow = hdBase + (logicalRowIndex * hdScaleY + hdRowOffset) * hdStride;
+            uint32_t* destRow = physicalView.pixels + physicalRow * physicalView.pitch;
+            unsigned char* maskRow = physicalView.mask + physicalRow * physicalView.pitch;
+
+            const unsigned char* indexedPixel = indexedRow;
+            for (int logicalColumnIndex = 0; logicalColumnIndex < objectWidth; logicalColumnIndex++) {
+                int logicalX = objectRect.left + logicalColumnIndex;
+                if (logicalX < 0 || logicalX >= horizontalLimit) {
+                    indexedPixel++;
+                    continue;
+                }
+
+                int physicalColumnStart = scaleTable.horizontal.starts[logicalX] - viewport.left;
+                int physicalColumnEnd = scaleTable.horizontal.ends[logicalX] - viewport.left;
+                physicalColumnStart = std::max(physicalColumnStart, 0);
+                physicalColumnEnd = std::min(physicalColumnEnd, physicalView.width - 1);
+                if (physicalColumnStart > physicalColumnEnd) {
+                    indexedPixel++;
+                    continue;
+                }
+
+                const int columnSpanWidth = physicalColumnEnd - physicalColumnStart + 1;
+                const unsigned char indexedValue = *indexedPixel++;
+                if (indexedValue == 0) {
+                    memset(destRow + physicalColumnStart, 0, columnSpanWidth * sizeof(uint32_t));
+                    memset(maskRow + physicalColumnStart, 0, columnSpanWidth);
+                    continue;
+                }
+
+                for (int spanColumn = 0; spanColumn < columnSpanWidth; spanColumn++) {
+                    const int hdColumnOffset = objectsSelectSampleIndex(spanColumn, columnSpanWidth, hdScaleX);
+                    const uint32_t hdPixel = hdRow[logicalColumnIndex * hdScaleX + hdColumnOffset];
+                    destRow[physicalColumnStart + spanColumn] = colorApplyLightingToArgb(hdPixel, clampedIntensity);
+                    maskRow[physicalColumnStart + spanColumn] = 1;
+                }
+            }
+        }
+    }
+}
+
+static void objectsScrubPhysicalTrueColorMaskForIndexedBlit(const ObjectsPhysicalOverlayView& physicalView,
+    const Rect& objectRect,
+    const unsigned char* indexed,
+    int frameWidth,
+    int objectWidth,
+    int objectHeight)
+{
+    if (indexed == nullptr || objectWidth <= 0 || objectHeight <= 0 || physicalView.pixels == nullptr || physicalView.mask == nullptr || physicalView.pitch <= 0 || physicalView.width <= 0 || physicalView.height <= 0) {
+        return;
+    }
+
+    const DisplayScalerScaleTable& scaleTable = displayScalerGetScaleTable();
+    const Rect& viewport = physicalView.viewport;
+    const int horizontalLimit = static_cast<int>(scaleTable.horizontal.starts.size());
+    const int verticalLimit = static_cast<int>(scaleTable.vertical.starts.size());
+
+    for (int logicalRowIndex = 0; logicalRowIndex < objectHeight; logicalRowIndex++) {
+        int logicalY = objectRect.top + logicalRowIndex;
+        if (logicalY < 0 || logicalY >= verticalLimit) {
+            continue;
+        }
+
+        int physicalRowStart = scaleTable.vertical.starts[logicalY] - viewport.top;
+        int physicalRowEnd = scaleTable.vertical.ends[logicalY] - viewport.top;
+        physicalRowStart = std::max(physicalRowStart, 0);
+        physicalRowEnd = std::min(physicalRowEnd, physicalView.height - 1);
+        if (physicalRowStart > physicalRowEnd) {
+            continue;
+        }
+
+        const int rowSpanHeight = physicalRowEnd - physicalRowStart + 1;
+        const unsigned char* indexedRow = indexed + logicalRowIndex * frameWidth;
+
+        for (int spanRow = 0; spanRow < rowSpanHeight; spanRow++) {
+            const int physicalRow = physicalRowStart + spanRow;
+            uint32_t* destRow = physicalView.pixels + physicalRow * physicalView.pitch;
+            unsigned char* maskRow = physicalView.mask + physicalRow * physicalView.pitch;
+
+            const unsigned char* indexedPixel = indexedRow;
+            for (int logicalColumnIndex = 0; logicalColumnIndex < objectWidth; logicalColumnIndex++) {
+                int logicalX = objectRect.left + logicalColumnIndex;
+                if (logicalX < 0 || logicalX >= horizontalLimit) {
+                    indexedPixel++;
+                    continue;
+                }
+
+                int physicalColumnStart = scaleTable.horizontal.starts[logicalX] - viewport.left;
+                int physicalColumnEnd = scaleTable.horizontal.ends[logicalX] - viewport.left;
+                physicalColumnStart = std::max(physicalColumnStart, 0);
+                physicalColumnEnd = std::min(physicalColumnEnd, physicalView.width - 1);
+                if (physicalColumnStart > physicalColumnEnd) {
+                    indexedPixel++;
+                    continue;
+                }
+
+                const unsigned char indexedValue = *indexedPixel++;
+                if (indexedValue == 0) {
+                    continue;
+                }
+
+                const int columnSpanWidth = physicalColumnEnd - physicalColumnStart + 1;
+                memset(destRow + physicalColumnStart, 0, columnSpanWidth * sizeof(uint32_t));
+                memset(maskRow + physicalColumnStart, 0, columnSpanWidth);
+            }
+        }
     }
 }
 
@@ -418,33 +630,47 @@ static void objectsScrubTrueColorMaskForIndexedBlit(const unsigned char* indexed
     int objectWidth,
     int objectHeight)
 {
-    if (!objectsHasTrueColorOverlay() || indexed == nullptr) {
+    const bool hasLogicalOverlay = objectsHasTrueColorOverlay();
+    const ObjectsPhysicalOverlayView* physicalView = objectsGetPhysicalOverlayView();
+
+    if ((!hasLogicalOverlay && physicalView == nullptr) || indexed == nullptr) {
         return;
     }
 
-    uint32_t* overlayRow = gObjectsWindowTrueColorOverlay + gObjectsWindowTrueColorPitch * objectRect.top + objectRect.left;
-    unsigned char* maskRow = gObjectsWindowTrueColorMask + gObjectsWindowTrueColorPitch * objectRect.top + objectRect.left;
-    const unsigned char* indexedRow = indexed;
+    if (hasLogicalOverlay) {
+        uint32_t* overlayRow = gObjectsWindowTrueColorOverlay + gObjectsWindowTrueColorPitch * objectRect.top + objectRect.left;
+        unsigned char* maskRow = gObjectsWindowTrueColorMask + gObjectsWindowTrueColorPitch * objectRect.top + objectRect.left;
+        const unsigned char* indexedRow = indexed;
 
-    for (int row = 0; row < objectHeight; row++) {
-        const unsigned char* indexedPixel = indexedRow;
-        uint32_t* overlayPixel = overlayRow;
-        unsigned char* maskPixel = maskRow;
+        for (int row = 0; row < objectHeight; row++) {
+            const unsigned char* indexedPixel = indexedRow;
+            uint32_t* overlayPixel = overlayRow;
+            unsigned char* maskPixel = maskRow;
 
-        for (int column = 0; column < objectWidth; column++) {
-            if (*indexedPixel != 0) {
-                *overlayPixel = 0;
-                *maskPixel = 0;
+            for (int column = 0; column < objectWidth; column++) {
+                if (*indexedPixel != 0) {
+                    *overlayPixel = 0;
+                    *maskPixel = 0;
+                }
+
+                indexedPixel++;
+                overlayPixel++;
+                maskPixel++;
             }
 
-            indexedPixel++;
-            overlayPixel++;
-            maskPixel++;
+            indexedRow += frameWidth;
+            overlayRow += gObjectsWindowTrueColorPitch;
+            maskRow += gObjectsWindowTrueColorPitch;
         }
+    }
 
-        indexedRow += frameWidth;
-        overlayRow += gObjectsWindowTrueColorPitch;
-        maskRow += gObjectsWindowTrueColorPitch;
+    if (physicalView != nullptr) {
+        objectsScrubPhysicalTrueColorMaskForIndexedBlit(*physicalView,
+            objectRect,
+            indexed,
+            frameWidth,
+            objectWidth,
+            objectHeight);
     }
 }
 
@@ -589,6 +815,7 @@ void objectsExit()
         gObjectsWindowTrueColorOverlay = nullptr;
         gObjectsWindowTrueColorMask = nullptr;
         gObjectsWindowTrueColorPitch = 0;
+        gObjectsPhysicalOverlayView = {};
     }
 }
 

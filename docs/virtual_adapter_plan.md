@@ -86,8 +86,10 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 	- `windowCreate` now spins up a second true-color backing store sized to `displayScalerGetPhysicalViewport()` whenever the full-res presenter is active; the new `windowGetPhysicalTrueColorOverlay` API hands out the pixel pointer, mask, pitch, and the viewport offsets so no one has to guess where the letterbox begins.
 	- `objectsBindTrueColorOverlay` and `tileInit` cache those physical bindings up front and log a `SCALER` breadcrumb if the viewport-sized buffers go missing, giving Stage 5.4’s blitters a clean, ready-to-map struct before they start chewing on HD sprites.
 	- Logical overlays still stick around for Stage 4 compatibility, so QA can flip the full-res switch without watching the Overseer’s HUD implode while we rewire the rest of the pipeline.
-- [ ] **S5.4** Render HD sprites directly into that physical grid.
-	- Update `objectsBlitTrueColorOverlay` and the tile HD path to march over the physical rect returned by `displayScalerLogicalToPhysical`, sampling `HdTrueColorFrameView` with true per-pixel math instead of averaging back to logical resolution.
+- [x] **S5.4** Render HD sprites directly into that physical grid.
+	- `objectsBlitTrueColorOverlay` now paints every HD critter twice: once into the legacy 640×480 overlay (to keep Stage 4 alive) and once into the viewport-scale buffer using the scaler tables, so each physical pixel grabs the exact HD texel it deserves.
+	- Tile floors/roofs follow suit whether they’re basking in constant light or the per-pixel intensity map—the helper chews through the same span math, feeds `colorApplyLightingToArgb`, and drops the results straight into the viewport-sized mask.
+	- Scrub/clear paths were updated too, so whenever an overlay falls back to indexed art the physical grid gets wiped in lockstep; no more ghost HD pixels haunting the Overseer’s retina.
 - [ ] **S5.5** Composite everything in physical space and keep SDL honest.
 	- Rewrite `windowCompositeTrueColorOverlays` to feed `blitTrueColorRectToTexture` the pre-scaled ARGB buffers, so SDL becomes a dumb present-only stage and never re-scales our handiwork.
 - [ ] **S5.6** Handle letterboxing, fractional scales, and clean fallbacks.
