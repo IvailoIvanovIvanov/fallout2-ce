@@ -78,8 +78,10 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 	- `blitIndexedRectToTexture`, `blitTrueColorRectToTexture`, and every diagnostic tap now route through `resolvePresenterRect`, so dirty rects and overlay composites land directly in physical space instead of trusting SDL to scale later.
 	- `display_scaler` forges per-axis scale tables that map each logical column/row to its physical span; Stage 5.2 will chew on those tables for crisp pixel expansion and they already show up in the `SCALER` logs.
 	- `copySurfaceRectToTexture`, `SDL_UpdateTexture` fallback logs, and texture-surface stats all clamp against the presenter bounds, keeping diagnostics honest even when the viewport drifts.
-- [ ] **S5.2** Stretch classic palette assets deliberately instead of letting SDL smear them.
-	- During the logical→physical blit, expand each indexed pixel into an integer `scale × scale` block (or nearest-neighbor if fractional), so the original art simply grows to fit the viewport while preserving crisp edges.
+- [x] **S5.2** Stretch classic palette assets deliberately instead of letting SDL smear them.
+	- `blitIndexedRectToTexture` now chews through the scaler’s per-axis span tables, expands each logical pixel into its physical block, and writes straight into the resized presenter surface—no more SDL post-scaling, no more shimmering outlines.
+	- `SCALER` logs picked up min/mid/max palette sampling so QA can spot color drift the moment a viewport clips a row; the stats stay wired even when a column gets fully clipped by the letterbox.
+	- Alternate twist (if QA hates the new crispness): flip `system.virtual_adapter_fullres=0` and the path auto-falls back to SDL’s scaler, which lets you A/B the difference before we wire up true-color overlays in S5.4.
 - [ ] **S5.3** Store and bind true-color overlays at physical resolution.
 	- When `system.virtual_adapter=1`, have `windowCreate`/`objectsBindTrueColorOverlay`/`tileBindTrueColorOverlay` allocate overlay+mask grids big enough for the physical viewport and expose helper structs so renderers can convert logical coordinates (plus letterbox offsets) into physical offsets.
 - [ ] **S5.4** Render HD sprites directly into that physical grid.

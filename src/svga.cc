@@ -323,7 +323,7 @@ static bool isFullResPresenterActive()
     }
 
     double scale = displayScalerGetScale();
-    return std::abs(scale - 1.0) < 1.0e-4;
+    return scale >= 1.0 - 1.0e-4;
 }
 
 static Rect getPresenterSurfaceBounds()
@@ -364,12 +364,6 @@ static bool resolvePresenterRect(const Rect& inputRect, Rect* outLogicalRect, Re
     if (isFullResPresenterActive()) {
         Rect mapped = displayScalerLogicalToPhysical(logicalRect);
         const Rect& viewport = displayScalerGetPhysicalViewport();
-
-        const int logicalWidth = rectGetWidth(&logicalRect);
-        const int logicalHeight = rectGetHeight(&logicalRect);
-        if (rectGetWidth(&mapped) != logicalWidth || rectGetHeight(&mapped) != logicalHeight) {
-            return false;
-        }
 
         mapped.left -= viewport.left;
         mapped.right -= viewport.left;
@@ -823,6 +817,14 @@ void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect
     const int bytesPerPixel = gSdlTextureSurface->format->BytesPerPixel;
     unsigned char* destPixels = static_cast<unsigned char*>(gSdlTextureSurface->pixels);
 
+    const bool useScaledPresenter = isFullResPresenterActive();
+    const DisplayScalerScaleTable* scaleTable = nullptr;
+    const Rect* physicalViewport = nullptr;
+    if (useScaledPresenter) {
+        scaleTable = &displayScalerGetScaleTable();
+        physicalViewport = &displayScalerGetPhysicalViewport();
+    }
+
     const bool logBlitStats = diagnosticsWouldLog(DiagnosticsLevel::Trace) && gIndexedBlitLogBudget > 0;
     unsigned int srcMin = 255;
     unsigned int srcMax = 0;
@@ -838,13 +840,47 @@ void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect
     size_t currentIndex = 0;
 
     for (int row = 0; row < height; row++) {
-        const unsigned char* srcRow = src + (logicalRect.top + row) * srcPitch + logicalRect.left;
-        uint32_t* destRow = reinterpret_cast<uint32_t*>(destPixels + (presenterRect.top + row) * gSdlTextureSurface->pitch + presenterRect.left * bytesPerPixel);
+        const int logicalY = logicalRect.top + row;
+        const unsigned char* srcRow = src + logicalY * srcPitch + logicalRect.left;
+
+        uint32_t* linearDestRow = nullptr;
+        int physicalRowStart = 0;
+        int physicalRowEnd = -1;
+
+        if (!useScaledPresenter) {
+            linearDestRow = reinterpret_cast<uint32_t*>(destPixels + (presenterRect.top + row) * gSdlTextureSurface->pitch + presenterRect.left * bytesPerPixel);
+        } else {
+            physicalRowStart = scaleTable->vertical.starts[logicalY] - physicalViewport->top;
+            physicalRowEnd = scaleTable->vertical.ends[logicalY] - physicalViewport->top;
+            physicalRowStart = std::max(physicalRowStart, presenterRect.top);
+            physicalRowEnd = std::min(physicalRowEnd, presenterRect.bottom);
+            if (physicalRowStart > physicalRowEnd) {
+                currentIndex += width;
+                continue;
+            }
+        }
 
         for (int column = 0; column < width; column++) {
             const unsigned int paletteIndex = srcRow[column];
             const uint32_t mappedColor = gTexturePalette[paletteIndex];
-            destRow[column] = mappedColor;
+
+            if (!useScaledPresenter) {
+                linearDestRow[column] = mappedColor;
+            } else {
+                const int logicalX = logicalRect.left + column;
+                int physicalColumnStart = scaleTable->horizontal.starts[logicalX] - physicalViewport->left;
+                int physicalColumnEnd = scaleTable->horizontal.ends[logicalX] - physicalViewport->left;
+                physicalColumnStart = std::max(physicalColumnStart, presenterRect.left);
+                physicalColumnEnd = std::min(physicalColumnEnd, presenterRect.right);
+                if (physicalColumnStart <= physicalColumnEnd) {
+                    for (int physicalRow = physicalRowStart; physicalRow <= physicalRowEnd; physicalRow++) {
+                        uint32_t* destRow = reinterpret_cast<uint32_t*>(destPixels + physicalRow * gSdlTextureSurface->pitch);
+                        for (int physicalColumn = physicalColumnStart; physicalColumn <= physicalColumnEnd; physicalColumn++) {
+                            destRow[physicalColumn] = mappedColor;
+                        }
+                    }
+                }
+            }
 
             if (logBlitStats) {
                 srcMin = std::min(srcMin, paletteIndex);
