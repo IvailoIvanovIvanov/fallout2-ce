@@ -3504,6 +3504,11 @@ void windowVirtualScreenInvalidateAll()
     virtualScreenInvalidateAll();
 }
 
+void windowVirtualScreenInvalidateRect(const Rect& rect)
+{
+    virtualScreenInvalidateRect(&rect);
+}
+
 void windowRefreshPhysicalTrueColorBuffers()
 {
     windowSyncPhysicalTrueColorBuffersIfNeeded();

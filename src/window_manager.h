@@ -193,6 +193,7 @@ int windowGetVirtualScreenPitch();
 bool windowIsVirtualScreenEnabled();
 void windowPresentVirtualScreen();
 void windowVirtualScreenInvalidateAll();
+void windowVirtualScreenInvalidateRect(const Rect& rect);
 // Legacy true-color/true-screen helpers kept for compatibility while the
 // virtual adapter is rolled out. They currently return safe defaults.
 void windowTrueColorSetPaletteBaseline(const unsigned char* palette);

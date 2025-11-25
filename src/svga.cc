@@ -807,6 +807,21 @@ void _GNW95_ShowRect(unsigned char* src, int srcPitch, int a3, int srcX, int src
     unsigned char* surfacePixels = static_cast<unsigned char*>(gSdlSurface->pixels);
     blitBufferToBuffer(srcStart, clippedWidth, clippedHeight, srcPitch, surfacePixels + gSdlSurface->pitch * destRect.top + destRect.left, gSdlSurface->pitch);
 
+    if (windowIsVirtualScreenEnabled()) {
+        unsigned char* virtualBuffer = windowGetScreenBuffer();
+        const int virtualPitch = windowGetScreenPitch();
+        if (virtualBuffer != nullptr && virtualPitch > 0) {
+            for (int row = 0; row < clippedHeight; row++) {
+                const unsigned char* srcRow = srcStart + row * srcPitch;
+                unsigned char* destRow = virtualBuffer + (destRect.top + row) * virtualPitch + destRect.left;
+                memcpy(destRow, srcRow, clippedWidth);
+            }
+            windowVirtualScreenInvalidateRect(destRect);
+            windowPresentVirtualScreen();
+        }
+        return;
+    }
+
     if (isFullResPresenterActive()) {
         Rect blitRect = destRect;
         blitIndexedRectToTexture(surfacePixels, gSdlSurface->pitch, blitRect);
