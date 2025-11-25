@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <assert.h>
 #include <limits>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "animation.h"
 #include "color.h"
@@ -50,6 +52,8 @@ static int artGetDataSize(Art* art);
 static int paddingForSize(int size);
 static void artTraceRenderOp(int fid, unsigned char* dest, int pitch, int width, int height);
 static void hdTrueColorRegistryClear();
+static void hdTrueColorReleaseFramesForArt(const void* owner);
+static void hdTrueColorTrackFrameOwner(const void* owner, const unsigned char* indexed);
 
 struct HdArtInfo {
     std::string path;
@@ -63,6 +67,8 @@ struct HdPngStream {
 
 static std::unordered_map<int, HdArtInfo> gHdArtInfoCache;
 static std::unordered_map<const unsigned char*, HdTrueColorFrameView> gHdTrueColorFrameRegistry;
+static std::unordered_map<const unsigned char*, std::unique_ptr<uint32_t[]>> gHdTrueColorFrameStorage;
+static std::unordered_map<const void*, std::vector<const unsigned char*>> gHdTrueColorArtFrameOwners;
 struct HdTrueColorCacheStats {
     int requests = 0;
     int hits = 0;
@@ -72,6 +78,8 @@ static std::unordered_set<int> gHdTrueColorActiveFids;
 static void hdTrueColorRegistryClear()
 {
     gHdTrueColorFrameRegistry.clear();
+    gHdTrueColorFrameStorage.clear();
+    gHdTrueColorArtFrameOwners.clear();
 }
 
 static const char* hdAlphaModeToString(HdAlphaMode mode)
@@ -91,12 +99,61 @@ static bool hdArtBuildPngFilePath(int fid, char* path, size_t size);
 static bool hdArtProbe(int fid, HdArtInfo& info);
 static int hdArtComputeDataSize(int width, int height);
 static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* data, int* sizePtr);
-static void hdArtConvertRgbaToPalette(const stbi_uc* rgba, int width, int height, unsigned char* dest);
+static bool hdArtDownsampleRgbaToPalette(const stbi_uc* rgba, int srcWidth, int srcHeight, int dstWidth, int dstHeight, unsigned char* dest);
 static unsigned char hdArtFindNearestPaletteColor(const unsigned char* palette, int r, int g, int b, std::unordered_map<int, unsigned char>& cache);
 static int hdArtPngRead(void* user, char* data, int size);
 static void hdArtPngSkip(void* user, int n);
 static int hdArtPngEof(void* user);
 static bool hdArtValidateDimensions(int fid, int width, int height);
+static bool hdTrueColorConformToFrame(int fid, int frameWidth, int frameHeight, HdTrueColorFrameView& view)
+{
+    if (view.pixels == nullptr || frameWidth <= 0 || frameHeight <= 0) {
+        return false;
+    }
+
+    int scaleX = 1;
+    int scaleY = 1;
+
+    if (view.width != frameWidth || view.height != frameHeight) {
+        if (view.width <= 0 || view.height <= 0 || view.width % frameWidth != 0 || view.height % frameHeight != 0) {
+            if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                diagnosticsLog(DiagnosticsLevel::Info,
+                    "SCALER",
+                    "artConformTrueColorFrame fid=%d rejected HD frame mismatch indexed=%dx%d hd=%dx%d",
+                    fid,
+                    frameWidth,
+                    frameHeight,
+                    view.width,
+                    view.height);
+            }
+            return false;
+        }
+
+        scaleX = view.width / frameWidth;
+        scaleY = view.height / frameHeight;
+        if (scaleX <= 0 || scaleY <= 0 || scaleX != scaleY) {
+            if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                diagnosticsLog(DiagnosticsLevel::Info,
+                    "SCALER",
+                    "artConformTrueColorFrame fid=%d rejected HD frame non-uniform scale indexed=%dx%d hd=%dx%d scale=%dx%d",
+                    fid,
+                    frameWidth,
+                    frameHeight,
+                    view.width,
+                    view.height,
+                    scaleX,
+                    scaleY);
+            }
+            return false;
+        }
+    }
+
+    view.logicalWidth = frameWidth;
+    view.logicalHeight = frameHeight;
+    view.scaleX = scaleX;
+    view.scaleY = scaleY;
+    return true;
+}
 
 // 0x5002D8
 static char gDefaultJumpsuitMaleFileName[] = "hmjmps";
@@ -478,16 +535,24 @@ static void artBlitTrueColorUiSprite(const HdTrueColorFrameView& view,
 
     const int intensityIndex = 128;
 
-    const uint32_t* trueColorRow = view.pixels;
+    const int srcStride = view.width;
+    const int stepX = std::max(1, view.scaleX);
+    const int stepY = std::max(1, view.scaleY);
+    const int rowAdvance = srcStride * stepY;
+    const int sampleOffsetX = stepX > 1 ? std::min(stepX / 2, stepX - 1) : 0;
+    const int sampleOffsetY = stepY > 1 ? std::min(stepY / 2, stepY - 1) : 0;
+    const int sampleYOffset = sampleOffsetY * srcStride;
+
     const unsigned char* indexedRow = indexed;
     uint32_t* overlayRow = overlay;
     unsigned char* maskRow = mask;
+    const uint32_t* trueColorBaseRow = view.pixels;
 
     for (int row = 0; row < height; row++) {
-        const uint32_t* trueColorPixel = trueColorRow;
         const unsigned char* indexedPixel = indexedRow;
         uint32_t* overlayPixel = overlayRow;
         unsigned char* maskPixel = maskRow;
+        const uint32_t* trueColorPixel = trueColorBaseRow + sampleYOffset + sampleOffsetX;
 
         for (int column = 0; column < width; column++) {
             if (*indexedPixel != 0) {
@@ -499,15 +564,15 @@ static void artBlitTrueColorUiSprite(const HdTrueColorFrameView& view,
             }
 
             indexedPixel++;
-            trueColorPixel++;
+            trueColorPixel += stepX;
             overlayPixel++;
             maskPixel++;
         }
 
-        indexedRow += view.width;
-        trueColorRow += view.width;
+        indexedRow += view.logicalWidth > 0 ? view.logicalWidth : view.width;
         overlayRow += overlayPitch;
         maskRow += overlayPitch;
+        trueColorBaseRow += rowAdvance;
     }
 }
 
@@ -571,7 +636,7 @@ void artRender(int fid, unsigned char* dest, int width, int height, int pitch)
 
         HdTrueColorFrameView trueColorView;
         if (artLookupRegisteredTrueColorFrame(frameData, trueColorView)) {
-            if (trueColorView.width == frameWidth && trueColorView.height == frameHeight) {
+            if (artConformTrueColorFrame(fid, frameWidth, frameHeight, trueColorView)) {
                 if (trueColorView.alphaMode != HdAlphaMode::Straight) {
                     if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
                         diagnosticsLog(DiagnosticsLevel::Info,
@@ -581,7 +646,7 @@ void artRender(int fid, unsigned char* dest, int width, int height, int pitch)
                             static_cast<int>(trueColorView.alphaMode));
                     }
                 } else {
-                    assert(trueColorView.width == frameWidth && trueColorView.height == frameHeight);
+                    assert(trueColorView.logicalWidth == frameWidth && trueColorView.logicalHeight == frameHeight);
                     Rect overlayRect;
                     uint32_t* overlayPixels = nullptr;
                     unsigned char* overlayMask = nullptr;
@@ -596,15 +661,6 @@ void artRender(int fid, unsigned char* dest, int width, int height, int pitch)
                             frameHeight);
                     }
                 }
-            } else if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-                diagnosticsLog(DiagnosticsLevel::Info,
-                    "SCALER",
-                    "artRender fid=%d rejected HD frame mismatch indexed=%dx%d hd=%dx%d",
-                    fid,
-                    frameWidth,
-                    frameHeight,
-                    trueColorView.width,
-                    trueColorView.height);
             }
         }
     }
@@ -1282,30 +1338,94 @@ static unsigned char hdArtFindNearestPaletteColor(const unsigned char* palette, 
     return result;
 }
 
-static void hdArtConvertRgbaToPalette(const stbi_uc* rgba, int width, int height, unsigned char* dest)
+static bool hdArtDownsampleRgbaToPalette(const stbi_uc* rgba, int srcWidth, int srcHeight, int dstWidth, int dstHeight, unsigned char* dest)
 {
+    if (rgba == nullptr || dest == nullptr || srcWidth <= 0 || srcHeight <= 0 || dstWidth <= 0 || dstHeight <= 0) {
+        return false;
+    }
+
+    if (srcWidth % dstWidth != 0 || srcHeight % dstHeight != 0) {
+        return false;
+    }
+
+    const int scaleX = srcWidth / dstWidth;
+    const int scaleY = srcHeight / dstHeight;
+    if (scaleX <= 0 || scaleY <= 0) {
+        return false;
+    }
+
+    const int sampleOffsetX = scaleX > 1 ? std::min(scaleX / 2, scaleX - 1) : 0;
+    const int sampleOffsetY = scaleY > 1 ? std::min(scaleY / 2, scaleY - 1) : 0;
     const unsigned char* palette = _getSystemPalette();
     std::unordered_map<int, unsigned char> colorCache;
     colorCache.reserve(256);
 
-    int pixelCount = width * height;
-    for (int index = 0; index < pixelCount; index++) {
-        const stbi_uc* pixel = rgba + index * 4;
-        stbi_uc a = pixel[3];
-        if (a < 16) {
-            dest[index] = 0;
-            continue;
+    for (int y = 0; y < dstHeight; y++) {
+        int srcY = y * scaleY + sampleOffsetY;
+        if (srcY >= srcHeight) {
+            srcY = srcHeight - 1;
         }
+        const stbi_uc* row = rgba + srcY * srcWidth * 4;
+        for (int x = 0; x < dstWidth; x++) {
+            int srcX = x * scaleX + sampleOffsetX;
+            if (srcX >= srcWidth) {
+                srcX = srcWidth - 1;
+            }
 
-        stbi_uc r = pixel[0];
-        stbi_uc g = pixel[1];
-        stbi_uc b = pixel[2];
-        dest[index] = hdArtFindNearestPaletteColor(palette, r, g, b, colorCache);
+            const stbi_uc* pixel = row + srcX * 4;
+            stbi_uc a = pixel[3];
+            unsigned char value = 0;
+            if (a >= 16) {
+                value = hdArtFindNearestPaletteColor(palette, pixel[0], pixel[1], pixel[2], colorCache);
+            }
+
+            dest[y * dstWidth + x] = value;
+        }
     }
+
+    return true;
 }
 
 static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* data, int* sizePtr)
 {
+    char* artFilePath = artBuildFilePath(fid);
+    if (artFilePath == nullptr) {
+        return false;
+    }
+
+    bool baseLoaded = false;
+    if (gArtLanguageInitialized) {
+        char* pch = strchr(artFilePath, '\\');
+        if (pch == nullptr) {
+            pch = artFilePath;
+        }
+
+        char localizedPath[COMPAT_MAX_PATH];
+        snprintf(localizedPath, sizeof(localizedPath), "art\\%s\\%s", gArtLanguage, pch);
+        if (artRead(localizedPath, data) == 0) {
+            baseLoaded = true;
+        }
+    }
+
+    if (!baseLoaded) {
+        if (artRead(artFilePath, data) != 0) {
+            return false;
+        }
+    }
+
+    Art* art = reinterpret_cast<Art*>(data);
+    unsigned char* frameData = artGetFrameData(art, 0, 0);
+    ArtFrame* frame = artGetFrame(art, 0, 0);
+    if (frameData == nullptr || frame == nullptr) {
+        return false;
+    }
+
+    const int logicalWidth = frame->width;
+    const int logicalHeight = frame->height;
+    if (logicalWidth <= 0 || logicalHeight <= 0) {
+        return false;
+    }
+
     File* stream = fileOpen(info.path.c_str(), "rb");
     if (stream == nullptr) {
         if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
@@ -1344,53 +1464,89 @@ static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* da
         return false;
     }
 
-    int totalSize = hdArtComputeDataSize(width, height);
-    memset(data, 0, totalSize);
-
-    Art* art = reinterpret_cast<Art*>(data);
-    art->framesPerSecond = 10;
-    art->actionFrame = 0;
-    art->frameCount = 1;
-
-    int headerPadding = paddingForSize(sizeof(Art));
-    for (int rotation = 0; rotation < ROTATION_COUNT; rotation++) {
-        art->dataOffsets[rotation] = 0;
-        art->padding[rotation] = headerPadding;
-        art->xOffsets[rotation] = 0;
-        art->yOffsets[rotation] = 0;
+    if (width % logicalWidth != 0 || height % logicalHeight != 0) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(
+                DiagnosticsLevel::Info,
+                "ART",
+                "Ignoring HD PNG '%s' for fid %08X because dimensions (%dx%d) are not multiples of logical size %dx%d",
+                info.path.c_str(),
+                fid,
+                width,
+                height,
+                logicalWidth,
+                logicalHeight);
+        }
+        stbi_image_free(pixels);
+        gHdArtInfoCache.erase(fid);
+        return true;
     }
 
-    int frameSize = width * height;
-    art->dataSize = sizeof(ArtFrame) + frameSize;
+    const int scaleX = width / logicalWidth;
+    const int scaleY = height / logicalHeight;
+    if (scaleX != scaleY) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(
+                DiagnosticsLevel::Info,
+                "ART",
+                "Ignoring HD PNG '%s' for fid %08X because scales differ (scaleX=%d scaleY=%d)",
+                info.path.c_str(),
+                fid,
+                scaleX,
+                scaleY);
+        }
+        stbi_image_free(pixels);
+        gHdArtInfoCache.erase(fid);
+        return true;
+    }
 
-    unsigned char* frameStart = reinterpret_cast<unsigned char*>(art) + sizeof(Art) + art->padding[0];
-    ArtFrame* frame = reinterpret_cast<ArtFrame*>(frameStart);
-    frame->width = static_cast<short>(width);
-    frame->height = static_cast<short>(height);
-    frame->size = frameSize;
-    frame->x = 0;
-    frame->y = 0;
+    const long long pixelCount = 1LL * width * height;
+    std::unique_ptr<uint32_t[]> hdPixels;
+    if (pixelCount > 0) {
+        hdPixels = std::make_unique<uint32_t[]>(pixelCount);
+        for (int index = 0; index < pixelCount; index++) {
+            const stbi_uc* pixel = pixels + index * 4;
+            uint32_t argb = (static_cast<uint32_t>(pixel[3]) << 24)
+                | (static_cast<uint32_t>(pixel[0]) << 16)
+                | (static_cast<uint32_t>(pixel[1]) << 8)
+                | static_cast<uint32_t>(pixel[2]);
+            hdPixels[index] = argb;
+        }
+    }
 
-    unsigned char* frameData = reinterpret_cast<unsigned char*>(frame + 1);
-    hdArtConvertRgbaToPalette(pixels, width, height, frameData);
-    int framePadding = paddingForSize(frameSize);
+    if (!hdArtDownsampleRgbaToPalette(pixels, width, height, logicalWidth, logicalHeight, frameData)) {
+        stbi_image_free(pixels);
+        return false;
+    }
+
+    int framePadding = paddingForSize(frame->size);
     if (framePadding > 0) {
-        memset(frameData + frameSize, 0, framePadding);
+        memset(frameData + frame->size, 0, framePadding);
     }
+
     stbi_image_free(pixels);
 
+    if (hdPixels != nullptr) {
+        if (artRegisterTrueColorFrameData(frameData, hdPixels.get(), width, height, HdAlphaMode::Straight)) {
+            gHdTrueColorFrameStorage[frameData] = std::move(hdPixels);
+            hdTrueColorTrackFrameOwner(art, frameData);
+        }
+    }
+
     if (sizePtr != nullptr) {
-        *sizePtr = totalSize;
+        *sizePtr = artGetDataSize(art);
     }
 
     if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
         diagnosticsLog(
             DiagnosticsLevel::Info,
             "ART",
-            "Loaded HD PNG override '%s' (%dx%d) for fid %08X",
+            "Loaded HD PNG override '%s' (%dx%d -> %dx%d) for fid %08X",
             info.path.c_str(),
             width,
             height,
+            logicalWidth,
+            logicalHeight,
             fid);
     }
 
@@ -1539,6 +1695,9 @@ static int artCacheReadDataImpl(int fid, int* sizePtr, unsigned char* data)
 // 0x419C80
 static void artCacheFreeImpl(void* ptr)
 {
+    if (ptr != nullptr) {
+        hdTrueColorReleaseFramesForArt(ptr);
+    }
     internal_free(ptr);
 }
 
@@ -1817,6 +1976,10 @@ bool artGetTrueColorFrame(int fid, HdTrueColorFrameView& out)
     out.pixels = nullptr;
     out.width = 0;
     out.height = 0;
+    out.logicalWidth = 0;
+    out.logicalHeight = 0;
+    out.scaleX = 1;
+    out.scaleY = 1;
 
     CacheEntry* cacheEntry = nullptr;
     int frameWidth = 0;
@@ -1837,17 +2000,7 @@ bool artGetTrueColorFrame(int fid, HdTrueColorFrameView& out)
         return false;
     }
 
-    if (registeredView.width != frameWidth || registeredView.height != frameHeight) {
-        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-            diagnosticsLog(DiagnosticsLevel::Info,
-                "SCALER",
-                "artGetTrueColorFrame fid=%d rejected HD frame (expected %dx%d, got %dx%d)",
-                fid,
-                frameWidth,
-                frameHeight,
-                registeredView.width,
-                registeredView.height);
-        }
+    if (!hdTrueColorConformToFrame(fid, frameWidth, frameHeight, registeredView)) {
         return false;
     }
 
@@ -1855,13 +2008,13 @@ bool artGetTrueColorFrame(int fid, HdTrueColorFrameView& out)
     return out.pixels != nullptr;
 }
 
-void artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t* pixels, int width, int height, HdAlphaMode alphaMode)
+bool artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t* pixels, int width, int height, HdAlphaMode alphaMode)
 {
     if (indexed == nullptr || pixels == nullptr || width <= 0 || height <= 0) {
         if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
             diagnosticsLog(DiagnosticsLevel::Info, "SCALER", "artRegisterTrueColorFrameData rejected invalid input");
         }
-        return;
+        return false;
     }
 
     HdTrueColorFrameView view;
@@ -1881,6 +2034,8 @@ void artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t*
             height,
             hdAlphaModeToString(alphaMode));
     }
+
+    return true;
 }
 
 void artUnregisterTrueColorFrameData(const unsigned char* indexed)
@@ -1895,10 +2050,38 @@ void artUnregisterTrueColorFrameData(const unsigned char* indexed)
     }
 
     gHdTrueColorFrameRegistry.erase(it);
+    gHdTrueColorFrameStorage.erase(indexed);
 
     if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
         diagnosticsLog(DiagnosticsLevel::Trace, "SCALER", "artUnregisterTrueColorFrameData indexed=%p", indexed);
     }
+}
+
+static void hdTrueColorTrackFrameOwner(const void* owner, const unsigned char* indexed)
+{
+    if (owner == nullptr || indexed == nullptr) {
+        return;
+    }
+
+    gHdTrueColorArtFrameOwners[owner].push_back(indexed);
+}
+
+static void hdTrueColorReleaseFramesForArt(const void* owner)
+{
+    if (owner == nullptr) {
+        return;
+    }
+
+    auto it = gHdTrueColorArtFrameOwners.find(owner);
+    if (it == gHdTrueColorArtFrameOwners.end()) {
+        return;
+    }
+
+    for (const unsigned char* indexed : it->second) {
+        artUnregisterTrueColorFrameData(indexed);
+    }
+
+    gHdTrueColorArtFrameOwners.erase(it);
 }
 
 bool artLookupRegisteredTrueColorFrame(const unsigned char* indexed, HdTrueColorFrameView& out)
@@ -1906,6 +2089,10 @@ bool artLookupRegisteredTrueColorFrame(const unsigned char* indexed, HdTrueColor
     out.pixels = nullptr;
     out.width = 0;
     out.height = 0;
+    out.logicalWidth = 0;
+    out.logicalHeight = 0;
+    out.scaleX = 1;
+    out.scaleY = 1;
 
     if (indexed == nullptr) {
         return false;
@@ -1924,6 +2111,11 @@ bool artLookupRegisteredTrueColorFrame(const unsigned char* indexed, HdTrueColor
         gHdTrueColorCacheStats.hits++;
     }
     return hit;
+}
+
+bool artConformTrueColorFrame(int fid, int frameWidth, int frameHeight, HdTrueColorFrameView& view)
+{
+    return hdTrueColorConformToFrame(fid, frameWidth, frameHeight, view);
 }
 
 void artTrueColorStatsReset()

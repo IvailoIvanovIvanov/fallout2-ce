@@ -16,6 +16,7 @@
 #include "memory.h"
 #include "mouse.h"
 #include "render_trace.h"
+#include "settings.h"
 #include "virtual_input.h"
 #include "win32.h"
 #include "window_manager.h"
@@ -382,7 +383,7 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
     int scale = 1;
     int logicalWidth = width;
     int logicalHeight = height;
-    bool integerScaling = false;
+    bool integerScaling = settings.system.virtual_adapter;
     bool diagnosticsEnabled = false;
     DiagnosticsLevel diagnosticsLevel = DiagnosticsLevel::Info;
     char* diagnosticsLogFileValue = nullptr;
@@ -506,6 +507,7 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
 {
     if (gSdlWindow == nullptr) {
         SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
 
         Uint32 windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI;
 

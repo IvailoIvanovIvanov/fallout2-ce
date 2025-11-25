@@ -127,6 +127,10 @@ struct HdTrueColorFrameView {
     const uint32_t* pixels = nullptr;
     int width = 0;
     int height = 0;
+    int logicalWidth = 0;
+    int logicalHeight = 0;
+    int scaleX = 1;
+    int scaleY = 1;
     HdAlphaMode alphaMode = HdAlphaMode::Straight;
 };
 
@@ -166,7 +170,8 @@ Art* artLoad(const char* path);
 int artRead(const char* path, unsigned char* data);
 int artWrite(const char* path, unsigned char* data);
 bool artGetTrueColorFrame(int fid, HdTrueColorFrameView& out);
-void artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t* pixels, int width, int height, HdAlphaMode alphaMode = HdAlphaMode::Straight);
+bool artConformTrueColorFrame(int fid, int frameWidth, int frameHeight, HdTrueColorFrameView& view);
+bool artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t* pixels, int width, int height, HdAlphaMode alphaMode = HdAlphaMode::Straight);
 void artUnregisterTrueColorFrameData(const unsigned char* indexed);
 bool artLookupRegisteredTrueColorFrame(const unsigned char* indexed, HdTrueColorFrameView& out);
 void artTrueColorStatsReset();

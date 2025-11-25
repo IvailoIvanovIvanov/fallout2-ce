@@ -334,16 +334,24 @@ static void objectsBlitTrueColorOverlay(const HdTrueColorFrameView& view,
 
     int clampedIntensity = std::clamp(intensityIndex, 0, 255);
 
-    const uint32_t* trueColorSrcRow = view.pixels + view.width * offsetY + offsetX;
+    const int srcStride = view.width;
+    const int stepX = std::max(1, view.scaleX);
+    const int stepY = std::max(1, view.scaleY);
+    const int rowAdvance = srcStride * stepY;
+    const int sampleOffsetX = stepX > 1 ? std::min(stepX / 2, stepX - 1) : 0;
+    const int sampleOffsetY = stepY > 1 ? std::min(stepY / 2, stepY - 1) : 0;
+    const int sampleYOffset = sampleOffsetY * srcStride;
+
+    const uint32_t* trueColorBaseRow = view.pixels + offsetY * rowAdvance + offsetX * stepX;
     const unsigned char* indexedRow = indexed;
     uint32_t* overlayRow = gObjectsWindowTrueColorOverlay + gObjectsWindowTrueColorPitch * objectRect.top + objectRect.left;
     unsigned char* maskRow = gObjectsWindowTrueColorMask + gObjectsWindowTrueColorPitch * objectRect.top + objectRect.left;
 
     for (int row = 0; row < objectHeight; row++) {
-        const uint32_t* trueColorPixel = trueColorSrcRow;
         const unsigned char* indexedPixel = indexedRow;
         uint32_t* overlayPixel = overlayRow;
         unsigned char* maskPixel = maskRow;
+        const uint32_t* trueColorPixel = trueColorBaseRow + sampleYOffset + sampleOffsetX;
 
         for (int column = 0; column < objectWidth; column++) {
             if (*indexedPixel != 0) {
@@ -355,15 +363,15 @@ static void objectsBlitTrueColorOverlay(const HdTrueColorFrameView& view,
             }
 
             indexedPixel++;
-            trueColorPixel++;
+            trueColorPixel += stepX;
             overlayPixel++;
             maskPixel++;
         }
 
         indexedRow += frameWidth;
-        trueColorSrcRow += view.width;
         overlayRow += gObjectsWindowTrueColorPitch;
         maskRow += gObjectsWindowTrueColorPitch;
+        trueColorBaseRow += rowAdvance;
     }
 }
 
@@ -5047,7 +5055,7 @@ static void _obj_render_object(Object* object, Rect* rect, int light, RenderTrac
     int trueColorOffsetY = 0;
     if (objectsHasTrueColorOverlay()) {
         if (artLookupRegisteredTrueColorFrame(src2, trueColorView)) {
-            if (trueColorView.width == frameWidth && trueColorView.height == frameHeight) {
+            if (artConformTrueColorFrame(object->fid, frameWidth, frameHeight, trueColorView)) {
                 if (trueColorView.alphaMode != HdAlphaMode::Straight) {
                     if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
                         diagnosticsLog(DiagnosticsLevel::Info,
@@ -5063,21 +5071,13 @@ static void _obj_render_object(Object* object, Rect* rect, int light, RenderTrac
                     trueColorOffsetY = v49;
 
                     if (hasTrueColor) {
-                        assert(trueColorView.width == frameWidth && trueColorView.height == frameHeight);
+                        assert(trueColorView.logicalWidth == frameWidth && trueColorView.logicalHeight == frameHeight);
                         artTrueColorMarkActive(object->fid);
                     }
                 } else {
                     lostTrueColor |= artTrueColorMarkInactive(object->fid, "translucent_object");
                 }
-            } else if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-                diagnosticsLog(DiagnosticsLevel::Info,
-                    "SCALER",
-                    "_obj_render_object fid=%d rejected HD frame mismatch indexed=%dx%d hd=%dx%d",
-                    object->fid,
-                    frameWidth,
-                    frameHeight,
-                    trueColorView.width,
-                    trueColorView.height);
+            } else {
                 lostTrueColor |= artTrueColorMarkInactive(object->fid, "dimension_mismatch");
             }
         } else {
