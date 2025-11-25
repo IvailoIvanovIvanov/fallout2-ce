@@ -1,6 +1,7 @@
 #include "svga.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits.h>
 #include <string.h>
@@ -35,6 +36,9 @@ static void logTextureUploadRectStats(const Rect& rect, const char* label);
 static uint8_t expandPaletteComponent(uint8_t value);
 static void logPaletteUploadSamples(int start, int count, const unsigned char* palette);
 static void updateTexturePaletteRange(int start, int count, const unsigned char* palette);
+static bool isFullResPresenterActive();
+static Rect getPresenterSurfaceBounds();
+static bool resolvePresenterRect(const Rect& inputRect, Rect* outLogicalRect, Rect* outPresenterRect);
 
 static Rect gLastRenderViewport = { 0, 0, -1, -1 };
 static bool gHasRenderViewport = false;
@@ -77,15 +81,24 @@ static bool copySurfaceRectToTexture(SDL_Texture* texture, SDL_Surface* surface,
         return false;
     }
 
-    const int width = rectGetWidth(&rect);
-    const int height = rectGetHeight(&rect);
+    Rect clipped;
+    rectCopy(&clipped, &rect);
+
+    const Rect presenterBounds = getPresenterSurfaceBounds();
+    Rect surfaceBounds = makeSurfaceBoundsRect(surface->w, surface->h);
+    if (!clipRectToSurface(&clipped, presenterBounds, surfaceBounds)) {
+        return false;
+    }
+
+    const int width = rectGetWidth(&clipped);
+    const int height = rectGetHeight(&clipped);
     if (width <= 0 || height <= 0) {
         return false;
     }
 
     SDL_Rect sdlRect;
-    sdlRect.x = rect.left;
-    sdlRect.y = rect.top;
+    sdlRect.x = clipped.left;
+    sdlRect.y = clipped.top;
     sdlRect.w = width;
     sdlRect.h = height;
 
@@ -100,7 +113,7 @@ static bool copySurfaceRectToTexture(SDL_Texture* texture, SDL_Surface* surface,
     const int bytesPerPixel = surface->format->BytesPerPixel;
     uint8_t* destPixels = static_cast<uint8_t*>(destination);
     for (int row = 0; row < height; row++) {
-        const uint8_t* sourceRow = sourcePixels + (rect.top + row) * sourcePitch + rect.left * bytesPerPixel;
+        const uint8_t* sourceRow = sourcePixels + (clipped.top + row) * sourcePitch + clipped.left * bytesPerPixel;
         memcpy(destPixels + row * destinationPitch, sourceRow, width * bytesPerPixel);
     }
 
@@ -119,10 +132,16 @@ static void logTextureSurfaceRectStats(const Rect& rect, const char* label)
         return;
     }
 
-    Rect clipped;
-    rectCopy(&clipped, &rect);
+    Rect logicalRect;
+    Rect presenterRect;
+    if (!resolvePresenterRect(rect, &logicalRect, &presenterRect)) {
+        return;
+    }
 
-    const Rect logicalBounds = displayScalerGetLogicalBounds();
+    Rect clipped;
+    rectCopy(&clipped, &presenterRect);
+
+    const Rect logicalBounds = getPresenterSurfaceBounds();
     Rect surfaceBounds = makeSurfaceBoundsRect(gSdlTextureSurface->w, gSdlTextureSurface->h);
     if (!clipRectToSurface(&clipped, logicalBounds, surfaceBounds)) {
         return;
@@ -209,7 +228,7 @@ static void logTextureUploadRectStats(const Rect& rect, const char* label)
     Rect clipped;
     rectCopy(&clipped, &rect);
 
-    const Rect logicalBounds = displayScalerGetLogicalBounds();
+    const Rect logicalBounds = getPresenterSurfaceBounds();
     int textureWidth = 0;
     int textureHeight = 0;
     if (SDL_QueryTexture(gSdlTexture, nullptr, nullptr, &textureWidth, &textureHeight) != 0) {
@@ -295,6 +314,80 @@ static void logTextureUploadRectStats(const Rect& rect, const char* label)
     if (gTextureUploadLogBudget == 0) {
         diagnosticsLog(DiagnosticsLevel::Trace, "RENDERER", "texture_upload logging budget exhausted");
     }
+}
+
+static bool isFullResPresenterActive()
+{
+    if (!settings.system.virtual_adapter || !settings.system.virtual_adapter_fullres) {
+        return false;
+    }
+
+    double scale = displayScalerGetScale();
+    return std::abs(scale - 1.0) < 1.0e-4;
+}
+
+static Rect getPresenterSurfaceBounds()
+{
+    Rect bounds = { 0, 0, -1, -1 };
+
+    if (isFullResPresenterActive()) {
+        const Rect& viewport = displayScalerGetPhysicalViewport();
+        int width = rectGetWidth(&viewport);
+        int height = rectGetHeight(&viewport);
+        if (width > 0 && height > 0) {
+            bounds.right = width - 1;
+            bounds.bottom = height - 1;
+        }
+    } else {
+        const Rect& logical = displayScalerGetLogicalBounds();
+        int width = rectGetWidth(&logical);
+        int height = rectGetHeight(&logical);
+        if (width > 0 && height > 0) {
+            bounds.right = width - 1;
+            bounds.bottom = height - 1;
+        }
+    }
+
+    return bounds;
+}
+
+static bool resolvePresenterRect(const Rect& inputRect, Rect* outLogicalRect, Rect* outPresenterRect)
+{
+    const Rect& logicalBounds = displayScalerGetLogicalBounds();
+    Rect logicalRect;
+    rectCopy(&logicalRect, &inputRect);
+    if (rectIntersection(&logicalRect, &logicalBounds, &logicalRect) == -1) {
+        return false;
+    }
+
+    Rect presenterRect = logicalRect;
+    if (isFullResPresenterActive()) {
+        Rect mapped = displayScalerLogicalToPhysical(logicalRect);
+        const Rect& viewport = displayScalerGetPhysicalViewport();
+
+        const int logicalWidth = rectGetWidth(&logicalRect);
+        const int logicalHeight = rectGetHeight(&logicalRect);
+        if (rectGetWidth(&mapped) != logicalWidth || rectGetHeight(&mapped) != logicalHeight) {
+            return false;
+        }
+
+        mapped.left -= viewport.left;
+        mapped.right -= viewport.left;
+        mapped.top -= viewport.top;
+        mapped.bottom -= viewport.top;
+
+        presenterRect = mapped;
+    }
+
+    if (outLogicalRect != nullptr) {
+        rectCopy(outLogicalRect, &logicalRect);
+    }
+
+    if (outPresenterRect != nullptr) {
+        rectCopy(outPresenterRect, &presenterRect);
+    }
+
+    return true;
 }
 
 // Legacy screen rect maintained for existing code. Tracks logical bounds.
@@ -706,8 +799,14 @@ void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect
         return;
     }
 
-    const int width = rectGetWidth(&rect);
-    const int height = rectGetHeight(&rect);
+    Rect logicalRect;
+    Rect presenterRect;
+    if (!resolvePresenterRect(rect, &logicalRect, &presenterRect)) {
+        return;
+    }
+
+    const int width = rectGetWidth(&logicalRect);
+    const int height = rectGetHeight(&logicalRect);
     if (width <= 0 || height <= 0) {
         return;
     }
@@ -739,8 +838,8 @@ void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect
     size_t currentIndex = 0;
 
     for (int row = 0; row < height; row++) {
-        const unsigned char* srcRow = src + (rect.top + row) * srcPitch + rect.left;
-        uint32_t* destRow = reinterpret_cast<uint32_t*>(destPixels + (rect.top + row) * gSdlTextureSurface->pitch + rect.left * bytesPerPixel);
+        const unsigned char* srcRow = src + (logicalRect.top + row) * srcPitch + logicalRect.left;
+        uint32_t* destRow = reinterpret_cast<uint32_t*>(destPixels + (presenterRect.top + row) * gSdlTextureSurface->pitch + presenterRect.left * bytesPerPixel);
 
         for (int column = 0; column < width; column++) {
             const unsigned int paletteIndex = srcRow[column];
@@ -773,8 +872,8 @@ void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect
         diagnosticsLog(DiagnosticsLevel::Trace,
             "RENDERER",
             "indexed_blit stats rect=(%d,%d %dx%d) src_min=%u src_max=%u src_samples=%u,%u,%u mapped_samples=0x%08X,0x%08X,0x%08X",
-            rect.left,
-            rect.top,
+            logicalRect.left,
+            logicalRect.top,
             width,
             height,
             srcMin,
@@ -794,8 +893,8 @@ void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect
             diagnosticsLog(DiagnosticsLevel::Info,
                 "RENDERER",
                 "indexed_blit palette mismatch rect=(%d,%d %dx%d) src_samples=%u,%u,%u mapped=0x%08X,0x%08X,0x%08X",
-                rect.left,
-                rect.top,
+                logicalRect.left,
+                logicalRect.top,
                 width,
                 height,
                 srcSampleStart,
@@ -825,8 +924,14 @@ int blitTrueColorRectToTexture(const uint32_t* src, const unsigned char* mask, i
         return 0;
     }
 
-    const int width = rectGetWidth(&rect);
-    const int height = rectGetHeight(&rect);
+    Rect logicalRect;
+    Rect presenterRect;
+    if (!resolvePresenterRect(rect, &logicalRect, &presenterRect)) {
+        return 0;
+    }
+
+    const int width = rectGetWidth(&logicalRect);
+    const int height = rectGetHeight(&logicalRect);
     if (width <= 0 || height <= 0) {
         return 0;
     }
@@ -839,10 +944,15 @@ int blitTrueColorRectToTexture(const uint32_t* src, const unsigned char* mask, i
     unsigned char* destPixels = static_cast<unsigned char*>(gSdlTextureSurface->pixels);
     int pixelsWritten = 0;
 
+    const int deltaLeft = logicalRect.left - rect.left;
+    const int deltaTop = logicalRect.top - rect.top;
+    const uint32_t* logicalSrc = src + deltaTop * srcPitch + deltaLeft;
+    const unsigned char* logicalMask = mask != nullptr ? mask + deltaTop * srcPitch + deltaLeft : nullptr;
+
     for (int row = 0; row < height; row++) {
-        const uint32_t* srcRow = src + row * srcPitch;
-        const unsigned char* maskRow = mask != nullptr ? mask + row * srcPitch : nullptr;
-        uint32_t* destRow = reinterpret_cast<uint32_t*>(destPixels + (rect.top + row) * gSdlTextureSurface->pitch + rect.left * bytesPerPixel);
+        const uint32_t* srcRow = logicalSrc + row * srcPitch;
+        const unsigned char* maskRow = logicalMask != nullptr ? logicalMask + row * srcPitch : nullptr;
+        uint32_t* destRow = reinterpret_cast<uint32_t*>(destPixels + (presenterRect.top + row) * gSdlTextureSurface->pitch + presenterRect.left * bytesPerPixel);
 
         if (maskRow == nullptr) {
             memcpy(destRow, srcRow, width * sizeof(uint32_t));
@@ -921,8 +1031,16 @@ static bool createRenderer()
     }
 
     LogicalSpace logicalSpace = displayScalerGetLogicalSpace();
+    int presenterWidth = logicalSpace.width;
+    int presenterHeight = logicalSpace.height;
 
-    gSdlTexture = SDL_CreateTexture(gSdlRenderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, logicalSpace.width, logicalSpace.height);
+    if (isFullResPresenterActive()) {
+        const Rect& viewport = displayScalerGetPhysicalViewport();
+        presenterWidth = std::max(1, rectGetWidth(&viewport));
+        presenterHeight = std::max(1, rectGetHeight(&viewport));
+    }
+
+    gSdlTexture = SDL_CreateTexture(gSdlRenderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, presenterWidth, presenterHeight);
     if (gSdlTexture == nullptr) {
         return false;
     }
@@ -932,7 +1050,7 @@ static bool createRenderer()
         return false;
     }
 
-    gSdlTextureSurface = SDL_CreateRGBSurfaceWithFormat(0, logicalSpace.width, logicalSpace.height, SDL_BITSPERPIXEL(format), format);
+    gSdlTextureSurface = SDL_CreateRGBSurfaceWithFormat(0, presenterWidth, presenterHeight, SDL_BITSPERPIXEL(format), format);
     if (gSdlTextureSurface == nullptr) {
         return false;
     }
@@ -1164,18 +1282,16 @@ void renderPresent()
     renderTraceCommitFrame();
     windowPresentVirtualScreen();
 
-    LogicalSpace logicalSpace = displayScalerGetLogicalSpace();
+    Rect presenterBounds = getPresenterSurfaceBounds();
+    const int presenterWidth = rectGetWidth(&presenterBounds);
+    const int presenterHeight = rectGetHeight(&presenterBounds);
     SDL_Rect srcRect;
     srcRect.x = 0;
     srcRect.y = 0;
-    srcRect.w = logicalSpace.width;
-    srcRect.h = logicalSpace.height;
+    srcRect.w = presenterWidth;
+    srcRect.h = presenterHeight;
 
-    Rect uploadRect;
-    uploadRect.left = 0;
-    uploadRect.top = 0;
-    uploadRect.right = logicalSpace.width - 1;
-    uploadRect.bottom = logicalSpace.height - 1;
+    Rect uploadRect = presenterBounds;
 
     int textureUpdateResult = SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch);
     bool textureUploadOk = textureUpdateResult == 0;
@@ -1192,10 +1308,10 @@ void renderPresent()
         if (copySurfaceRectToTexture(gSdlTexture, gSdlTextureSurface, uploadRect)) {
             textureUploadFallbackUsed = true;
             if (gTextureUploadFallbackLogBudget > 0 && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-                diagnosticsLog(DiagnosticsLevel::Info, "RENDERER", "SDL_UpdateTexture fallback copy succeeded for %dx%d", logicalSpace.width, logicalSpace.height);
+                diagnosticsLog(DiagnosticsLevel::Info, "RENDERER", "SDL_UpdateTexture fallback copy succeeded for %dx%d", presenterWidth, presenterHeight);
             }
         } else if (gTextureUploadFallbackLogBudget > 0 && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-            diagnosticsLog(DiagnosticsLevel::Info, "RENDERER", "SDL_UpdateTexture fallback copy failed for %dx%d", logicalSpace.width, logicalSpace.height);
+            diagnosticsLog(DiagnosticsLevel::Info, "RENDERER", "SDL_UpdateTexture fallback copy failed for %dx%d", presenterWidth, presenterHeight);
         }
 
         if (gTextureUploadFallbackLogBudget > 0) {

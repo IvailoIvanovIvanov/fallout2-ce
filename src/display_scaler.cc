@@ -11,6 +11,8 @@ namespace fallout {
 
 namespace {
 
+constexpr double kScaleEpsilon = 1.0e-4;
+
 constexpr int kDefaultLogicalWidth = 640;
 constexpr int kDefaultLogicalHeight = 480;
 
@@ -22,6 +24,8 @@ Point gLetterboxOffset = { 0, 0 };
 double gScale = 1.0;
 double gInvScale = 1.0;
 bool gUseIntegerScaling = false;
+DisplayScalerScaleTable gScaleTable = {};
+bool gScaleTablesDirty = true;
 
 static void logScalerState(const char* reason)
 {
@@ -50,6 +54,54 @@ static void logScalerState(const char* reason)
         gScale,
         gInvScale,
         gUseIntegerScaling ? 1 : 0);
+}
+
+static void rebuildScaleTables()
+{
+    const int logicalWidth = std::max(1, gLogicalSpace.width);
+    const int logicalHeight = std::max(1, gLogicalSpace.height);
+    const int physicalRightBound = std::max(0, gPhysicalSpace.width - 1);
+    const int physicalBottomBound = std::max(0, gPhysicalSpace.height - 1);
+
+    gScaleTable.horizontal.starts.resize(logicalWidth);
+    gScaleTable.horizontal.ends.resize(logicalWidth);
+    gScaleTable.vertical.starts.resize(logicalHeight);
+    gScaleTable.vertical.ends.resize(logicalHeight);
+
+    for (int x = 0; x < logicalWidth; x++) {
+        const double startEdge = static_cast<double>(gPhysicalViewport.left) + static_cast<double>(x) * gScale;
+        const double endEdge = static_cast<double>(gPhysicalViewport.left) + static_cast<double>(x + 1) * gScale;
+
+        int start = std::clamp(static_cast<int>(std::floor(startEdge)), 0, physicalRightBound);
+        int end = std::clamp(static_cast<int>(std::ceil(endEdge) - 1), 0, physicalRightBound);
+        if (end < start) {
+            end = start;
+        }
+
+        gScaleTable.horizontal.starts[x] = start;
+        gScaleTable.horizontal.ends[x] = end;
+    }
+
+    for (int y = 0; y < logicalHeight; y++) {
+        const double startEdge = static_cast<double>(gPhysicalViewport.top) + static_cast<double>(y) * gScale;
+        const double endEdge = static_cast<double>(gPhysicalViewport.top) + static_cast<double>(y + 1) * gScale;
+
+        int start = std::clamp(static_cast<int>(std::floor(startEdge)), 0, physicalBottomBound);
+        int end = std::clamp(static_cast<int>(std::ceil(endEdge) - 1), 0, physicalBottomBound);
+        if (end < start) {
+            end = start;
+        }
+
+        gScaleTable.vertical.starts[y] = start;
+        gScaleTable.vertical.ends[y] = end;
+    }
+
+    gScaleTable.viewport = gPhysicalViewport;
+    gScaleTable.scale = gScale;
+    gScaleTable.hasFractionalScale = std::abs(gScale - std::round(gScale)) > kScaleEpsilon;
+    gScaleTable.isDownscale = gScale < 1.0 - kScaleEpsilon;
+    gScaleTable.valid = true;
+    gScaleTablesDirty = false;
 }
 
 static void updateViewport()
@@ -96,6 +148,8 @@ static void updateViewport()
     gLogicalBounds.right = gLogicalSpace.width - 1;
     gLogicalBounds.bottom = gLogicalSpace.height - 1;
 
+    gScaleTablesDirty = true;
+    rebuildScaleTables();
     logScalerState("viewport");
 }
 
@@ -303,6 +357,15 @@ DisplayScalerVirtualMapping displayScalerMapPointToVirtual(int physicalX, int ph
     }
 
     return mapping;
+}
+
+const DisplayScalerScaleTable& displayScalerGetScaleTable()
+{
+    if (gScaleTablesDirty) {
+        rebuildScaleTables();
+    }
+
+    return gScaleTable;
 }
 
 } // namespace fallout

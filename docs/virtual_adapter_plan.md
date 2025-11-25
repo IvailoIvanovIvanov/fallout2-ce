@@ -73,8 +73,11 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 		- Flip `[debug] hd_missing_watermark=1` in `fallout2.cfg` to paint the neon chevron any time a tile/object falls back to 8-bit; the helper lives entirely in VRAM, so no 8-bit pixels are harmed.
 
 ## Stage 5 – Break the 640×480 Ceiling
-- [ ] **S5.1** Give the virtual adapter its own physical-resolution playground.
-	- Allocate a dedicated ARGB surface sized to `displayScalerGetPhysicalViewport()` alongside the legacy `_screen_buffer`, track per-axis scale tables, and let `windowPresentVirtualScreen()` map logical dirty rects into physical space before the SDL texture ever sees them.
+- [x] **S5.1** Give the virtual adapter its own physical-resolution playground.
+	- Flip `system.virtual_adapter_fullres=1` to hand the presenter a viewport-sized ARGB surface; `renderPresent` now resizes the SDL texture (and its staging surface) to match `displayScalerGetPhysicalViewport()` whenever the vault is running at 1× integer scale.
+	- `blitIndexedRectToTexture`, `blitTrueColorRectToTexture`, and every diagnostic tap now route through `resolvePresenterRect`, so dirty rects and overlay composites land directly in physical space instead of trusting SDL to scale later.
+	- `display_scaler` forges per-axis scale tables that map each logical column/row to its physical span; Stage 5.2 will chew on those tables for crisp pixel expansion and they already show up in the `SCALER` logs.
+	- `copySurfaceRectToTexture`, `SDL_UpdateTexture` fallback logs, and texture-surface stats all clamp against the presenter bounds, keeping diagnostics honest even when the viewport drifts.
 - [ ] **S5.2** Stretch classic palette assets deliberately instead of letting SDL smear them.
 	- During the logical→physical blit, expand each indexed pixel into an integer `scale × scale` block (or nearest-neighbor if fractional), so the original art simply grows to fit the viewport while preserving crisp edges.
 - [ ] **S5.3** Store and bind true-color overlays at physical resolution.
@@ -87,6 +90,7 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 	- Respect `displayScalerGetLetterboxOffset`, short-circuit when scale < 1.0, and ensure `isoDisable`/`tileDisable` clear the enlarged overlays so scene changes don’t leave ghosts.
 - [ ] **S5.7** Instrument the new pipeline.
 	- Emit `SCALER` logs for logical vs. physical rects, track HD pixels written per frame, and add a config toggle (`virtual_adapter_fullres=0/1`) so QA can revert instantly when debugging.
+		- Toggle shipped during **S5.1**; the Overseer still wants per-frame counters before we call this stage done.
 
 ## Stage 6 – Stretch Goals & Polish
 - [ ] **S6.1** Add optional shaders/post-effects (CRT, bloom, whatever the Overseer deems tasteful).
