@@ -28,6 +28,7 @@ struct SystemSettings {
     bool virtual_adapter = false;
     bool virtual_adapter_fullres = false;
     bool render_command_trace = false;
+    bool render_command_replay = false;
 };
 
 struct PreferencesSettings {

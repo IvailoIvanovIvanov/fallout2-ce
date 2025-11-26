@@ -43,6 +43,7 @@ struct RenderCommandTileBlitPayload {
     RenderAssetHandle asset;
     Rect screenRect {};
     uint32_t fid = 0;
+    int32_t tileIndex = -1;
     uint8_t depthBucket = 0;
     uint16_t paletteId = 0;
     int16_t lighting = -1;
@@ -50,6 +51,10 @@ struct RenderCommandTileBlitPayload {
     int16_t isoTileX = 0;
     int16_t isoTileY = 0;
     uint8_t elevation = 0;
+    int16_t sourceOffsetX = 0;
+    int16_t sourceOffsetY = 0;
+    uint16_t sourceWidth = 0;
+    uint16_t sourceHeight = 0;
 };
 
 struct RenderCommandTileBlit {

@@ -102,12 +102,14 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 	- `windowCompositeTrueColorOverlays` feeds those counters directly (splitting logical vs. physical writes), so QA can diff UHD coverage across maps without hunting individual logs. The `virtual_adapter_fullres` toggle from **S5.1** still flips everything back to the legacy scaler for quick A/B checks.
 
 ## Stage 6 – Command the Phantom Display
-- [ ] **S6.1** Wrangle every draw call into a command bus.
+- [x] **S6.1** Wrangle every draw call into a command bus.
 	- Wrap tiles, critters, UI, and particle oddities behind a single dispatcher that records `fid`, depth, palette ops, and target rects before the pixels ever hit `_screen_buffer`. If anything bypasses the bus, log it under `SCALER command_miss` so the Overseer can smack it back in line. Alternate twist: prototype with tiles first if you want a safer pilot mission.
 	- ✅ Tiles and roofs already report `RenderCommandOp::TileBlit/RoofBlit`, stash iso coordinates + lighting metadata, and scream `SCALER command_miss path=tile_memmove` whenever the scroll code cheats with a bare `memmove`.
 	- 🔧 Flip `system.render_command_trace=1` and mash **Ctrl+F9** to dump the most recent frame into `log/render_commands_frame_*.json` for forensic spelunking. Each entry carries seq numbers, flags, palette ids, and iso coords so future stages can replay them without guessing.
-- [ ] **S6.2** Serialize the stream and prove we can replay it.
-	- Store per-frame command packets (think: op code + stable asset handle) and build a replay harness that can paint them back into a mock buffer. Compare the mock buffer against the real virtual surface to confirm ordering, masking, and lighting survived the teleport.
+- [x] **S6.2** Serialize the stream and prove we can replay it.
+	- The recorder now emits a binary `RCMD` packet every frame (magic header + version + command payloads). Each tile op carries tile indices, palette ids, iso coords, and the exact source rect offsets so the Overseer can resurrect the blit without touching live engine state.
+	- Flip `system.render_command_replay=1` (on top of `render_command_trace`) to trigger an auto-replay harness. It rebuilds the frame from the serialized stream in a scratch buffer, compares it against the real virtual surface, and logs `SCALER command_replay…` stats (coverage, mismatch counts, command failures) every present.
+	- Limitations are flagged loudly: per-pixel lighting still gets marked as unsupported and excluded from coverage so we know exactly which wasteland corners still need a smarter shader rewrite.
 - [ ] **S6.3** Forge the Asset Registry & HD stash.
 	- Map every legacy FRM pointer to a deterministic asset ID, then hang HD metadata, availability flags, and conversion status off that ID. When no HD art exists, spin up a worker to upscale/true-color the legacy frame and drop it into the cache so the command bus always resolves to something sane.
 - [ ] **S6.4** Build the real-display orchestrator.

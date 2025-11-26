@@ -69,7 +69,16 @@ static void roof_fill_off_process_task(std::stack<roof_fill_task>& tasks_stack, 
 static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light);
 static void _draw_grid(int tile, int elevation, Rect* rect);
 static void tileRenderFloor(int fid, int x, int y, Rect* rect);
-static void tileEmitRenderCommand(RenderCommandOp op, int fid, const Rect& rect, int tileIndex, uint16_t extraFlags, int16_t lighting);
+static void tileEmitRenderCommand(RenderCommandOp op,
+    int fid,
+    const Rect& rect,
+    int tileIndex,
+    uint16_t extraFlags,
+    int16_t lighting,
+    int16_t sourceOffsetX,
+    int16_t sourceOffsetY,
+    uint16_t sourceWidth,
+    uint16_t sourceHeight);
 static int _tile_make_line(int currentCenterTile, int newCenterTile, int* tiles, int tilesCapacity);
 static void tileUpdatePixelScale(int windowWidth, int windowHeight);
 
@@ -343,7 +352,16 @@ static inline bool tileHasTrueColorOverlay()
     return gTileWindowTrueColorOverlay != nullptr && gTileWindowTrueColorMask != nullptr;
 }
 
-static void tileEmitRenderCommand(RenderCommandOp op, int fid, const Rect& rect, int tileIndex, uint16_t extraFlags, int16_t lighting)
+static void tileEmitRenderCommand(RenderCommandOp op,
+    int fid,
+    const Rect& rect,
+    int tileIndex,
+    uint16_t extraFlags,
+    int16_t lighting,
+    int16_t sourceOffsetX,
+    int16_t sourceOffsetY,
+    uint16_t sourceWidth,
+    uint16_t sourceHeight)
 {
     if (!renderCommandCaptureEnabled()) {
         return;
@@ -355,11 +373,16 @@ static void tileEmitRenderCommand(RenderCommandOp op, int fid, const Rect& rect,
     payload.asset.rotation = 0;
     payload.screenRect = rect;
     payload.fid = fid;
+    payload.tileIndex = tileIndex;
     payload.depthBucket = static_cast<uint8_t>(op == RenderCommandOp::RoofBlit ? RenderTraceLayer::TileRoof : RenderTraceLayer::TileFloor);
     payload.paletteId = 0;
     payload.flags = RenderCommandFlag_Masked | extraFlags;
     payload.lighting = lighting;
     payload.elevation = static_cast<uint8_t>(std::clamp(gElevation, 0, 255));
+    payload.sourceOffsetX = sourceOffsetX;
+    payload.sourceOffsetY = sourceOffsetY;
+    payload.sourceWidth = sourceWidth;
+    payload.sourceHeight = sourceHeight;
     if (tileIndex >= 0) {
         payload.isoTileX = static_cast<int16_t>(tileIndex % gHexGridWidth);
         payload.isoTileY = static_cast<int16_t>(tileIndex / gHexGridWidth);
@@ -1678,12 +1701,21 @@ static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light)
     int roofIsoTile = tileFromScreenXY(x + tileScaleValue(16), y + tileScaleValue(8), gElevation);
 
     if (rectIntersection(&tileRect, rect, &tileRect) == 0) {
+        const int16_t sourceOffsetX = static_cast<int16_t>(tileRect.left - x);
+        const int16_t sourceOffsetY = static_cast<int16_t>(tileRect.top - y);
+        const uint16_t sourceWidth = static_cast<uint16_t>(std::max(0, tileRect.right - tileRect.left + 1));
+        const uint16_t sourceHeight = static_cast<uint16_t>(std::max(0, tileRect.bottom - tileRect.top + 1));
+
         tileEmitRenderCommand(RenderCommandOp::RoofBlit,
             fid,
             tileRect,
             roofIsoTile,
             RenderCommandFlag_LightingFlat,
-            static_cast<int16_t>(std::clamp(light >> 9, 0, 255)));
+            static_cast<int16_t>(std::clamp(light >> 9, 0, 255)),
+            sourceOffsetX,
+            sourceOffsetY,
+            sourceWidth,
+            sourceHeight);
 
         renderTraceRecord(RenderTraceLayer::TileRoof, fid, 0, 0, tileRect, gElevation, tileRect.bottom);
 
@@ -2101,13 +2133,21 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
         }
 
         if (v23 == 9) {
+            const uint16_t commandWidth = static_cast<uint16_t>(std::max(0, v77));
+            const uint16_t commandHeight = static_cast<uint16_t>(std::max(0, v76));
+            const int16_t commandSourceOffsetX = static_cast<int16_t>(v79);
+            const int16_t commandSourceOffsetY = static_cast<int16_t>(v78);
             const int16_t lightingIndex = static_cast<int16_t>(_verticies[0].intensity >> 9);
             tileEmitRenderCommand(RenderCommandOp::TileBlit,
                 fid,
                 renderRect,
                 isoTileIndex,
                 RenderCommandFlag_LightingFlat,
-                lightingIndex);
+                lightingIndex,
+                commandSourceOffsetX,
+                commandSourceOffsetY,
+                commandWidth,
+                commandHeight);
 
             unsigned char* buf = frameData;
             _dark_trans_buf_to_buf(buf + frameWidth * v78 + v79, v77, v76, frameWidth, gTileWindowBuffer, x, y, gTileWindowPitch, _verticies[0].intensity);
@@ -2173,12 +2213,20 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
             goto out;
         }
 
+        const uint16_t perPixelWidth = static_cast<uint16_t>(std::max(0, v77));
+        const uint16_t perPixelHeight = static_cast<uint16_t>(std::max(0, v76));
+        const int16_t perPixelSourceOffsetX = static_cast<int16_t>(v79);
+        const int16_t perPixelSourceOffsetY = static_cast<int16_t>(v78);
         tileEmitRenderCommand(RenderCommandOp::TileBlit,
             fid,
             renderRect,
             isoTileIndex,
             RenderCommandFlag_LightingPerPixel,
-            -1);
+            -1,
+            perPixelSourceOffsetX,
+            perPixelSourceOffsetY,
+            perPixelWidth,
+            perPixelHeight);
 
         for (int i = 0; i < 5; i++) {
             RightsideUpTriangle* triangle = &(_rightside_up_triangles[i]);
