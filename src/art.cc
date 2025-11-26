@@ -21,6 +21,7 @@
 #include "object.h"
 #include "proto.h"
 #include "render_trace.h"
+#include "render_asset_registry.h"
 #include "settings.h"
 #include "stb_image.h"
 #include "sfall_config.h"
@@ -441,6 +442,7 @@ int artInit()
 void artReset()
 {
     hdTrueColorRegistryClear();
+    renderAssetRegistryReset();
     gHdArtInfoCache.clear();
     gHdTrueColorActiveFids.clear();
 }
@@ -449,6 +451,7 @@ void artReset()
 void artExit()
 {
     hdTrueColorRegistryClear();
+    renderAssetRegistryReset();
     gHdArtInfoCache.clear();
     gHdTrueColorActiveFids.clear();
 
@@ -1426,6 +1429,17 @@ static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* da
         return false;
     }
 
+    RenderAssetHandle assetHandle {};
+    assetHandle.fid = static_cast<uint32_t>(fid);
+    assetHandle.frame = 0;
+    assetHandle.rotation = 0;
+    assetHandle.variant = 0;
+    renderAssetRegistryTrackFrame(assetHandle,
+        art,
+        frameData,
+        static_cast<uint16_t>(std::clamp(logicalWidth, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))),
+        static_cast<uint16_t>(std::clamp(logicalHeight, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))));
+
     File* stream = fileOpen(info.path.c_str(), "rb");
     if (stream == nullptr) {
         if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
@@ -1697,6 +1711,7 @@ static void artCacheFreeImpl(void* ptr)
 {
     if (ptr != nullptr) {
         hdTrueColorReleaseFramesForArt(ptr);
+        renderAssetRegistryReleaseFramesForOwner(ptr);
     }
     internal_free(ptr);
 }
@@ -2035,6 +2050,8 @@ bool artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t*
             hdAlphaModeToString(alphaMode));
     }
 
+    renderAssetRegistryAttachHdView(indexed, view, false);
+
     return true;
 }
 
@@ -2051,6 +2068,7 @@ void artUnregisterTrueColorFrameData(const unsigned char* indexed)
 
     gHdTrueColorFrameRegistry.erase(it);
     gHdTrueColorFrameStorage.erase(indexed);
+    renderAssetRegistryDetachHdView(indexed);
 
     if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
         diagnosticsLog(DiagnosticsLevel::Trace, "SCALER", "artUnregisterTrueColorFrameData indexed=%p", indexed);

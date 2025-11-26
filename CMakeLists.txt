@@ -196,6 +196,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/queue.h"
     "src/random.cc"
     "src/random.h"
+    "src/render_asset_registry.cc"
+    "src/render_asset_registry.h"
     "src/render_commands.cc"
     "src/render_commands.h"
     "src/render_trace.cc"

@@ -6,6 +6,7 @@
 #include <cstdint>
 
 #include <algorithm>
+#include <limits>
 #include <stack>
 
 #include "art.h"
@@ -19,6 +20,7 @@
 #include "map.h"
 #include "object.h"
 #include "render_commands.h"
+#include "render_asset_registry.h"
 #include "render_trace.h"
 #include "platform_compat.h"
 #include "settings.h"
@@ -78,7 +80,11 @@ static void tileEmitRenderCommand(RenderCommandOp op,
     int16_t sourceOffsetX,
     int16_t sourceOffsetY,
     uint16_t sourceWidth,
-    uint16_t sourceHeight);
+    uint16_t sourceHeight,
+    const void* frameOwner,
+    const unsigned char* frameData,
+    uint16_t frameWidth,
+    uint16_t frameHeight);
 static int _tile_make_line(int currentCenterTile, int newCenterTile, int* tiles, int tilesCapacity);
 static void tileUpdatePixelScale(int windowWidth, int windowHeight);
 
@@ -361,10 +367,23 @@ static void tileEmitRenderCommand(RenderCommandOp op,
     int16_t sourceOffsetX,
     int16_t sourceOffsetY,
     uint16_t sourceWidth,
-    uint16_t sourceHeight)
+    uint16_t sourceHeight,
+    const void* frameOwner,
+    const unsigned char* frameData,
+    uint16_t frameWidth,
+    uint16_t frameHeight)
 {
     if (!renderCommandCaptureEnabled()) {
         return;
+    }
+
+    if (frameOwner != nullptr && frameData != nullptr && frameWidth > 0 && frameHeight > 0) {
+        RenderAssetHandle assetHandle {};
+        assetHandle.fid = static_cast<uint32_t>(fid);
+        assetHandle.frame = 0;
+        assetHandle.rotation = 0;
+        assetHandle.variant = 0;
+        renderAssetRegistryTrackFrame(assetHandle, frameOwner, frameData, frameWidth, frameHeight);
     }
 
     RenderCommandTileBlitPayload payload;
@@ -1698,6 +1717,12 @@ static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light)
     int tileWidth = artGetWidth(tileFrm, 0, 0);
     int tileHeight = artGetHeight(tileFrm, 0, 0);
 
+    unsigned char* tileFrameData = artGetFrameData(tileFrm, 0, 0);
+    if (tileFrameData == nullptr) {
+        artUnlock(tileFrmHandle);
+        return;
+    }
+
     Rect tileRect;
     tileRect.left = x;
     tileRect.top = y;
@@ -1721,12 +1746,15 @@ static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light)
             sourceOffsetX,
             sourceOffsetY,
             sourceWidth,
-            sourceHeight);
+            sourceHeight,
+            tileFrm,
+            tileFrameData,
+            static_cast<uint16_t>(std::clamp(tileWidth, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))),
+            static_cast<uint16_t>(std::clamp(tileHeight, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))));
 
         renderTraceRecord(RenderTraceLayer::TileRoof, fid, 0, 0, tileRect, gElevation, tileRect.bottom);
 
-        unsigned char* tileFrmBuffer = artGetFrameData(tileFrm, 0, 0);
-        tileFrmBuffer += tileWidth * (tileRect.top - y) + (tileRect.left - x);
+        unsigned char* tileFrmBuffer = tileFrameData + tileWidth * (tileRect.top - y) + (tileRect.left - x);
 
         CacheEntry* eggFrmHandle;
         Art* eggFrm = artLock(gEgg->fid, &eggFrmHandle);
@@ -2153,7 +2181,11 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
                 commandSourceOffsetX,
                 commandSourceOffsetY,
                 commandWidth,
-                commandHeight);
+                commandHeight,
+                art,
+                frameData,
+                static_cast<uint16_t>(std::clamp(frameWidth, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))),
+                static_cast<uint16_t>(std::clamp(frameHeight, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))));
 
             unsigned char* buf = frameData;
             _dark_trans_buf_to_buf(buf + frameWidth * v78 + v79, v77, v76, frameWidth, gTileWindowBuffer, x, y, gTileWindowPitch, _verticies[0].intensity);
@@ -2232,7 +2264,11 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
             perPixelSourceOffsetX,
             perPixelSourceOffsetY,
             perPixelWidth,
-            perPixelHeight);
+            perPixelHeight,
+            art,
+            frameData,
+            static_cast<uint16_t>(std::clamp(frameWidth, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))),
+            static_cast<uint16_t>(std::clamp(frameHeight, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))));
 
         for (int i = 0; i < 5; i++) {
             RightsideUpTriangle* triangle = &(_rightside_up_triangles[i]);
