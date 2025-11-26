@@ -18,6 +18,7 @@ extern int gHexGridSize;
 extern int gCenterTile;
 
 int tileInit(TileData** a1, int squareGridWidth, int squareGridHeight, int hexGridWidth, int hexGridHeight, unsigned char* buf, int windowId, int windowWidth, int windowHeight, int windowPitch, TileWindowRefreshProc* windowRefreshProc);
+int tileGetWindowId();
 void _tile_reset_();
 void tileReset();
 void tileExit();

@@ -21,6 +21,7 @@
 #include "object.h"
 #include "render_commands.h"
 #include "render_asset_registry.h"
+#include "render_display_orchestrator.h"
 #include "render_trace.h"
 #include "platform_compat.h"
 #include "settings.h"
@@ -355,6 +356,10 @@ static inline int tileScaleDown(int value)
 
 static inline bool tileHasTrueColorOverlay()
 {
+    if (renderDisplayOrchestratorConsumesTileOverlays()) {
+        return false;
+    }
+
     return gTileWindowTrueColorOverlay != nullptr && gTileWindowTrueColorMask != nullptr;
 }
 
@@ -486,6 +491,10 @@ struct TileIntensitySource {
 
 static void tileClearTrueColorRegion(const Rect& rect)
 {
+    if (renderDisplayOrchestratorConsumesTileOverlays()) {
+        return;
+    }
+
     if (tileHasTrueColorOverlay()) {
         int left = std::max(rect.left, 0);
         int top = std::max(rect.top, 0);
@@ -800,6 +809,11 @@ int tileInit(TileData** a1, int squareGridWidth, int squareGridHeight, int hexGr
     }
 
     return 0;
+}
+
+int tileGetWindowId()
+{
+    return gTileWindowId;
 }
 
 // 0x4B11E4

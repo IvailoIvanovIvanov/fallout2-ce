@@ -35,6 +35,10 @@ struct RenderAssetHandle {
 };
 
 constexpr size_t kRenderCommandMaxLightingVertices = 10;
+constexpr int kRenderCommandTileIntensityMapStride = 80;
+constexpr int kRenderCommandTileIntensityMapRows = 41;
+constexpr int kRenderCommandTileIntensityMapBaseOffset = 160;
+constexpr int kRenderCommandTileIntensityMapSize = kRenderCommandTileIntensityMapStride * kRenderCommandTileIntensityMapRows;
 
 struct RenderCommandHeader {
     uint32_t sequence = 0;
@@ -73,14 +77,57 @@ struct RenderCommandStats {
     uint32_t dropped = 0;
 };
 
+struct RenderCommandBufferView {
+    const RenderCommandTileBlit* commands = nullptr;
+    size_t count = 0;
+    uint16_t frameIndex = 0;
+};
+
+enum class RenderViewportEventType : uint8_t {
+    Unknown = 0,
+    Scroll,
+    FadeOut,
+    FadeIn,
+    Blackout,
+    Resize,
+};
+
+struct RenderViewportEventPayload {
+    RenderViewportEventType type = RenderViewportEventType::Unknown;
+    Rect rect {};
+    int16_t param0 = 0;
+    int16_t param1 = 0;
+    uint32_t dirtySequence = 0;
+};
+
+struct RenderViewportEvent {
+    RenderCommandHeader header;
+    RenderViewportEventPayload payload;
+};
+
+struct RenderViewportEventBufferView {
+    const RenderViewportEvent* events = nullptr;
+    size_t count = 0;
+    uint16_t frameIndex = 0;
+};
+
 bool renderCommandCaptureEnabled();
 void renderCommandsInit();
 void renderCommandsBeforePresent();
 bool renderCommandCaptureEnabled();
 const RenderCommandStats& renderCommandGetStats();
+bool renderCommandsPeekTileCommands(RenderCommandBufferView& outView);
 void renderCommandEmitTileBlit(RenderCommandOp op, const RenderCommandTileBlitPayload& payload);
+bool renderCommandsPeekViewportEvents(RenderViewportEventBufferView& outView);
+void renderCommandEmitViewportEvent(RenderViewportEventType type,
+    const Rect& rect,
+    int16_t param0,
+    int16_t param1,
+    uint32_t dirtySequence);
 bool renderCommandsDumpLastFrame(const char* reason);
 bool renderCommandsHandleHotkey(int keyCode);
+bool renderCommandBuildPerPixelIntensityMap(const RenderCommandTileBlitPayload& payload,
+    std::array<int, kRenderCommandTileIntensityMapSize>& out);
 
 } // namespace fallout
 

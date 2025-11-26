@@ -1230,6 +1230,12 @@ void _GNW95_zero_vid_mem()
             Rect refreshRect = logicalBounds;
             // Repaint the entire GNW stack before presenting cleared memory.
             windowRefreshAll(&refreshRect);
+
+            renderCommandEmitViewportEvent(RenderViewportEventType::Blackout,
+                logicalBounds,
+                0,
+                0,
+                windowVirtualScreenGetDirtySequence());
         }
 
         return;
@@ -1678,6 +1684,12 @@ void handleWindowSizeChanged()
         } else {
             windowVirtualScreenInvalidateAll();
             windowPresentVirtualScreen();
+
+            renderCommandEmitViewportEvent(RenderViewportEventType::Resize,
+                logical,
+                0,
+                0,
+                windowVirtualScreenGetDirtySequence());
         }
     }
 

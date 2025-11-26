@@ -200,6 +200,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/render_asset_registry.h"
     "src/render_commands.cc"
     "src/render_commands.h"
+    "src/render_display_orchestrator.cc"
+    "src/render_display_orchestrator.h"
     "src/render_trace.cc"
     "src/render_trace.h"
     "src/reaction.cc"

@@ -22,6 +22,7 @@
 #include "mouse.h"
 #include "palette.h"
 #include "render_trace.h"
+#include "render_display_orchestrator.h"
 #include "svga.h"
 #include "text_font.h"
 #include "settings.h"
@@ -102,6 +103,7 @@ static int _screen_buffer_pitch = 0;
 static bool gVirtualScreenEnabled = false;
 static Rect gVirtualScreenDirtyRect = { 0, 0, -1, -1 };
 static bool gVirtualScreenDirty = false;
+static uint32_t gVirtualScreenDirtySequence = 0;
 
 // 0x51E400
 static bool _insideWinExit = false;
@@ -411,21 +413,22 @@ static void virtualScreenInvalidateRect(const Rect* rect)
     if (!gVirtualScreenDirty) {
         gVirtualScreenDirtyRect = clipped;
         gVirtualScreenDirty = true;
-        return;
+    } else {
+        if (clipped.left < gVirtualScreenDirtyRect.left) {
+            gVirtualScreenDirtyRect.left = clipped.left;
+        }
+        if (clipped.top < gVirtualScreenDirtyRect.top) {
+            gVirtualScreenDirtyRect.top = clipped.top;
+        }
+        if (clipped.right > gVirtualScreenDirtyRect.right) {
+            gVirtualScreenDirtyRect.right = clipped.right;
+        }
+        if (clipped.bottom > gVirtualScreenDirtyRect.bottom) {
+            gVirtualScreenDirtyRect.bottom = clipped.bottom;
+        }
     }
 
-    if (clipped.left < gVirtualScreenDirtyRect.left) {
-        gVirtualScreenDirtyRect.left = clipped.left;
-    }
-    if (clipped.top < gVirtualScreenDirtyRect.top) {
-        gVirtualScreenDirtyRect.top = clipped.top;
-    }
-    if (clipped.right > gVirtualScreenDirtyRect.right) {
-        gVirtualScreenDirtyRect.right = clipped.right;
-    }
-    if (clipped.bottom > gVirtualScreenDirtyRect.bottom) {
-        gVirtualScreenDirtyRect.bottom = clipped.bottom;
-    }
+    gVirtualScreenDirtySequence++;
 }
 
 static void virtualScreenInvalidateAll()
@@ -3546,6 +3549,7 @@ bool windowIsVirtualScreenEnabled()
 void windowPresentVirtualScreen()
 {
     windowRefreshPhysicalTrueColorBuffers();
+    renderDisplayOrchestratorProcess();
 
     if (!gVirtualScreenEnabled || !gVirtualScreenDirty || _screen_buffer == nullptr) {
         return;
@@ -3631,6 +3635,11 @@ void windowVirtualScreenInvalidateAll()
 void windowVirtualScreenInvalidateRect(const Rect& rect)
 {
     virtualScreenInvalidateRect(&rect);
+}
+
+uint32_t windowVirtualScreenGetDirtySequence()
+{
+    return gVirtualScreenDirtySequence;
 }
 
 void windowRefreshPhysicalTrueColorBuffers()

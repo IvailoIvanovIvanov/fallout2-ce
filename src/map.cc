@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -857,6 +858,13 @@ int mapScroll(int dx, int dy)
     }
 
     windowRefresh(gIsoWindow);
+
+    RenderViewportEventType scrollEventType = RenderViewportEventType::Scroll;
+    renderCommandEmitViewportEvent(scrollEventType,
+        gIsoWindowRect,
+        static_cast<int16_t>(std::clamp(screenDx, -32768, 32767)),
+        static_cast<int16_t>(std::clamp(screenDy, -32768, 32767)),
+        windowVirtualScreenGetDirtySequence());
 
     return 0;
 }

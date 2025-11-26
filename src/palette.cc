@@ -5,9 +5,12 @@
 #include "color.h"
 #include "cycle.h"
 #include "debug.h"
+#include "display_scaler.h"
 #include "game_sound.h"
 #include "input.h"
+#include "render_commands.h"
 #include "svga.h"
+#include "window_manager.h"
 
 namespace fallout {
 
@@ -88,6 +91,14 @@ void paletteFadeTo(unsigned char* palette)
     if (colorCycleWasEnabled) {
         colorCycleEnable();
     }
+
+    RenderViewportEventType viewportEventType = palette == gPaletteBlack ? RenderViewportEventType::FadeOut : RenderViewportEventType::FadeIn;
+    const Rect& logicalBounds = displayScalerGetLogicalBounds();
+    renderCommandEmitViewportEvent(viewportEventType,
+        logicalBounds,
+        0,
+        0,
+        windowVirtualScreenGetDirtySequence());
 }
 
 // 0x493B48
