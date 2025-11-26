@@ -3,7 +3,9 @@
 #include <string.h>
 
 #include <algorithm>
+#include <array>
 #include <assert.h>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <string>
@@ -101,6 +103,15 @@ static bool hdArtProbe(int fid, HdArtInfo& info);
 static int hdArtComputeDataSize(int width, int height);
 static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* data, int* sizePtr);
 static bool hdArtDownsampleRgbaToPalette(const stbi_uc* rgba, int srcWidth, int srcHeight, int dstWidth, int dstHeight, unsigned char* dest);
+static void hdArtSampleBilinear(const stbi_uc* rgba,
+    int width,
+    int height,
+    double sampleX,
+    double sampleY,
+    double& outR,
+    double& outG,
+    double& outB,
+    double& outA);
 static unsigned char hdArtFindNearestPaletteColor(const unsigned char* palette, int r, int g, int b, std::unordered_map<int, unsigned char>& cache);
 static int hdArtPngRead(void* user, char* data, int size);
 static void hdArtPngSkip(void* user, int n);
@@ -108,51 +119,66 @@ static int hdArtPngEof(void* user);
 static bool hdArtValidateDimensions(int fid, int width, int height);
 static bool hdTrueColorConformToFrame(int fid, int frameWidth, int frameHeight, HdTrueColorFrameView& view)
 {
-    if (view.pixels == nullptr || frameWidth <= 0 || frameHeight <= 0) {
+    if (view.pixels == nullptr || frameWidth <= 0 || frameHeight <= 0 || view.width <= 0 || view.height <= 0) {
         return false;
     }
 
-    int scaleX = 1;
-    int scaleY = 1;
+    const double logicalWidth = static_cast<double>(frameWidth);
+    const double logicalHeight = static_cast<double>(frameHeight);
+    const double widthRatio = static_cast<double>(view.width) / std::max(1.0, logicalWidth);
+    const double heightRatio = static_cast<double>(view.height) / std::max(1.0, logicalHeight);
 
-    if (view.width != frameWidth || view.height != frameHeight) {
-        if (view.width <= 0 || view.height <= 0 || view.width % frameWidth != 0 || view.height % frameHeight != 0) {
-            if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-                diagnosticsLog(DiagnosticsLevel::Info,
-                    "SCALER",
-                    "artConformTrueColorFrame fid=%d rejected HD frame mismatch indexed=%dx%d hd=%dx%d",
-                    fid,
-                    frameWidth,
-                    frameHeight,
-                    view.width,
-                    view.height);
-            }
-            return false;
+    if (widthRatio <= 0.0 || heightRatio <= 0.0 || std::fabs(widthRatio - heightRatio) > 0.001) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "SCALER",
+                "artConformTrueColorFrame fid=%d rejected HD frame non-uniform scale indexed=%dx%d hd=%dx%d scale=%.3fx%.3f",
+                fid,
+                frameWidth,
+                frameHeight,
+                view.width,
+                view.height,
+                widthRatio,
+                heightRatio);
         }
-
-        scaleX = view.width / frameWidth;
-        scaleY = view.height / frameHeight;
-        if (scaleX <= 0 || scaleY <= 0 || scaleX != scaleY) {
-            if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-                diagnosticsLog(DiagnosticsLevel::Info,
-                    "SCALER",
-                    "artConformTrueColorFrame fid=%d rejected HD frame non-uniform scale indexed=%dx%d hd=%dx%d scale=%dx%d",
-                    fid,
-                    frameWidth,
-                    frameHeight,
-                    view.width,
-                    view.height,
-                    scaleX,
-                    scaleY);
-            }
-            return false;
-        }
+        return false;
     }
 
+    if (view.texelsPerLogicalX <= 0.0) {
+        view.texelsPerLogicalX = widthRatio;
+    }
+    if (view.texelsPerLogicalY <= 0.0) {
+        view.texelsPerLogicalY = heightRatio;
+    }
+
+    const double spanWidth = view.texelsPerLogicalX * logicalWidth;
+    const double spanHeight = view.texelsPerLogicalY * logicalHeight;
+    const double maxWidth = static_cast<double>(view.width);
+    const double maxHeight = static_cast<double>(view.height);
+    if (spanWidth <= 0.0 || spanHeight <= 0.0 || view.texelOriginX < 0.0 || view.texelOriginY < 0.0 || view.texelOriginX + spanWidth > maxWidth + 0.01 || view.texelOriginY + spanHeight > maxHeight + 0.01) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "SCALER",
+                "artConformTrueColorFrame fid=%d rejected HD frame span mismatch origin=(%.2f,%.2f) span=(%.2f,%.2f) texture=%dx%d logical=%dx%d",
+                fid,
+                view.texelOriginX,
+                view.texelOriginY,
+                spanWidth,
+                spanHeight,
+                view.width,
+                view.height,
+                frameWidth,
+                frameHeight);
+        }
+        return false;
+    }
+
+    view.texelOriginX = std::clamp(view.texelOriginX, 0.0, std::max(0.0, maxWidth - 1.0));
+    view.texelOriginY = std::clamp(view.texelOriginY, 0.0, std::max(0.0, maxHeight - 1.0));
     view.logicalWidth = frameWidth;
     view.logicalHeight = frameHeight;
-    view.scaleX = scaleX;
-    view.scaleY = scaleY;
+    view.scaleX = std::max(1, static_cast<int>(std::floor(view.texelsPerLogicalX)));
+    view.scaleY = std::max(1, static_cast<int>(std::floor(view.texelsPerLogicalY)));
     return true;
 }
 
@@ -1307,6 +1333,67 @@ static inline int hdArtPaletteComponentToRgb(unsigned char component)
     return (component << 2) | (component >> 4);
 }
 
+static void hdArtSampleBilinear(const stbi_uc* rgba,
+    int width,
+    int height,
+    double sampleX,
+    double sampleY,
+    double& outR,
+    double& outG,
+    double& outB,
+    double& outA)
+{
+    if (rgba == nullptr || width <= 0 || height <= 0) {
+        outR = 0.0;
+        outG = 0.0;
+        outB = 0.0;
+        outA = 0.0;
+        return;
+    }
+
+    const double clampedX = std::clamp(sampleX, 0.0, static_cast<double>(width - 1));
+    const double clampedY = std::clamp(sampleY, 0.0, static_cast<double>(height - 1));
+
+    const int x0 = static_cast<int>(std::floor(clampedX));
+    const int y0 = static_cast<int>(std::floor(clampedY));
+    const int x1 = std::min(x0 + 1, width - 1);
+    const int y1 = std::min(y0 + 1, height - 1);
+    const double fx = clampedX - static_cast<double>(x0);
+    const double fy = clampedY - static_cast<double>(y0);
+
+    auto sample = [rgba, width](int x, int y) {
+        const stbi_uc* pixel = rgba + (y * width + x) * 4;
+        return std::array<double, 4> {
+            static_cast<double>(pixel[0]),
+            static_cast<double>(pixel[1]),
+            static_cast<double>(pixel[2]),
+            static_cast<double>(pixel[3]) };
+    };
+
+    const auto c00 = sample(x0, y0);
+    const auto c10 = sample(x1, y0);
+    const auto c01 = sample(x0, y1);
+    const auto c11 = sample(x1, y1);
+
+    const auto lerp = [](double a, double b, double t) {
+        return a + (b - a) * t;
+    };
+
+    const double rTop = lerp(c00[0], c10[0], fx);
+    const double rBottom = lerp(c01[0], c11[0], fx);
+    const double gTop = lerp(c00[1], c10[1], fx);
+    const double gBottom = lerp(c01[1], c11[1], fx);
+    const double bTop = lerp(c00[2], c10[2], fx);
+    const double bBottom = lerp(c01[2], c11[2], fx);
+    const double aTop = lerp(c00[3], c10[3], fx);
+    const double aBottom = lerp(c01[3], c11[3], fx);
+
+    outR = lerp(rTop, rBottom, fy);
+    outG = lerp(gTop, gBottom, fy);
+    outB = lerp(bTop, bBottom, fy);
+    outA = lerp(aTop, aBottom, fy);
+}
+
 static unsigned char hdArtFindNearestPaletteColor(const unsigned char* palette, int r, int g, int b, std::unordered_map<int, unsigned char>& cache)
 {
     int key = (r << 16) | (g << 8) | b;
@@ -1347,39 +1434,33 @@ static bool hdArtDownsampleRgbaToPalette(const stbi_uc* rgba, int srcWidth, int 
         return false;
     }
 
-    if (srcWidth % dstWidth != 0 || srcHeight % dstHeight != 0) {
+    const double scaleX = static_cast<double>(srcWidth) / static_cast<double>(dstWidth);
+    const double scaleY = static_cast<double>(srcHeight) / static_cast<double>(dstHeight);
+    if (scaleX <= 0.0 || scaleY <= 0.0) {
         return false;
     }
 
-    const int scaleX = srcWidth / dstWidth;
-    const int scaleY = srcHeight / dstHeight;
-    if (scaleX <= 0 || scaleY <= 0) {
-        return false;
-    }
-
-    const int sampleOffsetX = scaleX > 1 ? std::min(scaleX / 2, scaleX - 1) : 0;
-    const int sampleOffsetY = scaleY > 1 ? std::min(scaleY / 2, scaleY - 1) : 0;
     const unsigned char* palette = _getSystemPalette();
     std::unordered_map<int, unsigned char> colorCache;
     colorCache.reserve(256);
 
     for (int y = 0; y < dstHeight; y++) {
-        int srcY = y * scaleY + sampleOffsetY;
-        if (srcY >= srcHeight) {
-            srcY = srcHeight - 1;
-        }
-        const stbi_uc* row = rgba + srcY * srcWidth * 4;
+        const double sampleY = (static_cast<double>(y) + 0.5) * scaleY - 0.5;
         for (int x = 0; x < dstWidth; x++) {
-            int srcX = x * scaleX + sampleOffsetX;
-            if (srcX >= srcWidth) {
-                srcX = srcWidth - 1;
-            }
+            const double sampleX = (static_cast<double>(x) + 0.5) * scaleX - 0.5;
 
-            const stbi_uc* pixel = row + srcX * 4;
-            stbi_uc a = pixel[3];
+            double r = 0.0;
+            double g = 0.0;
+            double b = 0.0;
+            double a = 0.0;
+            hdArtSampleBilinear(rgba, srcWidth, srcHeight, sampleX, sampleY, r, g, b, a);
             unsigned char value = 0;
-            if (a >= 16) {
-                value = hdArtFindNearestPaletteColor(palette, pixel[0], pixel[1], pixel[2], colorCache);
+            if (a >= 16.0) {
+                value = hdArtFindNearestPaletteColor(palette,
+                    static_cast<int>(std::lround(r)),
+                    static_cast<int>(std::lround(g)),
+                    static_cast<int>(std::lround(b)),
+                    colorCache);
             }
 
             dest[y * dstWidth + x] = value;
@@ -1478,12 +1559,12 @@ static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* da
         return false;
     }
 
-    if (width % logicalWidth != 0 || height % logicalHeight != 0) {
+    if (width < logicalWidth || height < logicalHeight) {
         if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
             diagnosticsLog(
                 DiagnosticsLevel::Info,
                 "ART",
-                "Ignoring HD PNG '%s' for fid %08X because dimensions (%dx%d) are not multiples of logical size %dx%d",
+                "Ignoring HD PNG '%s' for fid %08X because dimensions (%dx%d) are smaller than logical size %dx%d",
                 info.path.c_str(),
                 fid,
                 width,
@@ -1496,14 +1577,14 @@ static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* da
         return true;
     }
 
-    const int scaleX = width / logicalWidth;
-    const int scaleY = height / logicalHeight;
-    if (scaleX != scaleY) {
+    const double scaleX = static_cast<double>(width) / std::max(1, logicalWidth);
+    const double scaleY = static_cast<double>(height) / std::max(1, logicalHeight);
+    if (scaleX <= 0.0 || scaleY <= 0.0 || std::fabs(scaleX - scaleY) > 0.001) {
         if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
             diagnosticsLog(
                 DiagnosticsLevel::Info,
                 "ART",
-                "Ignoring HD PNG '%s' for fid %08X because scales differ (scaleX=%d scaleY=%d)",
+                "Ignoring HD PNG '%s' for fid %08X because scales differ (scaleX=%.3f scaleY=%.3f)",
                 info.path.c_str(),
                 fid,
                 scaleX,
@@ -1995,6 +2076,10 @@ bool artGetTrueColorFrame(int fid, HdTrueColorFrameView& out)
     out.logicalHeight = 0;
     out.scaleX = 1;
     out.scaleY = 1;
+    out.texelOriginX = 0.0;
+    out.texelOriginY = 0.0;
+    out.texelsPerLogicalX = 1.0;
+    out.texelsPerLogicalY = 1.0;
 
     CacheEntry* cacheEntry = nullptr;
     int frameWidth = 0;
@@ -2111,6 +2196,10 @@ bool artLookupRegisteredTrueColorFrame(const unsigned char* indexed, HdTrueColor
     out.logicalHeight = 0;
     out.scaleX = 1;
     out.scaleY = 1;
+    out.texelOriginX = 0.0;
+    out.texelOriginY = 0.0;
+    out.texelsPerLogicalX = 1.0;
+    out.texelsPerLogicalY = 1.0;
 
     if (indexed == nullptr) {
         return false;

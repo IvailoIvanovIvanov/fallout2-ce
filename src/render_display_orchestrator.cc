@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <limits>
 
 #include "color.h"
@@ -20,6 +21,17 @@ struct TileOverlayTarget {
     int windowId = -1;
     Rect windowRect {};
     WindowPhysicalTrueColorBuffer physical {};
+};
+
+struct HdSamplingContext {
+    const uint32_t* base = nullptr;
+    int stride = 0;
+    int textureWidth = 0;
+    int textureHeight = 0;
+    double texelOriginX = 0.0;
+    double texelOriginY = 0.0;
+    double texelsPerLogicalX = 1.0;
+    double texelsPerLogicalY = 1.0;
 };
 
 class TileLightingSampler {
@@ -98,22 +110,6 @@ bool sOrchestratorActive = false;
 void processViewportEvents();
 void handleViewportEvent(const RenderViewportEvent& event);
 
-static inline int selectSampleIndex(int position, int spanLength, int sampleCount)
-{
-    if (sampleCount <= 1 || spanLength <= 0) {
-        return 0;
-    }
-
-    if (spanLength == 1) {
-        return 0;
-    }
-
-    const int numerator = (2 * position + 1) * sampleCount;
-    const int denominator = 2 * spanLength;
-    int index = numerator / denominator;
-    return std::clamp(index, 0, sampleCount - 1);
-}
-
 bool acquireTileOverlayTarget(TileOverlayTarget& outTarget)
 {
     outTarget = {};
@@ -135,6 +131,92 @@ bool acquireTileOverlayTarget(TileOverlayTarget& outTarget)
     return true;
 }
 
+static inline double computeSampleCoordinate(double blockSpan, int spanIndex, int spanLength)
+{
+    if (blockSpan <= 0.0 || spanLength <= 0) {
+        return 0.0;
+    }
+
+    const double block = blockSpan;
+    const double length = static_cast<double>(std::max(spanLength, 1));
+    return (static_cast<double>(spanIndex) + 0.5) * (block / length) - 0.5;
+}
+
+uint32_t sampleHdPixelBilinear(const HdSamplingContext& context,
+    int logicalRow,
+    int logicalColumn,
+    int spanRow,
+    int rowSpanLength,
+    int spanColumn,
+    int columnSpanLength)
+{
+    if (context.base == nullptr || context.stride <= 0 || context.textureWidth <= 0 || context.textureHeight <= 0) {
+        return 0;
+    }
+
+    const double localX = context.texelOriginX
+        + static_cast<double>(logicalColumn) * context.texelsPerLogicalX
+        + computeSampleCoordinate(context.texelsPerLogicalX, spanColumn, columnSpanLength);
+    const double localY = context.texelOriginY
+        + static_cast<double>(logicalRow) * context.texelsPerLogicalY
+        + computeSampleCoordinate(context.texelsPerLogicalY, spanRow, rowSpanLength);
+
+    const double maxX = static_cast<double>(std::max(context.textureWidth - 1, 0));
+    const double maxY = static_cast<double>(std::max(context.textureHeight - 1, 0));
+    const double clampedX = std::clamp(localX, 0.0, maxX);
+    const double clampedY = std::clamp(localY, 0.0, maxY);
+
+    const int x0 = static_cast<int>(std::floor(clampedX));
+    const int y0 = static_cast<int>(std::floor(clampedY));
+    const int x1 = std::min(x0 + 1, context.textureWidth - 1);
+    const int y1 = std::min(y0 + 1, context.textureHeight - 1);
+
+    const double fx = clampedX - static_cast<double>(x0);
+    const double fy = clampedY - static_cast<double>(y0);
+
+    const uint32_t c00 = context.base[y0 * context.stride + x0];
+    const uint32_t c10 = context.base[y0 * context.stride + x1];
+    const uint32_t c01 = context.base[y1 * context.stride + x0];
+    const uint32_t c11 = context.base[y1 * context.stride + x1];
+
+    const auto lerp = [](double a, double b, double t) {
+        return a + (b - a) * t;
+    };
+
+    const auto component = [](uint32_t color, int shift) {
+        return static_cast<double>((color >> shift) & 0xFF);
+    };
+
+    const double aTop = lerp(component(c00, 24), component(c10, 24), fx);
+    const double aBottom = lerp(component(c01, 24), component(c11, 24), fx);
+    const double rTop = lerp(component(c00, 16), component(c10, 16), fx);
+    const double rBottom = lerp(component(c01, 16), component(c11, 16), fx);
+    const double gTop = lerp(component(c00, 8), component(c10, 8), fx);
+    const double gBottom = lerp(component(c01, 8), component(c11, 8), fx);
+    const double bTop = lerp(component(c00, 0), component(c10, 0), fx);
+    const double bBottom = lerp(component(c01, 0), component(c11, 0), fx);
+
+    const double a = lerp(aTop, aBottom, fy);
+    const double r = lerp(rTop, rBottom, fy);
+    const double g = lerp(gTop, gBottom, fy);
+    const double b = lerp(bTop, bBottom, fy);
+
+    const auto clampComponent = [](double value) -> uint32_t {
+        long component = static_cast<long>(std::lround(value));
+        if (component < 0) {
+            component = 0;
+        } else if (component > 255) {
+            component = 255;
+        }
+        return static_cast<uint32_t>(component);
+    };
+
+    return (clampComponent(a) << 24)
+        | (clampComponent(r) << 16)
+        | (clampComponent(g) << 8)
+        | clampComponent(b);
+}
+
 bool blitToPhysicalOverlay(const TileOverlayTarget& target,
     const HdTrueColorFrameView& view,
     const Rect& logicalRect,
@@ -142,7 +224,8 @@ bool blitToPhysicalOverlay(const TileOverlayTarget& target,
     int sourceOffsetY,
     int width,
     int height,
-    const TileLightingSampler& lighting)
+    const TileLightingSampler& lighting,
+    const HdSamplingContext& samplingContext)
 {
     if (target.physical.pixels == nullptr || target.physical.mask == nullptr || target.physical.pitch <= 0 || width <= 0 || height <= 0) {
         return false;
@@ -158,15 +241,6 @@ bool blitToPhysicalOverlay(const TileOverlayTarget& target,
     if (horizontalLimit <= 0 || verticalLimit <= 0) {
         return false;
     }
-
-    const int hdScaleX = std::max(1, view.scaleX);
-    const int hdScaleY = std::max(1, view.scaleY);
-    const int hdStride = view.width;
-    if (hdStride <= 0 || view.pixels == nullptr) {
-        return false;
-    }
-
-    const uint32_t* hdBase = view.pixels + (sourceOffsetY * hdScaleY) * hdStride + sourceOffsetX * hdScaleX;
 
     bool wrotePixels = false;
 
@@ -191,8 +265,6 @@ bool blitToPhysicalOverlay(const TileOverlayTarget& target,
         const int rowSpanHeight = physicalRowEnd - physicalRowStart + 1;
         for (int spanRow = 0; spanRow < rowSpanHeight; spanRow++) {
             const int physicalRow = physicalRowStart + spanRow;
-            const int hdRowOffset = selectSampleIndex(spanRow, rowSpanHeight, hdScaleY);
-            const uint32_t* hdRow = hdBase + (logicalRow * hdScaleY + hdRowOffset) * hdStride;
             uint32_t* destRow = target.physical.pixels + physicalRow * target.physical.pitch;
             unsigned char* maskRow = target.physical.mask + physicalRow * target.physical.pitch;
 
@@ -218,8 +290,13 @@ bool blitToPhysicalOverlay(const TileOverlayTarget& target,
                 const int intensityIndex = lighting.sample(logicalRow, logicalColumn);
 
                 for (int spanColumn = 0; spanColumn < columnSpanWidth; spanColumn++) {
-                    const int hdColumnOffset = selectSampleIndex(spanColumn, columnSpanWidth, hdScaleX);
-                    const uint32_t hdPixel = hdRow[logicalColumn * hdScaleX + hdColumnOffset];
+                    const uint32_t hdPixel = sampleHdPixelBilinear(samplingContext,
+                        logicalRow,
+                        logicalColumn,
+                        spanRow,
+                        rowSpanHeight,
+                        spanColumn,
+                        columnSpanWidth);
                     const uint8_t alpha = static_cast<uint8_t>(hdPixel >> 24);
                     uint32_t* destPixel = destRow + physicalColumnStart + spanColumn;
                     unsigned char* maskPixel = maskRow + physicalColumnStart + spanColumn;
@@ -247,7 +324,7 @@ bool processTileCommand(const RenderCommandTileBlit& command,
     bool& usedFallback,
     double viewportScale,
     bool& detailClamped,
-    int& maxHdScale)
+    double& maxHdScale)
 {
     if (command.op != RenderCommandOp::TileBlit && command.op != RenderCommandOp::RoofBlit) {
         return false;
@@ -277,13 +354,19 @@ bool processTileCommand(const RenderCommandTileBlit& command,
         return false;
     }
 
-    maxHdScale = std::max(maxHdScale, view.scaleX);
-    if (viewportScale > 0.0 && static_cast<double>(view.scaleX) > viewportScale + 0.01) {
-        detailClamped = true;
-    }
-
     const int frameWidth = view.logicalWidth;
     const int frameHeight = view.logicalHeight;
+
+    const double fallbackScaleX = frameWidth > 0 ? static_cast<double>(view.width) / static_cast<double>(frameWidth) : 1.0;
+    const double fallbackScaleY = frameHeight > 0 ? static_cast<double>(view.height) / static_cast<double>(frameHeight) : 1.0;
+    const double texelsPerLogicalX = view.texelsPerLogicalX > 0.0 ? view.texelsPerLogicalX : fallbackScaleX;
+    const double texelsPerLogicalY = view.texelsPerLogicalY > 0.0 ? view.texelsPerLogicalY : fallbackScaleY;
+    const double effectiveScale = std::max(texelsPerLogicalX, texelsPerLogicalY);
+
+    maxHdScale = std::max(maxHdScale, effectiveScale);
+    if (viewportScale > 0.0 && effectiveScale > viewportScale + 0.01) {
+        detailClamped = true;
+    }
 
     int baseOffsetX = std::clamp(static_cast<int>(command.payload.sourceOffsetX), 0, std::max(frameWidth - 1, 0));
     int baseOffsetY = std::clamp(static_cast<int>(command.payload.sourceOffsetY), 0, std::max(frameHeight - 1, 0));
@@ -310,7 +393,21 @@ bool processTileCommand(const RenderCommandTileBlit& command,
     TileLightingSampler lighting;
     lighting.initialize(command, sampledOffsetX, sampledOffsetY, copyWidth, copyHeight);
 
-    if (!blitToPhysicalOverlay(target, view, clippedRect, sampledOffsetX, sampledOffsetY, copyWidth, copyHeight, lighting)) {
+    HdSamplingContext samplingContext;
+    samplingContext.base = view.pixels;
+    samplingContext.stride = view.width;
+    samplingContext.textureWidth = view.width;
+    samplingContext.textureHeight = view.height;
+    samplingContext.texelsPerLogicalX = texelsPerLogicalX;
+    samplingContext.texelsPerLogicalY = texelsPerLogicalY;
+    samplingContext.texelOriginX = view.texelOriginX + texelsPerLogicalX * static_cast<double>(sampledOffsetX);
+    samplingContext.texelOriginY = view.texelOriginY + texelsPerLogicalY * static_cast<double>(sampledOffsetY);
+
+    if (samplingContext.base == nullptr || samplingContext.stride <= 0 || samplingContext.textureWidth <= 0 || samplingContext.textureHeight <= 0) {
+        return false;
+    }
+
+    if (!blitToPhysicalOverlay(target, view, clippedRect, sampledOffsetX, sampledOffsetY, copyWidth, copyHeight, lighting, samplingContext)) {
         return false;
     }
 
@@ -456,7 +553,7 @@ void renderDisplayOrchestratorProcess()
     uint32_t hdCommands = 0;
     uint32_t fallbackCommands = 0;
     bool detailClamped = false;
-    int maxHdScale = 1;
+    double maxHdScale = 1.0;
 
     for (size_t index = 0; index < bufferView.count; index++) {
         const RenderCommandTileBlit& command = bufferView.commands[index];
@@ -473,7 +570,7 @@ void renderDisplayOrchestratorProcess()
     if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
         diagnosticsLog(DiagnosticsLevel::Trace,
             "SCALER",
-            "orchestrator frame=%u commands=%zu hd=%u fallback=%u logical_px=%llu physical_scale=%.2f detail_clamped=%d hd_scale_max=%d",
+            "orchestrator frame=%u commands=%zu hd=%u fallback=%u logical_px=%llu physical_scale=%.2f detail_clamped=%d hd_scale_max=%.2f",
             bufferView.frameIndex,
             bufferView.count,
             hdCommands,

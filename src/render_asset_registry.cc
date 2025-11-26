@@ -99,6 +99,8 @@ RenderAssetMetadata* findMetadataByPointer(const unsigned char* indexed)
     return &(assetIt->second);
 }
 
+static bool conformHdView(RenderAssetMetadata& metadata);
+
 void ensureFallback(RenderAssetMetadata& metadata, const unsigned char* indexed)
 {
     if (metadata.hdViewValid && !metadata.hdIsFallback) {
@@ -133,9 +135,17 @@ void ensureFallback(RenderAssetMetadata& metadata, const unsigned char* indexed)
     metadata.hdView.logicalHeight = metadata.height;
     metadata.hdView.scaleX = 1;
     metadata.hdView.scaleY = 1;
+    metadata.hdView.texelOriginX = 0.0;
+    metadata.hdView.texelOriginY = 0.0;
+    metadata.hdView.texelsPerLogicalX = 1.0;
+    metadata.hdView.texelsPerLogicalY = 1.0;
     metadata.hdView.alphaMode = HdAlphaMode::Straight;
     metadata.hdViewValid = metadata.hdView.pixels != nullptr;
     metadata.hdIsFallback = true;
+
+    if (metadata.hdViewValid) {
+        conformHdView(metadata);
+    }
 
     if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
         diagnosticsLog(DiagnosticsLevel::Trace,
@@ -146,6 +156,31 @@ void ensureFallback(RenderAssetMetadata& metadata, const unsigned char* indexed)
             metadata.handle.rotation,
             metadata.handle.variant);
     }
+}
+
+static bool conformHdView(RenderAssetMetadata& metadata)
+{
+    if (!metadata.hdViewValid) {
+        return false;
+    }
+
+    if (!artConformTrueColorFrame(static_cast<int>(metadata.handle.fid), metadata.width, metadata.height, metadata.hdView)) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "SCALER",
+                "asset_registry hd_view_rejected fid=%u frame=%u rot=%u variant=%u",
+                metadata.handle.fid,
+                metadata.handle.frame,
+                metadata.handle.rotation,
+                metadata.handle.variant);
+        }
+        metadata.hdView = {};
+        metadata.hdViewValid = false;
+        metadata.hdIsFallback = false;
+        return false;
+    }
+
+    return true;
 }
 
 } // namespace
@@ -233,6 +268,14 @@ bool renderAssetRegistryAttachHdView(const unsigned char* indexed,
     metadata->hdIsFallback = isFallback;
     if (!isFallback) {
         metadata->fallbackStorage.reset();
+    }
+
+    if (!metadata->hdViewValid) {
+        return false;
+    }
+
+    if (!conformHdView(*metadata)) {
+        ensureFallback(*metadata, indexed);
     }
 
     return metadata->hdViewValid;

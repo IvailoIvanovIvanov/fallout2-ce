@@ -131,6 +131,10 @@ struct HdTrueColorFrameView {
     int logicalHeight = 0;
     int scaleX = 1;
     int scaleY = 1;
+    double texelOriginX = 0.0;
+    double texelOriginY = 0.0;
+    double texelsPerLogicalX = 1.0;
+    double texelsPerLogicalY = 1.0;
     HdAlphaMode alphaMode = HdAlphaMode::Straight;
 };
 
