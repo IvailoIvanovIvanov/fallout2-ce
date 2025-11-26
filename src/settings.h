@@ -27,6 +27,7 @@ struct SystemSettings {
     std::string hd_art_path = "art";
     bool virtual_adapter = false;
     bool virtual_adapter_fullres = false;
+    bool render_command_trace = false;
 };
 
 struct PreferencesSettings {

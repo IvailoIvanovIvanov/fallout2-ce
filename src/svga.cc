@@ -18,6 +18,7 @@
 #include "memory.h"
 #include "mouse.h"
 #include "render_trace.h"
+#include "render_commands.h"
 #include "settings.h"
 #include "virtual_input.h"
 #include "win32.h"
@@ -1689,6 +1690,7 @@ void renderPresent()
     ensurePresenterSurfaceMatchesBounds();
     renderTraceCommitFrame();
     windowPresentVirtualScreen();
+    renderCommandsBeforePresent();
 
     Rect presenterBounds = getPresenterSurfaceBounds();
     const int presenterWidth = rectGetWidth(&presenterBounds);

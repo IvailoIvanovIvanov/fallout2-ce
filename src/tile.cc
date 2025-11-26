@@ -18,6 +18,7 @@
 #include "light.h"
 #include "map.h"
 #include "object.h"
+#include "render_commands.h"
 #include "render_trace.h"
 #include "platform_compat.h"
 #include "settings.h"
@@ -68,6 +69,7 @@ static void roof_fill_off_process_task(std::stack<roof_fill_task>& tasks_stack, 
 static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light);
 static void _draw_grid(int tile, int elevation, Rect* rect);
 static void tileRenderFloor(int fid, int x, int y, Rect* rect);
+static void tileEmitRenderCommand(RenderCommandOp op, int fid, const Rect& rect, int tileIndex, uint16_t extraFlags, int16_t lighting);
 static int _tile_make_line(int currentCenterTile, int newCenterTile, int* tiles, int tilesCapacity);
 static void tileUpdatePixelScale(int windowWidth, int windowHeight);
 
@@ -339,6 +341,34 @@ static inline int tileScaleDown(int value)
 static inline bool tileHasTrueColorOverlay()
 {
     return gTileWindowTrueColorOverlay != nullptr && gTileWindowTrueColorMask != nullptr;
+}
+
+static void tileEmitRenderCommand(RenderCommandOp op, int fid, const Rect& rect, int tileIndex, uint16_t extraFlags, int16_t lighting)
+{
+    if (!renderCommandCaptureEnabled()) {
+        return;
+    }
+
+    RenderCommandTileBlitPayload payload;
+    payload.asset.fid = fid;
+    payload.asset.frame = 0;
+    payload.asset.rotation = 0;
+    payload.screenRect = rect;
+    payload.fid = fid;
+    payload.depthBucket = static_cast<uint8_t>(op == RenderCommandOp::RoofBlit ? RenderTraceLayer::TileRoof : RenderTraceLayer::TileFloor);
+    payload.paletteId = 0;
+    payload.flags = RenderCommandFlag_Masked | extraFlags;
+    payload.lighting = lighting;
+    payload.elevation = static_cast<uint8_t>(std::clamp(gElevation, 0, 255));
+    if (tileIndex >= 0) {
+        payload.isoTileX = static_cast<int16_t>(tileIndex % gHexGridWidth);
+        payload.isoTileY = static_cast<int16_t>(tileIndex / gHexGridWidth);
+    } else {
+        payload.isoTileX = -1;
+        payload.isoTileY = -1;
+    }
+
+    renderCommandEmitTileBlit(op, payload);
 }
 
 static inline const TilePhysicalOverlayView* tileGetPhysicalOverlayView()
@@ -1645,7 +1675,16 @@ static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light)
     tileRect.right = x + tileWidth - 1;
     tileRect.bottom = y + tileHeight - 1;
 
+    int roofIsoTile = tileFromScreenXY(x + tileScaleValue(16), y + tileScaleValue(8), gElevation);
+
     if (rectIntersection(&tileRect, rect, &tileRect) == 0) {
+        tileEmitRenderCommand(RenderCommandOp::RoofBlit,
+            fid,
+            tileRect,
+            roofIsoTile,
+            RenderCommandFlag_LightingFlat,
+            static_cast<int16_t>(std::clamp(light >> 9, 0, 255)));
+
         renderTraceRecord(RenderTraceLayer::TileRoof, fid, 0, 0, tileRect, gElevation, tileRect.bottom);
 
         unsigned char* tileFrmBuffer = artGetFrameData(tileFrm, 0, 0);
@@ -2044,6 +2083,7 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
 
     tile = tileFromScreenXY(savedX, savedY + tileScaleValue(13), gElevation);
     if (tile != -1) {
+        const int isoTileIndex = tile;
         int parity = tile & 1;
         int ambientIntensity = lightGetAmbientIntensity();
         for (int i = 0; i < 10; i++) {
@@ -2061,6 +2101,14 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
         }
 
         if (v23 == 9) {
+            const int16_t lightingIndex = static_cast<int16_t>(_verticies[0].intensity >> 9);
+            tileEmitRenderCommand(RenderCommandOp::TileBlit,
+                fid,
+                renderRect,
+                isoTileIndex,
+                RenderCommandFlag_LightingFlat,
+                lightingIndex);
+
             unsigned char* buf = frameData;
             _dark_trans_buf_to_buf(buf + frameWidth * v78 + v79, v77, v76, frameWidth, gTileWindowBuffer, x, y, gTileWindowPitch, _verticies[0].intensity);
 
@@ -2124,6 +2172,13 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
 
             goto out;
         }
+
+        tileEmitRenderCommand(RenderCommandOp::TileBlit,
+            fid,
+            renderRect,
+            isoTileIndex,
+            RenderCommandFlag_LightingPerPixel,
+            -1);
 
         for (int i = 0; i < 5; i++) {
             RightsideUpTriangle* triangle = &(_rightside_up_triangles[i]);

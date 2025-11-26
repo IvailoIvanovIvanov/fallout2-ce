@@ -38,6 +38,7 @@
 #include "proto_instance.h"
 #include "queue.h"
 #include "random.h"
+#include "render_commands.h"
 #include "scripts.h"
 #include "settings.h"
 #include "svga.h"
@@ -784,6 +785,14 @@ int mapScroll(int dx, int dy)
         memmove(dest, src, width);
         dest += step;
         src += step;
+    }
+
+    if (renderCommandCaptureEnabled() && diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        diagnosticsLog(DiagnosticsLevel::Trace,
+            "SCALER",
+            "command_miss path=tile_memmove reason=map_scroll dx=%d dy=%d",
+            screenDx,
+            screenDy);
     }
 
     if (windowHasTrueColorOverlay(gIsoWindow)) {
