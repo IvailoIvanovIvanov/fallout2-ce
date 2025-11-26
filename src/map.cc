@@ -2,7 +2,9 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
 
 #include <vector>
 
@@ -15,6 +17,7 @@
 #include "critter.h"
 #include "cycle.h"
 #include "debug.h"
+#include "display_scaler.h"
 #include "draw.h"
 #include "elevator.h"
 #include "game.h"
@@ -68,6 +71,7 @@ static void _square_reset();
 static int _square_load(File* stream, int a2);
 static int mapHeaderWrite(MapHeader* ptr, File* stream);
 static int mapHeaderRead(MapHeader* ptr, File* stream);
+static void mapScrollPhysicalTrueColorOverlay(int screenDx, int screenDy);
 
 // 0x50B058
 static char byte_50B058[] = "";
@@ -604,6 +608,95 @@ int mapGetCurrentMap()
     return gMapHeader.index;
 }
 
+static int mapRoundScaledDelta(int value, double scale)
+{
+    if (scale <= 0.0) {
+        scale = 1.0;
+    }
+
+    double scaled = static_cast<double>(value) * scale;
+    return scaled >= 0.0 ? static_cast<int>(scaled + 0.5) : static_cast<int>(scaled - 0.5);
+}
+
+static void mapScrollPhysicalTrueColorOverlay(int screenDx, int screenDy)
+{
+    if (screenDx == 0 && screenDy == 0) {
+        return;
+    }
+
+    WindowPhysicalTrueColorBuffer buffer;
+    if (!windowGetPhysicalTrueColorOverlay(gIsoWindow, &buffer)) {
+        return;
+    }
+
+    if (buffer.width <= 0 || buffer.height <= 0 || buffer.pitch <= 0) {
+        return;
+    }
+
+    const double scale = displayScalerGetScale();
+    const int physicalDx = mapRoundScaledDelta(screenDx, scale);
+    const int physicalDy = mapRoundScaledDelta(screenDy, scale);
+
+    if (physicalDx == 0 && physicalDy == 0) {
+        return;
+    }
+
+    const int width = buffer.width;
+    const int height = buffer.height;
+    const int pitch = buffer.pitch;
+
+    int copyWidth = width - std::abs(physicalDx);
+    int copyHeight = height - std::abs(physicalDy);
+    if (copyWidth <= 0 || copyHeight <= 0) {
+        size_t pixelCount = static_cast<size_t>(pitch) * height;
+        if (buffer.pixels != nullptr) {
+            memset(buffer.pixels, 0, pixelCount * sizeof(uint32_t));
+        }
+        if (buffer.mask != nullptr) {
+            memset(buffer.mask, 0, pixelCount);
+        }
+        return;
+    }
+
+    auto scrollPlane = [&](auto* plane) {
+        if (plane == nullptr) {
+            return;
+        }
+
+        auto* srcRow = plane;
+        auto* destRow = plane;
+        int rowStep;
+
+        if (physicalDy < 0) {
+            srcRow = plane + pitch * (copyHeight - 1);
+            destRow = plane + pitch * (height - 1);
+            if (physicalDx < 0) {
+                destRow -= physicalDx;
+            } else {
+                srcRow += physicalDx;
+            }
+            rowStep = -pitch;
+        } else {
+            destRow = plane;
+            srcRow = plane + pitch * physicalDy;
+            if (physicalDx < 0) {
+                destRow -= physicalDx;
+            } else {
+                srcRow += physicalDx;
+            }
+            rowStep = pitch;
+        }
+
+        for (int row = 0; row < copyHeight; row++) {
+            memmove(destRow, srcRow, copyWidth * sizeof(*plane));
+            destRow += rowStep;
+            srcRow += rowStep;
+        }
+    };
+
+    scrollPlane(buffer.pixels);
+    scrollPlane(buffer.mask);
+}
 // 0x4826C0
 int mapScroll(int dx, int dy)
 {
@@ -741,6 +834,8 @@ int mapScroll(int dx, int dy)
             maskDest += overlayStep;
             maskSrc += overlayStep;
         }
+
+        mapScrollPhysicalTrueColorOverlay(screenDx, screenDy);
     }
 
     if (screenDx != 0) {

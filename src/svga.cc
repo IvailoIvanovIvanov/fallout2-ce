@@ -1226,8 +1226,9 @@ void _GNW95_zero_vid_mem()
                 memset(virtualBuffer + y * virtualPitch, 0, width);
             }
 
-            windowVirtualScreenInvalidateAll();
-            windowPresentVirtualScreen();
+            Rect refreshRect = logicalBounds;
+            // Repaint the entire GNW stack before presenting cleared memory.
+            windowRefreshAll(&refreshRect);
         }
 
         return;

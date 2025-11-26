@@ -125,6 +125,7 @@ flowchart LR
 	end
 
 	subgraph Rendering Path
+		direction TB
 		legacy["Classic 8-bit renderers<br/>(artRender, tiles, obj, UI)"]
 		showRect["_GNW95_ShowRect / gnw_refresh<br/>mark dirty rects"]
 		dirtyQueue["Virtual screen dirty queue<br/>(_screen_buffer)"]
@@ -140,6 +141,7 @@ flowchart LR
 	end
 
 	subgraph Input Path
+		direction TB
 		sdlInput[SDL events]
 		virtCapture["virtual_input.*<br/>(native coords capture)"]
 		mapToVault["displayScalerMapPointToVirtual<br/>(letterbox-aware remap)"]
