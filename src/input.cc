@@ -13,6 +13,7 @@
 #include "kb.h"
 #include "memory.h"
 #include "mouse.h"
+#include "render_commands.h"
 #include "render_trace.h"
 #include "svga.h"
 #include "text_font.h"
@@ -224,6 +225,10 @@ void enqueueInputEvent(int a1)
     }
 
     if (renderTraceHandleHotkey(a1)) {
+        return;
+    }
+
+    if (renderCommandsHandleHotkey(a1)) {
         return;
     }
 

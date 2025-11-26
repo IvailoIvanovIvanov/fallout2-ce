@@ -104,6 +104,8 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 ## Stage 6 – Command the Phantom Display
 - [ ] **S6.1** Wrangle every draw call into a command bus.
 	- Wrap tiles, critters, UI, and particle oddities behind a single dispatcher that records `fid`, depth, palette ops, and target rects before the pixels ever hit `_screen_buffer`. If anything bypasses the bus, log it under `SCALER command_miss` so the Overseer can smack it back in line. Alternate twist: prototype with tiles first if you want a safer pilot mission.
+	- ✅ Tiles and roofs already report `RenderCommandOp::TileBlit/RoofBlit`, stash iso coordinates + lighting metadata, and scream `SCALER command_miss path=tile_memmove` whenever the scroll code cheats with a bare `memmove`.
+	- 🔧 Flip `system.render_command_trace=1` and mash **Ctrl+F9** to dump the most recent frame into `log/render_commands_frame_*.json` for forensic spelunking. Each entry carries seq numbers, flags, palette ids, and iso coords so future stages can replay them without guessing.
 - [ ] **S6.2** Serialize the stream and prove we can replay it.
 	- Store per-frame command packets (think: op code + stable asset handle) and build a replay harness that can paint them back into a mock buffer. Compare the mock buffer against the real virtual surface to confirm ordering, masking, and lighting survived the teleport.
 - [ ] **S6.3** Forge the Asset Registry & HD stash.

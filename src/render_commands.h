@@ -69,6 +69,8 @@ void renderCommandsBeforePresent();
 bool renderCommandCaptureEnabled();
 const RenderCommandStats& renderCommandGetStats();
 void renderCommandEmitTileBlit(RenderCommandOp op, const RenderCommandTileBlitPayload& payload);
+bool renderCommandsDumpLastFrame(const char* reason);
+bool renderCommandsHandleHotkey(int keyCode);
 
 } // namespace fallout
 
