@@ -109,7 +109,7 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 - [x] **S6.2** Serialize the stream and prove we can replay it.
 	- The recorder now emits a binary `RCMD` packet every frame (magic header + version + command payloads). Each tile op carries tile indices, palette ids, iso coords, and the exact source rect offsets so the Overseer can resurrect the blit without touching live engine state.
 	- Flip `system.render_command_replay=1` (on top of `render_command_trace`) to trigger an auto-replay harness. It rebuilds the frame from the serialized stream in a scratch buffer, compares it against the real virtual surface, and logs `SCALER command_replay…` stats (coverage, mismatch counts, command failures) every present.
-	- Limitations are flagged loudly: per-pixel lighting still gets marked as unsupported and excluded from coverage so we know exactly which wasteland corners still need a smarter shader rewrite.
+	- Per-pixel-lit tiles now capture all 10 vertex intensities, letting the replay harness rebuild the gradient before comparing against the virtual screen. Diagnostics still warn if a command arrives without the metadata so we can sniff out buggy emitters early.
 - [ ] **S6.3** Forge the Asset Registry & HD stash.
 	- Map every legacy FRM pointer to a deterministic asset ID, then hang HD metadata, availability flags, and conversion status off that ID. When no HD art exists, spin up a worker to upscale/true-color the legacy frame and drop it into the cache so the command bus always resolves to something sane.
 - [ ] **S6.4** Build the real-display orchestrator.

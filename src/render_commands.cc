@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "art.h"
+#include "color.h"
 #include "display_scaler.h"
 #include "diagnostics.h"
 #include "kb.h"
@@ -21,8 +22,84 @@ namespace {
 constexpr size_t kRenderCommandTileCapacity = 4096;
 constexpr int kRenderCommandsDumpHotkey = KEY_CTRL_F9;
 constexpr uint32_t kRenderCommandSerializedMagic = 'RCMD';
-constexpr uint16_t kRenderCommandSerializedVersion = 1;
+constexpr uint16_t kRenderCommandSerializedVersion = 2;
 constexpr int kReplayLightingStep = 512;
+constexpr int kTileIntensityMapStride = 80;
+constexpr int kTileIntensityMapRows = 41;
+constexpr int kTileIntensityMapSize = kTileIntensityMapStride * kTileIntensityMapRows;
+constexpr int kTileIntensityMapBaseOffset = 160;
+
+struct TileLightingRowEntry {
+    int offset;
+    int length;
+};
+
+struct TileLightingTriangle {
+    uint8_t a;
+    uint8_t b;
+    uint8_t c;
+};
+
+constexpr std::array<int, kRenderCommandMaxLightingVertices> kTileLightingVertexOffsets = {
+    16,
+    48,
+    960,
+    992,
+    1024,
+    1936,
+    1968,
+    2000,
+    2912,
+    2944,
+};
+
+constexpr std::array<TileLightingTriangle, 5> kRightSideUpTriangles = {
+    TileLightingTriangle { 2, 3, 0 },
+    TileLightingTriangle { 3, 4, 1 },
+    TileLightingTriangle { 5, 6, 3 },
+    TileLightingTriangle { 6, 7, 4 },
+    TileLightingTriangle { 8, 9, 6 },
+};
+
+constexpr std::array<TileLightingTriangle, 5> kUpsideDownTriangles = {
+    TileLightingTriangle { 0, 3, 1 },
+    TileLightingTriangle { 2, 5, 3 },
+    TileLightingTriangle { 3, 6, 4 },
+    TileLightingTriangle { 5, 8, 6 },
+    TileLightingTriangle { 6, 9, 7 },
+};
+
+constexpr std::array<TileLightingRowEntry, 13> kRightSideUpRowTable = {
+    TileLightingRowEntry { -1, 2 },
+    TileLightingRowEntry { 78, 2 },
+    TileLightingRowEntry { 76, 6 },
+    TileLightingRowEntry { 73, 8 },
+    TileLightingRowEntry { 71, 10 },
+    TileLightingRowEntry { 68, 14 },
+    TileLightingRowEntry { 65, 16 },
+    TileLightingRowEntry { 63, 18 },
+    TileLightingRowEntry { 61, 20 },
+    TileLightingRowEntry { 58, 24 },
+    TileLightingRowEntry { 55, 26 },
+    TileLightingRowEntry { 53, 28 },
+    TileLightingRowEntry { 50, 32 },
+};
+
+constexpr std::array<TileLightingRowEntry, 13> kUpsideDownRowTable = {
+    TileLightingRowEntry { 0, 32 },
+    TileLightingRowEntry { 48, 32 },
+    TileLightingRowEntry { 49, 30 },
+    TileLightingRowEntry { 52, 26 },
+    TileLightingRowEntry { 55, 24 },
+    TileLightingRowEntry { 57, 22 },
+    TileLightingRowEntry { 60, 18 },
+    TileLightingRowEntry { 63, 16 },
+    TileLightingRowEntry { 65, 14 },
+    TileLightingRowEntry { 67, 12 },
+    TileLightingRowEntry { 70, 8 },
+    TileLightingRowEntry { 73, 6 },
+    TileLightingRowEntry { 75, 4 },
+};
 
 std::array<RenderCommandTileBlit, kRenderCommandTileCapacity> gTileCommands;
 size_t gTileCommandCount = 0;
@@ -87,6 +164,26 @@ bool renderCommandsReplayTileCommand(const RenderCommandTileBlit& command, unsig
 void renderCommandsReplayMarkCoverage(const Rect& rect);
 bool renderCommandsClampRectToReference(Rect* rect);
 void renderCommandsReplayLogStats();
+bool renderCommandsReplayTileCommandFlat(const RenderCommandTileBlit& command,
+    const Rect& destRect,
+    unsigned char* dest,
+    int destPitch,
+    unsigned char* frameData,
+    int frameWidth,
+    int frameHeight);
+bool renderCommandsReplayTileCommandPerPixel(const RenderCommandTileBlit& command,
+    const Rect& destRect,
+    unsigned char* dest,
+    int destPitch,
+    unsigned char* frameData,
+    int frameWidth,
+    int frameHeight);
+bool renderCommandsBuildPerPixelIntensityMap(const RenderCommandTileBlitPayload& payload,
+    std::array<int, kTileIntensityMapSize>& out);
+void renderCommandsFillRightSideUpTriangles(const std::array<int32_t, kRenderCommandMaxLightingVertices>& intensities,
+    std::array<int, kTileIntensityMapSize>& mapBuffer);
+void renderCommandsFillUpsideDownTriangles(const std::array<int32_t, kRenderCommandMaxLightingVertices>& intensities,
+    std::array<int, kTileIntensityMapSize>& mapBuffer);
 
 void renderCommandsResetFrameCaches()
 {
@@ -198,6 +295,8 @@ void renderCommandEmitTileBlit(RenderCommandOp op, const RenderCommandTileBlitPa
     }
 }
 
+namespace {
+
 void renderCommandsCaptureReferenceFrame()
 {
     if (!windowIsVirtualScreenEnabled()) {
@@ -304,6 +403,11 @@ void renderCommandsSerializeLastFrame()
         appendInt16(cmd.payload.sourceOffsetY);
         appendUint16(cmd.payload.sourceWidth);
         appendUint16(cmd.payload.sourceHeight);
+        appendUint8(gLastFrameSerialized, cmd.payload.perPixelLightingCount);
+        appendUint8(gLastFrameSerialized, 0);
+        for (size_t i = 0; i < kRenderCommandMaxLightingVertices; i++) {
+            appendInt32(cmd.payload.perPixelLighting[i]);
+        }
     }
 }
 
@@ -394,9 +498,15 @@ bool renderCommandsDecodeSerializedFrame(const std::vector<uint8_t>& buffer, std
         return false;
     }
 
-    if (!readUint16(version) || version != kRenderCommandSerializedVersion) {
+    if (!readUint16(version)) {
         return false;
     }
+
+    if (version == 0 || version > kRenderCommandSerializedVersion) {
+        return false;
+    }
+
+    const bool hasPerPixelPayload = version >= 2;
 
     if (!readUint16(frameIndex) || !readUint16(commandCount) || !readUint32(queued) || !readUint32(dropped)) {
         return false;
@@ -449,6 +559,23 @@ bool renderCommandsDecodeSerializedFrame(const std::vector<uint8_t>& buffer, std
 
         if (!readUint16(cmd.payload.sourceWidth) || !readUint16(cmd.payload.sourceHeight)) {
             return false;
+        }
+
+        if (hasPerPixelPayload) {
+            uint8_t perPixelCount = 0;
+            uint8_t perPixelReserved = 0;
+            if (!readUint8(perPixelCount) || !readUint8(perPixelReserved)) {
+                return false;
+            }
+            cmd.payload.perPixelLightingCount = perPixelCount;
+            for (size_t vertex = 0; vertex < kRenderCommandMaxLightingVertices; vertex++) {
+                if (!readInt32(cmd.payload.perPixelLighting[vertex])) {
+                    return false;
+                }
+            }
+        } else {
+            cmd.payload.perPixelLightingCount = 0;
+            cmd.payload.perPixelLighting.fill(0);
         }
 
         out.push_back(cmd);
@@ -512,10 +639,6 @@ bool renderCommandsReplayTileCommand(const RenderCommandTileBlit& command, unsig
         return false;
     }
 
-    if ((command.payload.flags & RenderCommandFlag_LightingPerPixel) != 0) {
-        return false;
-    }
-
     Rect destRect = command.payload.screenRect;
     if (!renderCommandsClampRectToReference(&destRect)) {
         return false;
@@ -535,25 +658,39 @@ bool renderCommandsReplayTileCommand(const RenderCommandTileBlit& command, unsig
         return false;
     }
 
+
+    bool success = false;
+    if ((command.payload.flags & RenderCommandFlag_LightingPerPixel) != 0) {
+        success = renderCommandsReplayTileCommandPerPixel(command, destRect, dest, destPitch, frameData, frameWidth, frameHeight);
+    } else {
+        success = renderCommandsReplayTileCommandFlat(command, destRect, dest, destPitch, frameData, frameWidth, frameHeight);
+    }
+
+    artUnlock(cacheEntry);
+    return success;
+}
+
+bool renderCommandsReplayTileCommandFlat(const RenderCommandTileBlit& command,
+    const Rect& destRect,
+    unsigned char* dest,
+    int destPitch,
+    unsigned char* frameData,
+    int frameWidth,
+    int frameHeight)
+{
     const int srcOffsetX = std::clamp(static_cast<int>(command.payload.sourceOffsetX), 0, frameWidth - 1);
     const int srcOffsetY = std::clamp(static_cast<int>(command.payload.sourceOffsetY), 0, frameHeight - 1);
     const int srcWidth = std::min(static_cast<int>(command.payload.sourceWidth), frameWidth - srcOffsetX);
     const int srcHeight = std::min(static_cast<int>(command.payload.sourceHeight), frameHeight - srcOffsetY);
 
     if (srcWidth <= 0 || srcHeight <= 0) {
-        artUnlock(cacheEntry);
         return false;
     }
 
     unsigned char* src = frameData + srcOffsetY * frameWidth + srcOffsetX;
 
     int lightingIndex = command.payload.lighting >= 0 ? command.payload.lighting : 0;
-    if (lightingIndex < 0) {
-        lightingIndex = 0;
-    }
-    if (lightingIndex > 255) {
-        lightingIndex = 255;
-    }
+    lightingIndex = std::clamp(lightingIndex, 0, 255);
 
     const int lightingValue = lightingIndex * kReplayLightingStep;
 
@@ -567,8 +704,202 @@ bool renderCommandsReplayTileCommand(const RenderCommandTileBlit& command, unsig
         destPitch,
         lightingValue);
 
-    artUnlock(cacheEntry);
     return true;
+}
+
+bool renderCommandsReplayTileCommandPerPixel(const RenderCommandTileBlit& command,
+    const Rect& destRect,
+    unsigned char* dest,
+    int destPitch,
+    unsigned char* frameData,
+    int frameWidth,
+    int frameHeight)
+{
+    if (command.payload.perPixelLightingCount < kRenderCommandMaxLightingVertices) {
+        return false;
+    }
+
+    const int srcOffsetX = std::clamp(static_cast<int>(command.payload.sourceOffsetX), 0, frameWidth - 1);
+    const int srcOffsetY = std::clamp(static_cast<int>(command.payload.sourceOffsetY), 0, frameHeight - 1);
+    const int srcWidth = std::min(static_cast<int>(command.payload.sourceWidth), frameWidth - srcOffsetX);
+    const int srcHeight = std::min(static_cast<int>(command.payload.sourceHeight), frameHeight - srcOffsetY);
+
+    if (srcWidth <= 0 || srcHeight <= 0) {
+        return false;
+    }
+
+    const int destWidth = destRect.right - destRect.left + 1;
+    const int destHeight = destRect.bottom - destRect.top + 1;
+    const int blitWidth = std::min(destWidth, srcWidth);
+    const int blitHeight = std::min(destHeight, srcHeight);
+    if (blitWidth <= 0 || blitHeight <= 0) {
+        return false;
+    }
+    if (destWidth <= 0 || destHeight <= 0) {
+        return false;
+    }
+
+    std::array<int, kTileIntensityMapSize> intensityMap {};
+    if (!renderCommandsBuildPerPixelIntensityMap(command.payload, intensityMap)) {
+        return false;
+    }
+
+    const int intensityStartIndex = kTileIntensityMapBaseOffset + kTileIntensityMapStride * srcOffsetY + srcOffsetX;
+    const int intensityMaxIndex = intensityStartIndex + kTileIntensityMapStride * (srcHeight - 1) + (srcWidth - 1);
+    if (intensityStartIndex < 0 || intensityMaxIndex >= kTileIntensityMapSize) {
+        return false;
+    }
+
+    unsigned char* srcRow = frameData + srcOffsetY * frameWidth + srcOffsetX;
+    unsigned char* destRow = dest + destPitch * destRect.top + destRect.left;
+    int* intensityRow = intensityMap.data() + intensityStartIndex;
+
+    const int srcRowAdvance = frameWidth - blitWidth;
+    const int destRowAdvance = destPitch - blitWidth;
+    const int intensityRowAdvance = kTileIntensityMapStride - blitWidth;
+
+    for (int row = 0; row < blitHeight; row++) {
+        for (int col = 0; col < blitWidth; col++) {
+            unsigned char paletteIndex = *srcRow++;
+            if (paletteIndex != 0) {
+                int intensityIndex = std::clamp(*intensityRow >> 9, 0, 255);
+                *destRow = intensityColorTable[paletteIndex][intensityIndex];
+            }
+            intensityRow++;
+            destRow++;
+        }
+
+        srcRow += srcRowAdvance;
+        destRow += destRowAdvance;
+        intensityRow += intensityRowAdvance;
+    }
+
+    return true;
+}
+
+bool renderCommandsBuildPerPixelIntensityMap(const RenderCommandTileBlitPayload& payload,
+    std::array<int, kTileIntensityMapSize>& out)
+{
+    if (payload.perPixelLightingCount < kRenderCommandMaxLightingVertices) {
+        return false;
+    }
+
+    out.fill(0);
+
+    std::array<int32_t, kRenderCommandMaxLightingVertices> intensities {};
+    for (size_t i = 0; i < kRenderCommandMaxLightingVertices; i++) {
+        intensities[i] = payload.perPixelLighting[i];
+    }
+
+    renderCommandsFillRightSideUpTriangles(intensities, out);
+    renderCommandsFillUpsideDownTriangles(intensities, out);
+    return true;
+}
+
+void renderCommandsFillRightSideUpTriangles(const std::array<int32_t, kRenderCommandMaxLightingVertices>& intensities,
+    std::array<int, kTileIntensityMapSize>& mapBuffer)
+{
+    for (const auto& triangle : kRightSideUpTriangles) {
+        int v32 = intensities[triangle.c];
+        int v33 = kTileLightingVertexOffsets[triangle.c];
+        int v34 = intensities[triangle.b] - intensities[triangle.a];
+        int v35 = v34 / 32;
+        int v36 = (intensities[triangle.a] - v32) / 13;
+        int* cursor = mapBuffer.data() + v33;
+
+        if (v35 != 0) {
+            if (v36 != 0) {
+                for (const auto& row : kRightSideUpRowTable) {
+                    int current = v32;
+                    cursor += row.offset;
+                    for (int j = 0; j < row.length; j++) {
+                        *cursor++ = current;
+                        current += v35;
+                    }
+                    v32 += v36;
+                }
+            } else {
+                for (const auto& row : kRightSideUpRowTable) {
+                    int current = v32;
+                    cursor += row.offset;
+                    for (int j = 0; j < row.length; j++) {
+                        *cursor++ = current;
+                        current += v35;
+                    }
+                }
+            }
+        } else {
+            if (v36 != 0) {
+                for (const auto& row : kRightSideUpRowTable) {
+                    cursor += row.offset;
+                    for (int j = 0; j < row.length; j++) {
+                        *cursor++ = v32;
+                    }
+                    v32 += v36;
+                }
+            } else {
+                for (const auto& row : kRightSideUpRowTable) {
+                    cursor += row.offset;
+                    for (int j = 0; j < row.length; j++) {
+                        *cursor++ = v32;
+                    }
+                }
+            }
+        }
+    }
+}
+
+void renderCommandsFillUpsideDownTriangles(const std::array<int32_t, kRenderCommandMaxLightingVertices>& intensities,
+    std::array<int, kTileIntensityMapSize>& mapBuffer)
+{
+    for (const auto& triangle : kUpsideDownTriangles) {
+        int v50 = intensities[triangle.a];
+        int v51 = kTileLightingVertexOffsets[triangle.a];
+        int v52 = intensities[triangle.c] - v50;
+        int v53 = v52 / 32;
+        int v54 = (intensities[triangle.b] - v50) / 13;
+        int* cursor = mapBuffer.data() + v51;
+
+        if (v53 != 0) {
+            if (v54 != 0) {
+                for (const auto& row : kUpsideDownRowTable) {
+                    int current = v50;
+                    cursor += row.offset;
+                    for (int j = 0; j < row.length; j++) {
+                        *cursor++ = current;
+                        current += v53;
+                    }
+                    v50 += v54;
+                }
+            } else {
+                for (const auto& row : kUpsideDownRowTable) {
+                    int current = v50;
+                    cursor += row.offset;
+                    for (int j = 0; j < row.length; j++) {
+                        *cursor++ = current;
+                        current += v53;
+                    }
+                }
+            }
+        } else {
+            if (v54 != 0) {
+                for (const auto& row : kUpsideDownRowTable) {
+                    cursor += row.offset;
+                    for (int j = 0; j < row.length; j++) {
+                        *cursor++ = v50;
+                    }
+                    v50 += v54;
+                }
+            } else {
+                for (const auto& row : kUpsideDownRowTable) {
+                    cursor += row.offset;
+                    for (int j = 0; j < row.length; j++) {
+                        *cursor++ = v50;
+                    }
+                }
+            }
+        }
+    }
 }
 
 void renderCommandsReplayMarkCoverage(const Rect& rect)
@@ -630,6 +961,8 @@ void renderCommandsReplayLogStats()
         coverage);
 }
 
+} // namespace
+
 bool renderCommandsDumpLastFrame(const char* reason)
 {
     renderCommandsEnsureInitialized();
@@ -668,7 +1001,7 @@ bool renderCommandsDumpLastFrame(const char* reason)
         const RenderCommandTileBlit& cmd = gLastFrameCommands[i];
         const Rect& rect = cmd.payload.screenRect;
         std::fprintf(stream,
-            "    {\"seq\":%u,\"op\":%d,\"fid\":%u,\"rect\":[%d,%d,%d,%d],\"flags\":%u,\"lighting\":%d,\"iso\":[%d,%d,%d],\"tile\":%d,\"palette\":%u,\"src\":[%d,%d,%u,%u]}%s\n",
+            "    {\"seq\":%u,\"op\":%d,\"fid\":%u,\"rect\":[%d,%d,%d,%d],\"flags\":%u,\"lighting\":%d,\"iso\":[%d,%d,%d],\"tile\":%d,\"palette\":%u,\"src\":[%d,%d,%u,%u],\"per_pixel\":%u}%s\n",
             cmd.header.sequence,
             static_cast<int>(cmd.op),
             cmd.payload.fid,
@@ -687,6 +1020,7 @@ bool renderCommandsDumpLastFrame(const char* reason)
             cmd.payload.sourceOffsetY,
             cmd.payload.sourceWidth,
             cmd.payload.sourceHeight,
+            cmd.payload.perPixelLightingCount,
             i + 1 < gLastFrameCommands.size() ? "," : "");
     }
 

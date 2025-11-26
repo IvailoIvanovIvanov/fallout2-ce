@@ -383,6 +383,12 @@ static void tileEmitRenderCommand(RenderCommandOp op,
     payload.sourceOffsetY = sourceOffsetY;
     payload.sourceWidth = sourceWidth;
     payload.sourceHeight = sourceHeight;
+    if ((extraFlags & RenderCommandFlag_LightingPerPixel) != 0) {
+        payload.perPixelLightingCount = static_cast<uint8_t>(kRenderCommandMaxLightingVertices);
+        for (size_t i = 0; i < kRenderCommandMaxLightingVertices; i++) {
+            payload.perPixelLighting[i] = _verticies[i].intensity;
+        }
+    }
     if (tileIndex >= 0) {
         payload.isoTileX = static_cast<int16_t>(tileIndex % gHexGridWidth);
         payload.isoTileY = static_cast<int16_t>(tileIndex / gHexGridWidth);

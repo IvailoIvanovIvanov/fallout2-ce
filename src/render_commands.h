@@ -1,6 +1,7 @@
 #ifndef FALLOUT_RENDER_COMMANDS_H_
 #define FALLOUT_RENDER_COMMANDS_H_
 
+#include <array>
 #include <cstdint>
 
 #include "geometry.h"
@@ -33,6 +34,8 @@ struct RenderAssetHandle {
     uint8_t variant = 0;
 };
 
+constexpr size_t kRenderCommandMaxLightingVertices = 10;
+
 struct RenderCommandHeader {
     uint32_t sequence = 0;
     uint16_t frameIndex = 0;
@@ -55,6 +58,8 @@ struct RenderCommandTileBlitPayload {
     int16_t sourceOffsetY = 0;
     uint16_t sourceWidth = 0;
     uint16_t sourceHeight = 0;
+    uint8_t perPixelLightingCount = 0;
+    std::array<int32_t, kRenderCommandMaxLightingVertices> perPixelLighting = {};
 };
 
 struct RenderCommandTileBlit {
