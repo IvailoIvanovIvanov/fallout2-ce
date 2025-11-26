@@ -129,6 +129,10 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 	- Every present now spits out a `SCALER command_frame …` digest (command count, queue stats, replay coverage, mismatch tallies, and whether the Neon Dispatcher is flirting with a fallback). Pair it with the existing `SCALER orchestrator …` line to see HD hits vs. fallback ops without spelunking dumps.
 	- `system.render_command_direct_blit_fallback=1` arms an auto-eject lever: if the queue overflows or the replay harness screams, we log `SCALER command_fallback …` and drop straight back to legacy blits so QA keeps their pixels. Flip it to `0` when you want the dispatcher to keep running even while it’s on fire.
 	- Modder hooks are officially canon: register UHD sheets via `renderAssetRegistryTrackFrame` + `renderAssetRegistryAttachHdView`, peel them back with `renderAssetRegistryDetachHdView`, and inspect availability through `renderAssetRegistryGetHdView/GetState`. No more deciphering the Overseer’s notebook just to hot-swap art packs.
+- [ ] **S6.7** Stretch past 1:1 shackles.
+	- Let oversized PNGs advertise arbitrary scale ratios (2×, 4×, weird modder math) by teaching the asset registry + `HdTrueColorFrameView` to store precise UV spans instead of assuming perfect integer multiples. That keeps tile/object math honest even when the sheet adds padding or oddball margins.
+	- Promote the orchestrator blitters to sample straight from that metadata: map logical quads to HD texel rectangles, blend when the viewport scale is smaller, and feed the physical overlay with proper super-sampled pixels instead of the current “pick one texel and hope” plan.
+	- Wire up QA breadcrumbs everywhere (`SCALER orchestrator detail_clamped=1`, `command_frame hd_scale_max=4` etc.) so we can prove when the window size is the bottleneck and when the asset really shipped in potato mode. Toss in a sanity tool that dumps asset/scale mismatches for pack authors.
 
 ### S6.1 Command Schema (Tiles First)
 

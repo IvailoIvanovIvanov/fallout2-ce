@@ -244,7 +244,10 @@ bool blitToPhysicalOverlay(const TileOverlayTarget& target,
 bool processTileCommand(const RenderCommandTileBlit& command,
     const TileOverlayTarget& target,
     uint64_t& logicalPixelsDrawn,
-    bool& usedFallback)
+    bool& usedFallback,
+    double viewportScale,
+    bool& detailClamped,
+    int& maxHdScale)
 {
     if (command.op != RenderCommandOp::TileBlit && command.op != RenderCommandOp::RoofBlit) {
         return false;
@@ -272,6 +275,11 @@ bool processTileCommand(const RenderCommandTileBlit& command,
 
     if (view.pixels == nullptr || view.logicalWidth <= 0 || view.logicalHeight <= 0) {
         return false;
+    }
+
+    maxHdScale = std::max(maxHdScale, view.scaleX);
+    if (viewportScale > 0.0 && static_cast<double>(view.scaleX) > viewportScale + 0.01) {
+        detailClamped = true;
     }
 
     const int frameWidth = view.logicalWidth;
@@ -422,6 +430,9 @@ void renderDisplayOrchestratorProcess()
         return;
     }
 
+    const DisplayScalerScaleTable& scaleTable = displayScalerGetScaleTable();
+    const double viewportScale = scaleTable.valid ? scaleTable.scale : displayScalerGetScale();
+
     if (sPendingFullClear || sBlackoutActive) {
         windowClearTrueColorRegion(target.windowId, 0, 0, windowWidth, windowHeight);
         sPendingFullClear = false;
@@ -444,11 +455,13 @@ void renderDisplayOrchestratorProcess()
     uint64_t logicalPixelsDrawn = 0;
     uint32_t hdCommands = 0;
     uint32_t fallbackCommands = 0;
+    bool detailClamped = false;
+    int maxHdScale = 1;
 
     for (size_t index = 0; index < bufferView.count; index++) {
         const RenderCommandTileBlit& command = bufferView.commands[index];
         bool usedFallback = false;
-        if (processTileCommand(command, target, logicalPixelsDrawn, usedFallback)) {
+        if (processTileCommand(command, target, logicalPixelsDrawn, usedFallback, viewportScale, detailClamped, maxHdScale)) {
             if (usedFallback) {
                 fallbackCommands++;
             } else {
@@ -460,12 +473,15 @@ void renderDisplayOrchestratorProcess()
     if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
         diagnosticsLog(DiagnosticsLevel::Trace,
             "SCALER",
-            "orchestrator frame=%u commands=%zu hd=%u fallback=%u logical_px=%llu",
+            "orchestrator frame=%u commands=%zu hd=%u fallback=%u logical_px=%llu physical_scale=%.2f detail_clamped=%d hd_scale_max=%d",
             bufferView.frameIndex,
             bufferView.count,
             hdCommands,
             fallbackCommands,
-            static_cast<unsigned long long>(logicalPixelsDrawn));
+            static_cast<unsigned long long>(logicalPixelsDrawn),
+            viewportScale,
+            detailClamped ? 1 : 0,
+            maxHdScale);
     }
 }
 
