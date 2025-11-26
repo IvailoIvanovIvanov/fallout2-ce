@@ -110,3 +110,60 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 	- **TODO:** extend this roadmap with a “Modder Addendum” once the asset loader stabilizes.
 
 *Check off each task as we conquer it—leave witty notes if a deathclaw was involved.*
+
+## Vault Wiring Diagram
+
+When the Overseer inevitably asks “who talks to whom,” slide this schematic across the planning table. It shows the full render/input pipeline, the HD overlay branches, and the main places we watch for glitches like the full-res toggle drifting or the virtual buffer getting zeroed.
+
+```mermaid
+flowchart LR
+	subgraph Config & Boot
+		cfg["fallout2.cfg / fallout2-ce.ini flags<br/>(system.virtual_adapter, virtual_adapter_fullres, diagnostics)"]
+		settings[settings.cc -> Settings struct]
+		windowInit["windowManagerInit<br/>(gVirtualScreenEnabled, overlay alloc)"]
+		cfg --> settings --> windowInit
+	end
+
+	subgraph Rendering Path
+		legacy["Classic 8-bit renderers<br/>(artRender, tiles, obj, UI)"]
+		showRect["_GNW95_ShowRect / gnw_refresh<br/>mark dirty rects"]
+		dirtyQueue["Virtual screen dirty queue<br/>(_screen_buffer)"]
+		overlays["True-color overlay system<br/>(logical + physical buffers, masks)"]
+		scaler["display_scaler.cc<br/>(logical↔physical span tables, viewport, letterbox)"]
+		presenter["svga.cc presenter<br/>(SDL texture surface, full-res switch, letterbox blits)"]
+		gpu["SDL / OS window<br/>(actual framebuffer)"]
+		hdRegistry[HD asset registry + cache stats]
+		legacy --> showRect --> dirtyQueue
+		hdRegistry --> overlays
+		overlays --> dirtyQueue
+		dirtyQueue -->|windowPresentVirtualScreen| scaler --> presenter --> gpu
+	end
+
+	subgraph Input Path
+		sdlInput[SDL events]
+		virtCapture["virtual_input.*<br/>(native coords capture)"]
+		mapToVault["displayScalerMapPointToVirtual<br/>(letterbox-aware remap)"]
+		gameMouse[game_mouse/input consumers]
+		sdlInput --> virtCapture --> mapToVault --> gameMouse
+	end
+
+	subgraph Diagnostics & Controls
+		diagVA["VA_TRACE channel<br/>(show_rect, present_dirty, present_map)"]
+		diagScaler["SCALER channel<br/>(scale stats, hd_overlay counts)"]
+		diagRenderer[RENDERER / WINDOW / RENDERTRACE logs]
+		hdWatermark[HD missing watermark + fallback toggles]
+	end
+
+	windowInit -.enables/gates.-> legacy
+	windowInit -.allocates.-> overlays
+	presenter -.emits stats.-> diagScaler
+	dirtyQueue -.mirrors-.-> diagVA
+	overlays -.reports-.-> hdWatermark
+	hdRegistry -.hit/miss logs-.-> diagScaler
+	virtCapture -.feeds-.-> diagRenderer
+
+	issueZero["Potential risk: buffer zeroed while no full refresh<br/>(symptom: banding/solid rectangles)"]
+	issueFullRes["Potential risk: virtual_adapter_fullres drift<br/>(symptom: presenter still in fullres when flag says off)"]
+	dirtyQueue --> issueZero
+	presenter --> issueFullRes
+```
