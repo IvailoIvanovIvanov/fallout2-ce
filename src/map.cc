@@ -17,6 +17,7 @@
 #include "critter.h"
 #include "cycle.h"
 #include "debug.h"
+#include "diagnostics.h"
 #include "display_scaler.h"
 #include "draw.h"
 #include "elevator.h"
