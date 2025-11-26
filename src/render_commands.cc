@@ -118,6 +118,9 @@ std::vector<uint8_t> gReplayCoverageMask;
 std::vector<RenderCommandTileBlit> gDecodedCommands;
 std::array<RenderViewportEvent, kRenderViewportEventCapacity> gViewportEvents;
 size_t gViewportEventCount = 0;
+constexpr size_t kRenderCommandFallbackReasonMax = 64;
+bool gRenderCommandDirectBlitFallbackActive = false;
+char gRenderCommandDirectBlitFallbackReason[kRenderCommandFallbackReasonMax] = "none";
 
 struct RenderCommandReplayStats {
     bool ran = false;
@@ -155,6 +158,7 @@ void renderCommandsLogStatsIfNeeded()
 }
 
 void renderCommandsResetFrameCaches();
+void renderCommandResetFallbackState();
 void renderCommandsCaptureReferenceFrame();
 void renderCommandsSerializeLastFrame();
 void renderCommandsRunReplaySelfTest();
@@ -182,6 +186,8 @@ void renderCommandsFillRightSideUpTriangles(const std::array<int32_t, kRenderCom
     std::array<int, kRenderCommandTileIntensityMapSize>& mapBuffer);
 void renderCommandsFillUpsideDownTriangles(const std::array<int32_t, kRenderCommandMaxLightingVertices>& intensities,
     std::array<int, kRenderCommandTileIntensityMapSize>& mapBuffer);
+void renderCommandsLogFrameDigest();
+void renderCommandsEvaluateAutoFallback();
 
 void renderCommandsResetFrameCaches()
 {
@@ -193,6 +199,15 @@ void renderCommandsResetFrameCaches()
     gLastFrameReferenceWidth = 0;
     gLastFrameReferenceHeight = 0;
     gReplayStats = {};
+}
+
+void renderCommandResetFallbackState()
+{
+    gRenderCommandDirectBlitFallbackActive = false;
+    std::snprintf(gRenderCommandDirectBlitFallbackReason,
+        sizeof(gRenderCommandDirectBlitFallbackReason),
+        "%s",
+        "none");
 }
 
 } // namespace
@@ -229,11 +244,20 @@ void renderCommandsInit()
     gRenderCommandDumpCounter = 0;
     gViewportEventCount = 0;
     renderCommandsResetFrameCaches();
+    renderCommandResetFallbackState();
 }
 
 bool renderCommandCaptureEnabled()
 {
-    return settings.system.render_command_trace || settings.system.render_display_orchestrator;
+    if (settings.system.render_command_trace) {
+        return true;
+    }
+
+    if (renderCommandDirectBlitFallbackActive()) {
+        return false;
+    }
+
+    return settings.system.render_display_orchestrator;
 }
 
 const RenderCommandStats& renderCommandGetStats()
@@ -283,6 +307,8 @@ void renderCommandsBeforePresent()
 
     renderCommandsSerializeLastFrame();
     renderCommandsRunReplaySelfTest();
+    renderCommandsLogFrameDigest();
+    renderCommandsEvaluateAutoFallback();
 
     gRenderCommandFrameIndex++;
     gTileCommandCount = 0;
@@ -1030,6 +1056,69 @@ void renderCommandsReplayLogStats()
         coverage);
 }
 
+void renderCommandsLogFrameDigest()
+{
+    if (!renderCommandCaptureEnabled()) {
+        return;
+    }
+
+    if (!diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        return;
+    }
+
+    const bool replayEnabled = settings.system.render_command_replay;
+    const bool replayRan = gReplayStats.ran;
+    const bool replayMatched = gReplayStats.matched;
+    const double compared = static_cast<double>(gReplayStats.comparedPixels);
+    const double totalCompared = gReplayStats.comparedPixels + gReplayStats.ignoredPixels;
+    const double coverage = totalCompared > 0 ? (compared / totalCompared) * 100.0 : 0.0;
+
+    diagnosticsLog(DiagnosticsLevel::Trace,
+        "SCALER",
+        "command_frame frame=%u commands=%zu queued=%u dropped=%u replay_enabled=%d replay_ran=%d replay_matched=%d replay_failed=%u replay_mismatched=%u compared_px=%u coverage=%.2f%% fallback_active=%d reason=%s",
+        gRenderCommandFrameIndex,
+        gTileCommandCount,
+        gRenderCommandStats.queued,
+        gRenderCommandStats.dropped,
+        replayEnabled ? 1 : 0,
+        replayRan ? 1 : 0,
+        replayMatched ? 1 : 0,
+        gReplayStats.commandsFailed,
+        gReplayStats.mismatchedPixels,
+        gReplayStats.comparedPixels,
+        coverage,
+        gRenderCommandDirectBlitFallbackActive ? 1 : 0,
+        gRenderCommandDirectBlitFallbackActive ? gRenderCommandDirectBlitFallbackReason : "none");
+}
+
+void renderCommandsEvaluateAutoFallback()
+{
+    if (!settings.system.render_display_orchestrator) {
+        return;
+    }
+
+    if (!settings.system.virtual_adapter || !settings.system.virtual_adapter_fullres) {
+        return;
+    }
+
+    if (gRenderCommandDirectBlitFallbackActive) {
+        return;
+    }
+
+    if (!settings.system.render_command_direct_blit_fallback) {
+        return;
+    }
+
+    if (gLastFrameStats.dropped > 0) {
+        renderCommandTriggerDirectBlitFallback("command_queue_overflow");
+        return;
+    }
+
+    if (settings.system.render_command_replay && gReplayStats.ran && !gReplayStats.matched) {
+        renderCommandTriggerDirectBlitFallback("command_replay_mismatch");
+    }
+}
+
 } // namespace
 
 bool renderCommandsDumpLastFrame(const char* reason)
@@ -1129,6 +1218,47 @@ bool renderCommandsHandleHotkey(int keyCode)
     }
 
     return true;
+}
+
+bool renderCommandDirectBlitFallbackActive()
+{
+    return gRenderCommandDirectBlitFallbackActive;
+}
+
+const char* renderCommandDirectBlitFallbackReason()
+{
+    return gRenderCommandDirectBlitFallbackReason;
+}
+
+void renderCommandTriggerDirectBlitFallback(const char* reason)
+{
+    if (gRenderCommandDirectBlitFallbackActive) {
+        return;
+    }
+
+    if (!settings.system.render_command_direct_blit_fallback) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+            diagnosticsLog(DiagnosticsLevel::Trace,
+                "SCALER",
+                "command_fallback suppressed (config disabled) reason=%s",
+                reason != nullptr ? reason : "unknown");
+        }
+        return;
+    }
+
+    gRenderCommandDirectBlitFallbackActive = true;
+    const char* message = (reason != nullptr && reason[0] != '\0') ? reason : "unknown";
+    std::snprintf(gRenderCommandDirectBlitFallbackReason,
+        sizeof(gRenderCommandDirectBlitFallbackReason),
+        "%s",
+        message);
+
+    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        diagnosticsLog(DiagnosticsLevel::Info,
+            "SCALER",
+            "command_fallback activated reason=%s (direct blits only)",
+            gRenderCommandDirectBlitFallbackReason);
+    }
 }
 
 } // namespace fallout

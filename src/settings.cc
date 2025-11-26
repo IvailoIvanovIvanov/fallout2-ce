@@ -62,6 +62,7 @@ static void settingsFromConfig()
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_RENDER_COMMAND_TRACE_KEY, settings.system.render_command_trace);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_RENDER_COMMAND_REPLAY_KEY, settings.system.render_command_replay);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_RENDER_DISPLAY_ORCHESTRATOR_KEY, settings.system.render_display_orchestrator);
+    settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_RENDER_COMMAND_DIRECT_BLIT_FALLBACK_KEY, settings.system.render_command_direct_blit_fallback);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_USE_HD_ART_KEY, settings.system.use_hd_art);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_HD_ART_PATH_KEY, settings.system.hd_art_path);
 
@@ -146,6 +147,7 @@ static void settingsToConfig()
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_RENDER_COMMAND_TRACE_KEY, settings.system.render_command_trace);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_RENDER_COMMAND_REPLAY_KEY, settings.system.render_command_replay);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_RENDER_DISPLAY_ORCHESTRATOR_KEY, settings.system.render_display_orchestrator);
+    settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_RENDER_COMMAND_DIRECT_BLIT_FALLBACK_KEY, settings.system.render_command_direct_blit_fallback);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_USE_HD_ART_KEY, settings.system.use_hd_art);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_HD_ART_PATH_KEY, settings.system.hd_art_path);
 

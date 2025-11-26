@@ -371,6 +371,10 @@ void handleViewportEvent(const RenderViewportEvent& event)
 
 bool renderDisplayOrchestratorEnabled()
 {
+    if (renderCommandDirectBlitFallbackActive()) {
+        return false;
+    }
+
     return settings.system.render_display_orchestrator && settings.system.virtual_adapter && settings.system.virtual_adapter_fullres;
 }
 

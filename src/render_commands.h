@@ -128,6 +128,9 @@ bool renderCommandsDumpLastFrame(const char* reason);
 bool renderCommandsHandleHotkey(int keyCode);
 bool renderCommandBuildPerPixelIntensityMap(const RenderCommandTileBlitPayload& payload,
     std::array<int, kRenderCommandTileIntensityMapSize>& out);
+bool renderCommandDirectBlitFallbackActive();
+const char* renderCommandDirectBlitFallbackReason();
+void renderCommandTriggerDirectBlitFallback(const char* reason);
 
 } // namespace fallout
 

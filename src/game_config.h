@@ -34,6 +34,7 @@ namespace fallout {
 #define GAME_CONFIG_RENDER_COMMAND_TRACE_KEY "render_command_trace"
 #define GAME_CONFIG_RENDER_COMMAND_REPLAY_KEY "render_command_replay"
 #define GAME_CONFIG_RENDER_DISPLAY_ORCHESTRATOR_KEY "render_display_orchestrator"
+#define GAME_CONFIG_RENDER_COMMAND_DIRECT_BLIT_FALLBACK_KEY "render_command_direct_blit_fallback"
 #define GAME_CONFIG_USE_HD_ART_KEY "use_hd_art"
 #define GAME_CONFIG_HD_ART_PATH_KEY "hd_art_path"
 #define GAME_CONFIG_GAME_DIFFICULTY_KEY "game_difficulty"

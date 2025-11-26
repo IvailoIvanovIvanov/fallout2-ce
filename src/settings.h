@@ -30,6 +30,7 @@ struct SystemSettings {
     bool render_command_trace = false;
     bool render_command_replay = false;
     bool render_display_orchestrator = false;
+    bool render_command_direct_blit_fallback = true;
 };
 
 struct PreferencesSettings {

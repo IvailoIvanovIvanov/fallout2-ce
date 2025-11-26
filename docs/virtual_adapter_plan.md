@@ -125,8 +125,10 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 	- The Neon Dispatcher now listens to a dedicated viewport-event queue inside `render_commands`; every packet carries the virtual dirty-sequence stamp from `windowVirtualScreenGetDirtySequence`, so scrolls, fades, and resizes arrive in lockstep with the tile frame they belong to.
 	- Map scroll memmoves, `_GNW95_zero_vid_mem`, palette fades, and window resizes each fire `ViewportEvent` entries (`Scroll`, `Blackout`, `FadeOut/FadeIn`, `Resize`) with their logical rects and deltas, and the SCALER channel tattles when the vault starts spamming them.
 	- `render_display_orchestrator` consumes those vault events before touching pixels—full clears only happen when the queue says so, blackout/fade events park the HD blitter until a FadeIn lands, and forced-redraw pulses guarantee UHD overlays never desync from the dirty-rect clock again.
-- [ ] **S6.6** Validate, instrument, and expose toggles.
-	- Teach diagnostics to dump command counts, HD hits, fallback usage, and replay divergence stats each frame. Ship a config toggle to fall back to direct blits if the command bus croaks, and document the modder-facing hooks so asset packs can register HD frames without reverse-engineering the Overseer’s notebook.
+- [x] **S6.6** Validate, instrument, and expose toggles.
+	- Every present now spits out a `SCALER command_frame …` digest (command count, queue stats, replay coverage, mismatch tallies, and whether the Neon Dispatcher is flirting with a fallback). Pair it with the existing `SCALER orchestrator …` line to see HD hits vs. fallback ops without spelunking dumps.
+	- `system.render_command_direct_blit_fallback=1` arms an auto-eject lever: if the queue overflows or the replay harness screams, we log `SCALER command_fallback …` and drop straight back to legacy blits so QA keeps their pixels. Flip it to `0` when you want the dispatcher to keep running even while it’s on fire.
+	- Modder hooks are officially canon: register UHD sheets via `renderAssetRegistryTrackFrame` + `renderAssetRegistryAttachHdView`, peel them back with `renderAssetRegistryDetachHdView`, and inspect availability through `renderAssetRegistryGetHdView/GetState`. No more deciphering the Overseer’s notebook just to hot-swap art packs.
 
 ### S6.1 Command Schema (Tiles First)
 
