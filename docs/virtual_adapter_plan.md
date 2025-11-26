@@ -101,12 +101,74 @@ We’re building a virtual 640x480 “vault” so the classic 8-bit engine can k
 	- Every `windowPresentVirtualScreen` flush now resets per-frame counters, records the touched logical vs. physical dirty rect areas, accrues how many HD pixels landed in each space, and emits a `SCALER present_stats ...` trace with the full breakdown plus current scale.
 	- `windowCompositeTrueColorOverlays` feeds those counters directly (splitting logical vs. physical writes), so QA can diff UHD coverage across maps without hunting individual logs. The `virtual_adapter_fullres` toggle from **S5.1** still flips everything back to the legacy scaler for quick A/B checks.
 
-## Stage 6 – Stretch Goals & Polish
-- [ ] **S6.1** Add optional shaders/post-effects (CRT, bloom, whatever the Overseer deems tasteful).
+## Stage 6 – Command the Phantom Display
+- [ ] **S6.1** Wrangle every draw call into a command bus.
+	- Wrap tiles, critters, UI, and particle oddities behind a single dispatcher that records `fid`, depth, palette ops, and target rects before the pixels ever hit `_screen_buffer`. If anything bypasses the bus, log it under `SCALER command_miss` so the Overseer can smack it back in line. Alternate twist: prototype with tiles first if you want a safer pilot mission.
+- [ ] **S6.2** Serialize the stream and prove we can replay it.
+	- Store per-frame command packets (think: op code + stable asset handle) and build a replay harness that can paint them back into a mock buffer. Compare the mock buffer against the real virtual surface to confirm ordering, masking, and lighting survived the teleport.
+- [ ] **S6.3** Forge the Asset Registry & HD stash.
+	- Map every legacy FRM pointer to a deterministic asset ID, then hang HD metadata, availability flags, and conversion status off that ID. When no HD art exists, spin up a worker to upscale/true-color the legacy frame and drop it into the cache so the command bus always resolves to something sane.
+- [ ] **S6.4** Build the real-display orchestrator.
+	- Feed the command stream into a fresh presentation engine that renders directly to the full-res buffer. Each command resolves its asset (HD preferred, upscaled fallback otherwise), applies scripted effects, then composites via the physical overlay path we finished in Stage 5. The original 8-bit buffer sticks around purely for gameplay logic and audits.
+- [ ] **S6.5** Synchronize invalidations and lifecycle events.
+	- Emit explicit “vault events” (scroll, fade, blackout, resize) from the virtual side so the real display can clear or reuse regions confidently. Tie the events to the same dirty-rect clock so we never see desynced ghosts when `_GNW95_zero_vid_mem` or map panning rewires memory.
+- [ ] **S6.6** Validate, instrument, and expose toggles.
+	- Teach diagnostics to dump command counts, HD hits, fallback usage, and replay divergence stats each frame. Ship a config toggle to fall back to direct blits if the command bus croaks, and document the modder-facing hooks so asset packs can register HD frames without reverse-engineering the Overseer’s notebook.
+
+### S6.1 Command Schema (Tiles First)
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `op` | `RenderCommandOp` enum | `TileBlit`, `RoofBlit`, `ObjectBlit`, `UiBlit`, `ScreenClear`, `ViewportEvent`, `DebugGlyph`. Tiles will only emit `TileBlit`/`RoofBlit` initially. |
+| `asset` | `RenderAssetHandle` | Composed from FRM fid + frame + rotation; stays stable even if the cache reloads. |
+| `screenRect` | `Rect16` | Logical 640×480 rect; physical math runs later. |
+| `depthBucket` | `uint8_t` | Matches existing render buckets so replay preserves ordering. |
+| `flags` | bitfield | `kLightingPerPixel`, `kLightingFlat`, `kTranslucent`, `kMasked`, `kForceIndexedFallback`. |
+| `lighting` | `int16_t` | Tile intensity index or critter light level. Set to `-1` if unused. |
+| `tintColor` | `uint32_t` | Optional ARGB tint (used by scripted overlays). Tiles can leave zeroed. |
+| `paletteId` | `uint16_t` | Source palette or remap table ID so post-processing can mimic legacy mods. |
+| `extra` | union | For tiles this stores `isoTileX`, `isoTileY`, `elevation`, giving the replay harness more breadcrumbs. |
+
+```cpp
+struct RenderCommandHeader {
+	uint32_t sequence;      // increments per frame so diagnostics can detect out-of-order writes
+	uint16_t frameIndex;    // rolling index for replay harness snapshots
+	uint16_t payloadSize;   // bytes following header (future-proofing)
+};
+
+struct RenderCommandTileBlit {
+	RenderCommandHeader header;
+	RenderAssetHandle asset;
+	Rect16 screenRect;
+	uint32_t fid;
+	uint16_t frame;
+	uint8_t rotation;
+	uint8_t depthBucket;
+	uint16_t paletteId;
+	int16_t lighting;
+	uint16_t flags; // bitfield noted above
+	int16_t isoTileX;
+	int16_t isoTileY;
+	uint8_t elevation;
+};
+```
+
+**Logging plan (tiles pilot):**
+- `SCALER command_emit op=TileBlit rect=(...) fid=... flags=...` every time the dispatcher queues a tile op (trace level to keep noise manageable).
+- `SCALER command_miss path=tile_memmove reason=legacy_scroll` when the tile system still writes directly to `_screen_buffer`.
+- `SCALER command_queue stats queued=### dropped=### overflow=bool` once per frame so we notice if the ring buffer runs out of slots during massive combat.
+
+**Implementation checkpoints:**
+- Create `render_commands.h/.cc` with the structs above plus helpers for pushing commands into a lock-free ring (single producer, single consumer for now).
+- Update `tile.cc` refresh paths (`tileWindowRefreshRect`, roof pass, automap overlay) to call `renderCommandEmitTileBlit(...)` right before the legacy blit happens. For the pilot, keep executing the old blit so visuals stay unchanged while we harvest telemetry.
+- Add a developer toggle (`system.render_command_trace=1`) to flip the logging on/off without recompiling.
+
+## Stage 7 – Stretch Goals & Polish
+- [ ] **S7.1** Add optional shaders/post-effects (CRT, bloom, whatever the Overseer deems tasteful).
 	- **TODO:** prototype shader toggles in `preferences.cc`, defaulting them off for potato-mode rigs.
-- [ ] **S6.2** Benchmark CPU/GPU impact; add settings for throttling HD overlays on low-end hardware.
+- [ ] **S7.2** Benchmark CPU/GPU impact; add settings for throttling HD overlays on low-end hardware.
 	- **TODO:** hook the existing diagnostics profiler so we can compare frame times with/without HD overlays.
-- [ ] **S6.3** Document the modder-facing HD asset pipeline and expose toggles in the config UI.
+- [ ] **S7.3** Document the modder-facing HD asset pipeline and expose toggles in the config UI.
 	- **TODO:** extend this roadmap with a “Modder Addendum” once the asset loader stabilizes.
 
 *Check off each task as we conquer it—leave witty notes if a deathclaw was involved.*
