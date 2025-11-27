@@ -1961,7 +1961,7 @@ unsigned char* windowGetBuffer(int win)
     return window->buffer;
 }
 
-bool windowResolveBufferRect(const unsigned char* buffer, int pitch, int width, int height, Rect* outRect)
+bool windowResolveBufferRect(const unsigned char* buffer, int pitch, int width, int height, Rect* outRect, int* outWindowId)
 {
     if (!gWindowSystemInitialized) {
         return false;
@@ -1975,7 +1975,11 @@ bool windowResolveBufferRect(const unsigned char* buffer, int pitch, int width, 
         return false;
     }
 
-    auto tryResolve = [&](const unsigned char* base, int basePitch, int baseHeight, const Rect& baseRect) {
+    if (outWindowId != nullptr) {
+        *outWindowId = -1;
+    }
+
+    auto tryResolve = [&](const unsigned char* base, int basePitch, int baseHeight, const Rect& baseRect, int owningWindowId) {
         if (base == nullptr) {
             return false;
         }
@@ -2008,12 +2012,15 @@ bool windowResolveBufferRect(const unsigned char* buffer, int pitch, int width, 
         }
 
         *outRect = resolved;
+        if (outWindowId != nullptr) {
+            *outWindowId = owningWindowId;
+        }
         return true;
     };
 
     if (gVirtualScreenEnabled && _screen_buffer != nullptr) {
         const Rect& logical = displayScalerGetLogicalBounds();
-        if (tryResolve(_screen_buffer, _screen_buffer_pitch, rectGetHeight(&logical), logical)) {
+        if (tryResolve(_screen_buffer, _screen_buffer_pitch, rectGetHeight(&logical), logical, -1)) {
             return true;
         }
     }
@@ -2026,7 +2033,7 @@ bool windowResolveBufferRect(const unsigned char* buffer, int pitch, int width, 
 
         Rect rect;
         rectCopy(&rect, &(window->rect));
-        if (tryResolve(window->buffer, window->width, window->height, rect)) {
+        if (tryResolve(window->buffer, window->width, window->height, rect, window->id)) {
             return true;
         }
     }

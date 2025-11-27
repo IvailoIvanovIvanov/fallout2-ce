@@ -399,6 +399,7 @@ static void tileEmitRenderCommand(RenderCommandOp op,
     payload.fid = fid;
     payload.tileIndex = tileIndex;
     payload.depthBucket = static_cast<uint8_t>(op == RenderCommandOp::RoofBlit ? RenderTraceLayer::TileRoof : RenderTraceLayer::TileFloor);
+    payload.windowId = static_cast<int16_t>(std::clamp(gTileWindowId, -1, static_cast<int>(std::numeric_limits<int16_t>::max())));
     payload.paletteId = 0;
     payload.flags = RenderCommandFlag_Masked | extraFlags;
     payload.lighting = lighting;

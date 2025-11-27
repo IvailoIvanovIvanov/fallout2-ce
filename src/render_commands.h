@@ -51,6 +51,8 @@ struct RenderCommandTileBlitPayload {
     Rect screenRect {};
     uint32_t fid = 0;
     int32_t tileIndex = -1;
+    int16_t windowId = -1;
+    int16_t reserved = 0;
     uint8_t depthBucket = 0;
     uint16_t paletteId = 0;
     int16_t lighting = -1;

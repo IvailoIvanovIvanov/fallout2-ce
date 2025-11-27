@@ -23,6 +23,7 @@
 #include "object.h"
 #include "proto.h"
 #include "render_trace.h"
+#include "render_commands.h"
 #include "render_asset_registry.h"
 #include "settings.h"
 #include "stb_image.h"
@@ -54,6 +55,15 @@ static int artReadHeader(Art* art, File* stream);
 static int artGetDataSize(Art* art);
 static int paddingForSize(int size);
 static void artTraceRenderOp(int fid, unsigned char* dest, int pitch, int width, int height);
+static void artEmitUiRenderCommand(int fid,
+    CacheEntry* owner,
+    const unsigned char* frameData,
+    int frameWidth,
+    int frameHeight,
+    unsigned char* dest,
+    int pitch,
+    int width,
+    int height);
 static void hdTrueColorRegistryClear();
 static void hdTrueColorReleaseFramesForArt(const void* owner);
 static void hdTrueColorTrackFrameOwner(const void* owner, const unsigned char* indexed);
@@ -562,6 +572,72 @@ static void artTraceRenderOp(int fid, unsigned char* dest, int pitch, int width,
     renderTraceRecord(RenderTraceLayer::Ui, fid, 0, 0, rect, -1, rect.bottom);
 }
 
+static void artEmitUiRenderCommand(int fid,
+    CacheEntry* owner,
+    const unsigned char* frameData,
+    int frameWidth,
+    int frameHeight,
+    unsigned char* dest,
+    int pitch,
+    int width,
+    int height)
+{
+    if (!renderCommandCaptureEnabled() || dest == nullptr || frameData == nullptr) {
+        return;
+    }
+
+    if (frameWidth <= 0 || frameHeight <= 0 || width <= 0 || height <= 0) {
+        return;
+    }
+
+    if (width != frameWidth || height != frameHeight) {
+        return;
+    }
+
+    Rect rect;
+    int windowId = -1;
+    if (!windowResolveBufferRect(dest, pitch, width, height, &rect, &windowId)) {
+        return;
+    }
+
+    if (windowId < 0) {
+        return;
+    }
+
+    RenderAssetHandle assetHandle {};
+    assetHandle.fid = fid;
+    assetHandle.frame = 0;
+    assetHandle.rotation = 0;
+    assetHandle.variant = 0;
+
+    const void* frameOwner = owner != nullptr ? static_cast<const void*>(owner) : static_cast<const void*>(frameData);
+
+    renderAssetRegistryTrackFrame(assetHandle,
+        frameOwner,
+        frameData,
+        static_cast<uint16_t>(std::clamp(frameWidth, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))),
+        static_cast<uint16_t>(std::clamp(frameHeight, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))));
+
+    RenderCommandTileBlitPayload payload {};
+    payload.asset = assetHandle;
+    payload.windowId = static_cast<int16_t>(std::clamp(windowId, -1, static_cast<int>(std::numeric_limits<int16_t>::max())));
+    payload.screenRect = rect;
+    payload.fid = fid;
+    payload.tileIndex = -1;
+    payload.depthBucket = static_cast<uint8_t>(RenderTraceLayer::Ui);
+    payload.paletteId = 0;
+    payload.flags = RenderCommandFlag_Masked | RenderCommandFlag_LightingFlat;
+    payload.lighting = 128;
+    payload.sourceOffsetX = 0;
+    payload.sourceOffsetY = 0;
+    payload.sourceWidth = static_cast<uint16_t>(std::clamp(width, 0, static_cast<int>(std::numeric_limits<uint16_t>::max())));
+    payload.sourceHeight = static_cast<uint16_t>(std::clamp(height, 0, static_cast<int>(std::numeric_limits<uint16_t>::max())));
+    payload.isoTileX = -1;
+    payload.isoTileY = -1;
+
+    renderCommandEmitTileBlit(RenderCommandOp::UiBlit, payload);
+}
+
 static void artBlitTrueColorUiSprite(const HdTrueColorFrameView& view,
     const unsigned char* indexed,
     uint32_t* overlay,
@@ -652,6 +728,15 @@ void artRender(int fid, unsigned char* dest, int width, int height, int pitch)
                 scaledHeight,
                 pitch);
             artTraceRenderOp(fid, target, pitch, width, scaledHeight);
+            artEmitUiRenderCommand(fid,
+                handle,
+                frameData,
+                frameWidth,
+                frameHeight,
+                target,
+                pitch,
+                width,
+                scaledHeight);
         } else {
             int scaledWidth = height * frameWidth / frameHeight;
             unsigned char* target = dest + (width - scaledWidth) / 2;
@@ -664,6 +749,15 @@ void artRender(int fid, unsigned char* dest, int width, int height, int pitch)
                 height,
                 pitch);
             artTraceRenderOp(fid, target, pitch, scaledWidth, height);
+            artEmitUiRenderCommand(fid,
+                handle,
+                frameData,
+                frameWidth,
+                frameHeight,
+                target,
+                pitch,
+                scaledWidth,
+                height);
         }
     } else {
         unsigned char* target = dest + pitch * (remainingHeight / 2) + remainingWidth / 2;
@@ -674,6 +768,15 @@ void artRender(int fid, unsigned char* dest, int width, int height, int pitch)
             target,
             pitch);
         artTraceRenderOp(fid, target, pitch, frameWidth, frameHeight);
+        artEmitUiRenderCommand(fid,
+            handle,
+            frameData,
+            frameWidth,
+            frameHeight,
+            target,
+            pitch,
+            frameWidth,
+            frameHeight);
 
         HdTrueColorFrameView trueColorView;
         if (artLookupRegisteredTrueColorFrame(frameData, trueColorView)) {

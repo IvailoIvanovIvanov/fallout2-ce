@@ -432,6 +432,7 @@ static void objectEmitRenderCommand(Object* object,
     payload.screenRect = objectRect;
     payload.fid = assetHandle.fid;
     payload.tileIndex = object->tile;
+    payload.windowId = static_cast<int16_t>(std::clamp(gIsoWindow, -1, static_cast<int>(std::numeric_limits<int16_t>::max())));
     payload.depthBucket = static_cast<uint8_t>(layer);
     payload.paletteId = 0;
     payload.flags = RenderCommandFlag_Masked | RenderCommandFlag_LightingFlat;

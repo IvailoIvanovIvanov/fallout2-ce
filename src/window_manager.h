@@ -212,7 +212,7 @@ void windowClearTrueColorRegion(int win, int left, int top, int width, int heigh
 void windowDebugStampMissingHdGlyph(int win, int left, int top, int width, int height);
 Window* windowGetWindow(int win);
 unsigned char* windowGetBuffer(int win);
-bool windowResolveBufferRect(const unsigned char* buffer, int pitch, int width, int height, Rect* outRect);
+bool windowResolveBufferRect(const unsigned char* buffer, int pitch, int width, int height, Rect* outRect, int* outWindowId = nullptr);
 bool windowResolveTrueColorRegion(const unsigned char* buffer, int pitch, int width, int height, Rect* outRect, uint32_t** outOverlay, unsigned char** outMask, int* outOverlayPitch);
 int windowGetAtPoint(int x, int y);
 int windowGetWidth(int win);
