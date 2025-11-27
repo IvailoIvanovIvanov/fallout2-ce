@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "color.h"
 #include "diagnostics.h"
@@ -327,7 +328,8 @@ bool processIsoCommand(const RenderCommandTileBlit& command,
     bool& detailClamped,
     double& maxHdScale)
 {
-    if (command.op != RenderCommandOp::TileBlit && command.op != RenderCommandOp::RoofBlit && command.op != RenderCommandOp::ObjectBlit) {
+    if (command.op != RenderCommandOp::TileBlit && command.op != RenderCommandOp::RoofBlit && command.op != RenderCommandOp::ObjectBlit
+        && command.op != RenderCommandOp::UiBlit) {
         return false;
     }
 
@@ -520,7 +522,11 @@ void renderDisplayOrchestratorProcess()
         return;
     }
 
-    if (bufferView.count == 0 && !sPendingFullClear && !sBlackoutActive) {
+    const bool fullClearRequested = sPendingFullClear;
+    const bool blackoutClearRequested = sBlackoutActive;
+
+    if (bufferView.count == 0 && !fullClearRequested && !blackoutClearRequested) {
+        sPendingFullClear = false;
         return;
     }
 
@@ -535,6 +541,24 @@ void renderDisplayOrchestratorProcess()
         windowTargets.emplace(tileWindowId, tileTarget);
     }
 
+    std::unordered_set<int> clearedWindowIds;
+
+    auto clearWindowTargetIfNeeded = [&](WindowOverlayTarget& target) {
+        if (!(fullClearRequested || blackoutClearRequested)) {
+            return;
+        }
+
+        if (!clearedWindowIds.insert(target.windowId).second) {
+            return;
+        }
+
+        const int windowWidth = rectGetWidth(&target.windowRect);
+        const int windowHeight = rectGetHeight(&target.windowRect);
+        if (windowWidth > 0 && windowHeight > 0) {
+            windowClearTrueColorRegion(target.windowId, 0, 0, windowWidth, windowHeight);
+        }
+    };
+
     auto requestTarget = [&](int windowId) -> WindowOverlayTarget* {
         if (windowId < 0) {
             return nullptr;
@@ -542,6 +566,7 @@ void renderDisplayOrchestratorProcess()
 
         auto found = windowTargets.find(windowId);
         if (found != windowTargets.end()) {
+            clearWindowTargetIfNeeded(found->second);
             return &(found->second);
         }
 
@@ -551,22 +576,21 @@ void renderDisplayOrchestratorProcess()
         }
 
         auto inserted = windowTargets.emplace(windowId, candidate);
-        return &(inserted.first->second);
+        WindowOverlayTarget& stored = inserted.first->second;
+        clearWindowTargetIfNeeded(stored);
+        return &stored;
     };
+
+    if (tileTargetAvailable && (fullClearRequested || blackoutClearRequested)) {
+        if (requestTarget(tileWindowId) == nullptr) {
+            tileTargetAvailable = false;
+        }
+    }
+
+    sPendingFullClear = false;
 
     const DisplayScalerScaleTable& scaleTable = displayScalerGetScaleTable();
     const double viewportScale = scaleTable.valid ? scaleTable.scale : displayScalerGetScale();
-
-    if (tileTargetAvailable && (sPendingFullClear || sBlackoutActive)) {
-        const int tileWidth = rectGetWidth(&tileTarget.windowRect);
-        const int tileHeight = rectGetHeight(&tileTarget.windowRect);
-        if (tileWidth > 0 && tileHeight > 0) {
-            windowClearTrueColorRegion(tileTarget.windowId, 0, 0, tileWidth, tileHeight);
-        }
-        sPendingFullClear = false;
-    } else if (sPendingFullClear) {
-        sPendingFullClear = false;
-    }
 
     if (bufferView.count == 0) {
         return;
