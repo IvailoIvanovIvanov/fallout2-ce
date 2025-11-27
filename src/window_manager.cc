@@ -3594,7 +3594,21 @@ void windowPresentVirtualScreen()
     }
     windowAccumulatePhysicalRectStats(physicalDirtyRect);
 
-    blitIndexedRectToTexture(_screen_buffer, _screen_buffer_pitch, rect);
+    const bool orchestratorOwnsPresenter = renderDisplayOrchestratorOwnsPresenter();
+    if (orchestratorOwnsPresenter) {
+        clearPresenterRect(rect);
+        if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+            diagnosticsLog(DiagnosticsLevel::Trace,
+                "SCALER",
+                "presenter_clear reason=orchestrator rect=(%d,%d %dx%d)",
+                rect.left,
+                rect.top,
+                width,
+                height);
+        }
+    } else {
+        blitIndexedRectToTexture(_screen_buffer, _screen_buffer_pitch, rect);
+    }
 
     int overlayPixels = windowCompositeTrueColorOverlays(rect);
     if (overlayPixels > 0 && diagnosticsWouldLog(DiagnosticsLevel::Trace)) {

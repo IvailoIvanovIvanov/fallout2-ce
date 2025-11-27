@@ -40,6 +40,7 @@ unsigned char* directDrawGetPalette();
 void _GNW95_ShowRect(unsigned char* src, int src_pitch, int a3, int src_x, int src_y, int src_width, int src_height, int dest_x, int dest_y);
 void _GNW95_zero_vid_mem();
 void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect& rect);
+void clearPresenterRect(const Rect& rect);
 int blitTrueColorRectToTexture(const uint32_t* src, const unsigned char* mask, int srcPitch, const Rect& rect);
 int blitPhysicalTrueColorRectToTexture(const uint32_t* src, const unsigned char* mask, int srcPitch, const Rect& rect);
 

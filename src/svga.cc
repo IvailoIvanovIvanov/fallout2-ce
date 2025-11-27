@@ -1097,6 +1097,37 @@ void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect
     logTextureSurfaceRectStats(rect, "after_indexed_blit");
 }
 
+void clearPresenterRect(const Rect& rect)
+{
+    if (gSdlTextureSurface == nullptr) {
+        return;
+    }
+
+    Rect logicalRect;
+    Rect presenterRect;
+    if (!resolvePresenterRect(rect, &logicalRect, &presenterRect)) {
+        return;
+    }
+
+    const int width = rectGetWidth(&presenterRect);
+    const int height = rectGetHeight(&presenterRect);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    if (gSdlTextureSurface->format == nullptr || gSdlTextureSurface->format->BytesPerPixel != 4) {
+        return;
+    }
+
+    unsigned char* destPixels = static_cast<unsigned char*>(gSdlTextureSurface->pixels);
+    const int bytesPerPixel = gSdlTextureSurface->format->BytesPerPixel;
+
+    for (int row = 0; row < height; row++) {
+        uint32_t* destRow = reinterpret_cast<uint32_t*>(destPixels + (presenterRect.top + row) * gSdlTextureSurface->pitch + presenterRect.left * bytesPerPixel);
+        memset(destRow, 0, width * sizeof(uint32_t));
+    }
+}
+
 int blitTrueColorRectToTexture(const uint32_t* src, const unsigned char* mask, int srcPitch, const Rect& rect)
 {
     if (src == nullptr || gSdlTextureSurface == nullptr) {

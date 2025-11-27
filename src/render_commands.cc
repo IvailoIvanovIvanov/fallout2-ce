@@ -764,9 +764,11 @@ bool renderCommandsReplayTileCommand(const RenderCommandTileBlit& command, unsig
         return false;
     }
 
-    const int frameWidth = artGetWidth(art, 0, 0);
-    const int frameHeight = artGetHeight(art, 0, 0);
-    unsigned char* frameData = artGetFrameData(art, 0, 0);
+    const uint16_t commandFrame = command.payload.asset.frame;
+    const uint8_t commandRotation = command.payload.asset.rotation;
+    const int frameWidth = artGetWidth(art, commandFrame, commandRotation);
+    const int frameHeight = artGetHeight(art, commandFrame, commandRotation);
+    unsigned char* frameData = artGetFrameData(art, commandFrame, commandRotation);
     if (frameData == nullptr || frameWidth <= 0 || frameHeight <= 0) {
         artUnlock(cacheEntry);
         return false;

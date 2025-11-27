@@ -5,6 +5,7 @@ namespace fallout {
 
 bool renderDisplayOrchestratorEnabled();
 bool renderDisplayOrchestratorConsumesTileOverlays();
+bool renderDisplayOrchestratorOwnsPresenter();
 void renderDisplayOrchestratorProcess();
 
 } // namespace fallout

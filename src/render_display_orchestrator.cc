@@ -106,6 +106,7 @@ bool sPendingFullClear = true;
 bool sForceRedraw = true;
 bool sBlackoutActive = false;
 bool sOrchestratorActive = false;
+bool sOrchestratorHasTarget = false;
 
 void processViewportEvents();
 void handleViewportEvent(const RenderViewportEvent& event);
@@ -318,7 +319,7 @@ bool blitToPhysicalOverlay(const TileOverlayTarget& target,
     return wrotePixels;
 }
 
-bool processTileCommand(const RenderCommandTileBlit& command,
+bool processIsoCommand(const RenderCommandTileBlit& command,
     const TileOverlayTarget& target,
     uint64_t& logicalPixelsDrawn,
     bool& usedFallback,
@@ -326,7 +327,7 @@ bool processTileCommand(const RenderCommandTileBlit& command,
     bool& detailClamped,
     double& maxHdScale)
 {
-    if (command.op != RenderCommandOp::TileBlit && command.op != RenderCommandOp::RoofBlit) {
+    if (command.op != RenderCommandOp::TileBlit && command.op != RenderCommandOp::RoofBlit && command.op != RenderCommandOp::ObjectBlit) {
         return false;
     }
 
@@ -488,15 +489,22 @@ bool renderDisplayOrchestratorConsumesTileOverlays()
     return renderDisplayOrchestratorEnabled();
 }
 
+bool renderDisplayOrchestratorOwnsPresenter()
+{
+    return renderDisplayOrchestratorEnabled() && sOrchestratorActive && sOrchestratorHasTarget;
+}
+
 void renderDisplayOrchestratorProcess()
 {
     if (!renderDisplayOrchestratorEnabled()) {
         sOrchestratorActive = false;
+        sOrchestratorHasTarget = false;
         return;
     }
 
     if (!sOrchestratorActive) {
         sOrchestratorActive = true;
+        sOrchestratorHasTarget = false;
         sPendingFullClear = true;
         sForceRedraw = true;
         sBlackoutActive = false;
@@ -516,10 +524,13 @@ void renderDisplayOrchestratorProcess()
         return;
     }
 
+    sOrchestratorHasTarget = false;
+
     TileOverlayTarget target;
     if (!acquireTileOverlayTarget(target)) {
         return;
     }
+    sOrchestratorHasTarget = true;
 
     const int windowWidth = windowGetWidth(target.windowId);
     const int windowHeight = windowGetHeight(target.windowId);
@@ -550,19 +561,30 @@ void renderDisplayOrchestratorProcess()
     }
 
     uint64_t logicalPixelsDrawn = 0;
-    uint32_t hdCommands = 0;
-    uint32_t fallbackCommands = 0;
+    uint32_t tileHdCommands = 0;
+    uint32_t tileFallbackCommands = 0;
+    uint32_t objectHdCommands = 0;
+    uint32_t objectFallbackCommands = 0;
     bool detailClamped = false;
     double maxHdScale = 1.0;
 
     for (size_t index = 0; index < bufferView.count; index++) {
         const RenderCommandTileBlit& command = bufferView.commands[index];
         bool usedFallback = false;
-        if (processTileCommand(command, target, logicalPixelsDrawn, usedFallback, viewportScale, detailClamped, maxHdScale)) {
+        if (processIsoCommand(command, target, logicalPixelsDrawn, usedFallback, viewportScale, detailClamped, maxHdScale)) {
+            const bool isObjectCommand = command.op == RenderCommandOp::ObjectBlit;
             if (usedFallback) {
-                fallbackCommands++;
+                if (isObjectCommand) {
+                    objectFallbackCommands++;
+                } else {
+                    tileFallbackCommands++;
+                }
             } else {
-                hdCommands++;
+                if (isObjectCommand) {
+                    objectHdCommands++;
+                } else {
+                    tileHdCommands++;
+                }
             }
         }
     }
@@ -570,11 +592,13 @@ void renderDisplayOrchestratorProcess()
     if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
         diagnosticsLog(DiagnosticsLevel::Trace,
             "SCALER",
-            "orchestrator frame=%u commands=%zu hd=%u fallback=%u logical_px=%llu physical_scale=%.2f detail_clamped=%d hd_scale_max=%.2f",
+            "orchestrator frame=%u commands=%zu tile_hd=%u tile_fallback=%u obj_hd=%u obj_fallback=%u logical_px=%llu physical_scale=%.2f detail_clamped=%d hd_scale_max=%.2f",
             bufferView.frameIndex,
             bufferView.count,
-            hdCommands,
-            fallbackCommands,
+            tileHdCommands,
+            tileFallbackCommands,
+            objectHdCommands,
+            objectFallbackCommands,
             static_cast<unsigned long long>(logicalPixelsDrawn),
             viewportScale,
             detailClamped ? 1 : 0,

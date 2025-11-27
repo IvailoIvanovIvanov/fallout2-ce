@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <limits>
 
 #include "animation.h"
 #include "art.h"
@@ -22,6 +23,8 @@
 #include "party_member.h"
 #include "proto.h"
 #include "proto_instance.h"
+#include "render_asset_registry.h"
+#include "render_commands.h"
 #include "render_trace.h"
 #include "scripts.h"
 #include "settings.h"
@@ -64,6 +67,18 @@ static void objectDrawOutline(Object* object, Rect* rect);
 static void _obj_render_object(Object* object, Rect* rect, int light, RenderTraceLayer layer);
 static int _obj_preload_sort(const void* a1, const void* a2);
 static void objectsBindTrueColorOverlay();
+static void objectEmitRenderCommand(Object* object,
+    RenderTraceLayer layer,
+    const Rect& objectRect,
+    int frameWidth,
+    int frameHeight,
+    int sourceOffsetX,
+    int sourceOffsetY,
+    int objectWidth,
+    int objectHeight,
+    int light,
+    Art* art,
+    unsigned char* frameData);
 
 // 0x5195F8
 static bool gObjectsInitialized = false;
@@ -381,6 +396,67 @@ static void objectsBindTrueColorOverlay()
     }
 
     gObjectsPhysicalOverlayRevision = windowGetPhysicalTrueColorOverlayRevision();
+}
+
+static void objectEmitRenderCommand(Object* object,
+    RenderTraceLayer layer,
+    const Rect& objectRect,
+    int frameWidth,
+    int frameHeight,
+    int sourceOffsetX,
+    int sourceOffsetY,
+    int objectWidth,
+    int objectHeight,
+    int light,
+    Art* art,
+    unsigned char* frameData)
+{
+    if (object == nullptr || art == nullptr || frameData == nullptr || objectWidth <= 0 || objectHeight <= 0) {
+        return;
+    }
+
+    RenderAssetHandle assetHandle {};
+    assetHandle.fid = static_cast<uint32_t>(object->fid);
+    assetHandle.frame = static_cast<uint16_t>(std::clamp(object->frame, 0, static_cast<int>(std::numeric_limits<uint16_t>::max())));
+    assetHandle.rotation = static_cast<uint8_t>(std::clamp(object->rotation, 0, 255));
+    assetHandle.variant = 0;
+
+    renderAssetRegistryTrackFrame(assetHandle,
+        art,
+        frameData,
+        static_cast<uint16_t>(std::clamp(frameWidth, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))),
+        static_cast<uint16_t>(std::clamp(frameHeight, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))));
+
+    RenderCommandTileBlitPayload payload = {};
+    payload.asset = assetHandle;
+    payload.screenRect = objectRect;
+    payload.fid = assetHandle.fid;
+    payload.tileIndex = object->tile;
+    payload.depthBucket = static_cast<uint8_t>(layer);
+    payload.paletteId = 0;
+    payload.flags = RenderCommandFlag_Masked | RenderCommandFlag_LightingFlat;
+    if ((object->flags & OBJECT_FLAG_0xFC000) != 0) {
+        payload.flags |= RenderCommandFlag_Translucent;
+    }
+
+    const int intensityIndex = std::clamp(light / 512, 0, 255);
+    payload.lighting = static_cast<int16_t>(intensityIndex);
+    payload.elevation = static_cast<uint8_t>(std::clamp(object->elevation, 0, 255));
+
+    const int clampedOffsetX = std::clamp(sourceOffsetX, 0, std::max(frameWidth - 1, 0));
+    const int clampedOffsetY = std::clamp(sourceOffsetY, 0, std::max(frameHeight - 1, 0));
+    const int maxSourceWidth = std::max(frameWidth - clampedOffsetX, 0);
+    const int maxSourceHeight = std::max(frameHeight - clampedOffsetY, 0);
+
+    payload.sourceOffsetX = static_cast<int16_t>(clampedOffsetX);
+    payload.sourceOffsetY = static_cast<int16_t>(clampedOffsetY);
+    payload.sourceWidth = static_cast<uint16_t>(std::clamp(objectWidth, 0, std::min(maxSourceWidth, static_cast<int>(std::numeric_limits<uint16_t>::max()))));
+    payload.sourceHeight = static_cast<uint16_t>(std::clamp(objectHeight, 0, std::min(maxSourceHeight, static_cast<int>(std::numeric_limits<uint16_t>::max()))));
+    payload.perPixelLightingCount = 0;
+    payload.isoTileX = -1;
+    payload.isoTileY = -1;
+
+    renderCommandEmitTileBlit(RenderCommandOp::ObjectBlit, payload);
 }
 
 static void objectsClearTrueColorRegion(const Rect& rect)
@@ -5549,6 +5625,19 @@ static void _obj_render_object(Object* object, Rect* rect, int light, RenderTrac
     }
 
 APPLY_TRUE_COLOR_OVERLAY:
+    objectEmitRenderCommand(object,
+        layer,
+        objectRect,
+        frameWidth,
+        frameHeight,
+        v50,
+        v49,
+        objectWidth,
+        objectHeight,
+        light,
+        art,
+        src2);
+
     if (!hasTrueColor) {
         objectsScrubTrueColorMaskForIndexedBlit(src, frameWidth, objectRect, objectWidth, objectHeight);
     }
