@@ -31,6 +31,7 @@
 #include "window_manager.h"
 #include "worldmap.h"
 #include "display_scaler.h"
+#include "render_display_orchestrator.h"
 
 namespace fallout {
 
@@ -384,6 +385,10 @@ static void objectsBindTrueColorOverlay()
 
 static void objectsClearTrueColorRegion(const Rect& rect)
 {
+    if (renderDisplayOrchestratorConsumesTileOverlays()) {
+        return;
+    }
+
     if (!objectsHasTrueColorOverlay()) {
         return;
     }

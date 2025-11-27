@@ -179,6 +179,18 @@ static bool hdTrueColorConformToFrame(int fid, int frameWidth, int frameHeight, 
     view.logicalHeight = frameHeight;
     view.scaleX = std::max(1, static_cast<int>(std::floor(view.texelsPerLogicalX)));
     view.scaleY = std::max(1, static_cast<int>(std::floor(view.texelsPerLogicalY)));
+
+    if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        diagnosticsLog(DiagnosticsLevel::Trace,
+            "SCALER",
+            "artConformTrueColorFrame fid=%d accepted scale=%.3fx%.3f origin=(%.2f,%.2f)",
+            fid,
+            view.texelsPerLogicalX,
+            view.texelsPerLogicalY,
+            view.texelOriginX,
+            view.texelOriginY);
+    }
+
     return true;
 }
 

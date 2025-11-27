@@ -3778,6 +3778,46 @@ void windowClearTrueColorRegion(int win, int left, int top, int width, int heigh
         memset(window->trueColorOverlay + offset, 0, rowWidth * sizeof(uint32_t));
     }
 
+    if (window->trueColorPhysicalOverlay != nullptr && window->trueColorPhysicalMask != nullptr) {
+        const DisplayScalerScaleTable& scaleTable = displayScalerGetScaleTable();
+        if (scaleTable.valid) {
+            Rect windowRect;
+            if (windowGetRect(win, &windowRect) == 0) {
+                int globalStartX = std::clamp(windowRect.left + startX, 0, static_cast<int>(scaleTable.horizontal.starts.size()));
+                int globalEndX = std::clamp(windowRect.left + endX, 0, static_cast<int>(scaleTable.horizontal.starts.size()));
+                int globalStartY = std::clamp(windowRect.top + startY, 0, static_cast<int>(scaleTable.vertical.starts.size()));
+                int globalEndY = std::clamp(windowRect.top + endY, 0, static_cast<int>(scaleTable.vertical.starts.size()));
+
+                if (globalStartX < globalEndX && globalStartY < globalEndY) {
+                    int physXStart = scaleTable.horizontal.starts[globalStartX] - window->trueColorPhysicalViewport.left;
+                    int physXEnd = scaleTable.horizontal.ends[globalEndX - 1] - window->trueColorPhysicalViewport.left;
+
+                    physXStart = std::max(physXStart, 0);
+                    physXEnd = std::min(physXEnd, window->trueColorPhysicalWidth - 1);
+
+                    if (physXStart <= physXEnd) {
+                        int physWidth = physXEnd - physXStart + 1;
+                        size_t physBytes = physWidth * sizeof(uint32_t);
+
+                        for (int y = globalStartY; y < globalEndY; y++) {
+                            int physYStart = scaleTable.vertical.starts[y] - window->trueColorPhysicalViewport.top;
+                            int physYEnd = scaleTable.vertical.ends[y] - window->trueColorPhysicalViewport.top;
+
+                            physYStart = std::max(physYStart, 0);
+                            physYEnd = std::min(physYEnd, window->trueColorPhysicalHeight - 1);
+
+                            for (int physY = physYStart; physY <= physYEnd; physY++) {
+                                int offset = physY * window->trueColorPhysicalPitch + physXStart;
+                                memset(window->trueColorPhysicalMask + offset, 0, physWidth);
+                                memset(window->trueColorPhysicalOverlay + offset, 0, physBytes);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if (window->trueColorPhysicalOverlay != nullptr && window->trueColorPhysicalMask != nullptr && window->trueColorPhysicalPitch > 0 && window->trueColorPhysicalWidth > 0 && window->trueColorPhysicalHeight > 0) {
         Rect logicalRect;
         logicalRect.left = window->rect.left + startX;
