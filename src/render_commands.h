@@ -81,6 +81,10 @@ struct RenderCommandTileBlit {
 struct RenderCommandStats {
     uint32_t queued = 0;
     uint32_t dropped = 0;
+    // Phase 6: Extended metrics
+    uint32_t directWrites = 0;      // Legacy path usage counter
+    uint32_t orchestratorFrames = 0; // Frames handled by orchestrator
+    uint32_t fallbackFrames = 0;     // Frames using indexed fallback
 };
 
 struct RenderCommandBufferView {
@@ -175,6 +179,9 @@ struct RenderCommandVideoBufferView {
     uint16_t frameIndex = 0;
 };
 
+// Phase 6: Global stats instance
+extern RenderCommandStats gRenderCommandStats;
+
 bool renderCommandCaptureEnabled();
 void renderCommandsInit();
 void renderCommandsBeforePresent();
@@ -195,6 +202,9 @@ bool renderCommandBuildPerPixelIntensityMap(const RenderCommandTileBlitPayload& 
 bool renderCommandDirectBlitFallbackActive();
 const char* renderCommandDirectBlitFallbackReason();
 void renderCommandTriggerDirectBlitFallback(const char* reason);
+
+// Phase 6: Diagnostics and metrics
+void renderCommandLogFrameMetrics();
 
 // Phase 2: emit/peek for new commands
 void renderCommandEmitCursorBlit(const RenderCommandCursorBlitPayload& payload);

@@ -944,6 +944,10 @@ void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect
             "blitIndexedRectToTexture called with virtual_adapter enabled - check orchestrator config");
     }
 
+    // Phase 6: Track direct write metric
+    extern RenderCommandStats gRenderCommandStats;
+    gRenderCommandStats.directWrites++;
+
     Rect logicalRect;
     Rect presenterRect;
     if (!resolvePresenterRect(rect, &logicalRect, &presenterRect)) {
@@ -1855,6 +1859,13 @@ void renderPresent()
     SDL_RenderCopy(gSdlRenderer, gSdlTexture, &srcRect, &destRect);
     virtualInputRenderOverlay(gSdlRenderer);
     SDL_RenderPresent(gSdlRenderer);
+
+    // Phase 6: Log frame metrics periodically (every 300 frames = ~5 seconds at 60fps)
+    static int frameCounter = 0;
+    if (++frameCounter >= 300) {
+        renderCommandLogFrameMetrics();
+        frameCounter = 0;
+    }
 }
 
 } // namespace fallout

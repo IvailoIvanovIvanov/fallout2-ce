@@ -110,7 +110,6 @@ std::array<RenderCommandPaletteEffect, kRenderCommandPaletteCapacity> gPaletteCo
 size_t gPaletteCommandCount = 0;
 std::array<RenderCommandVideoFrame, kRenderCommandVideoCapacity> gVideoCommands;
 size_t gVideoCommandCount = 0;
-RenderCommandStats gRenderCommandStats = {};
 uint32_t gRenderCommandSequence = 0;
 uint16_t gRenderCommandFrameIndex = 0;
 bool gRenderCommandsInitialized = false;
@@ -224,6 +223,9 @@ void renderCommandResetFallbackState()
 
 } // namespace
 
+// Phase 6: Global stats instance (must be outside anonymous namespace for extern linkage)
+RenderCommandStats gRenderCommandStats = {};
+
 bool renderCommandBuildPerPixelIntensityMap(const RenderCommandTileBlitPayload& payload,
     std::array<int, kRenderCommandTileIntensityMapSize>& out)
 {
@@ -279,6 +281,14 @@ void renderCommandEmitCursorBlit(const RenderCommandCursorBlitPayload& payload)
     renderCommandsEnsureInitialized();
     if (gCursorCommandCount >= kRenderCommandCursorCapacity) {
         gRenderCommandStats.dropped++;
+        // Phase 6: Log queue overflow warning
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "SCALER",
+                "cursor_command_overflow dropped (capacity=%zu current=%zu)",
+                kRenderCommandCursorCapacity,
+                gCursorCommandCount);
+        }
         return;
     }
 
@@ -305,6 +315,14 @@ void renderCommandEmitPaletteEffect(const RenderCommandPaletteEffectPayload& pay
     renderCommandsEnsureInitialized();
     if (gPaletteCommandCount >= kRenderCommandPaletteCapacity) {
         gRenderCommandStats.dropped++;
+        // Phase 6: Log queue overflow warning
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "SCALER",
+                "palette_command_overflow dropped (capacity=%zu current=%zu)",
+                kRenderCommandPaletteCapacity,
+                gPaletteCommandCount);
+        }
         return;
     }
 
@@ -331,6 +349,14 @@ void renderCommandEmitVideoFrame(const RenderCommandVideoFramePayload& payload)
     renderCommandsEnsureInitialized();
     if (gVideoCommandCount >= kRenderCommandVideoCapacity) {
         gRenderCommandStats.dropped++;
+        // Phase 6: Log queue overflow warning
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "SCALER",
+                "video_command_overflow dropped (capacity=%zu current=%zu)",
+                kRenderCommandVideoCapacity,
+                gVideoCommandCount);
+        }
         return;
     }
 
@@ -1353,6 +1379,43 @@ void renderCommandTriggerDirectBlitFallback(const char* reason)
             "command_fallback activated reason=%s (direct blits only)",
             gRenderCommandDirectBlitFallbackReason);
     }
+}
+
+// Phase 6: Frame metrics logging
+void renderCommandLogFrameMetrics()
+{
+    if (!diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        return;
+    }
+
+    const RenderCommandStats& stats = gRenderCommandStats;
+    const RenderCommandStats& lastStats = gLastFrameStats;
+
+    // Calculate command coverage ratio
+    uint32_t totalCommands = stats.queued;
+    uint32_t directWrites = stats.directWrites;
+    float commandCoveragePercent = 0.0f;
+    if (totalCommands + directWrites > 0) {
+        commandCoveragePercent = (static_cast<float>(totalCommands) / static_cast<float>(totalCommands + directWrites)) * 100.0f;
+    }
+
+    // Calculate orchestrator usage
+    float orchestratorPercent = 0.0f;
+    uint32_t totalFrames = stats.orchestratorFrames + stats.fallbackFrames;
+    if (totalFrames > 0) {
+        orchestratorPercent = (static_cast<float>(stats.orchestratorFrames) / static_cast<float>(totalFrames)) * 100.0f;
+    }
+
+    diagnosticsLog(DiagnosticsLevel::Info,
+        "SCALER",
+        "frame_metrics commands=%u dropped=%u direct_writes=%u coverage=%.1f%% orchestrator_frames=%u fallback_frames=%u orchestrator_usage=%.1f%%",
+        stats.queued,
+        stats.dropped,
+        stats.directWrites,
+        commandCoveragePercent,
+        stats.orchestratorFrames,
+        stats.fallbackFrames,
+        orchestratorPercent);
 }
 
 } // namespace fallout

@@ -520,6 +520,15 @@ void renderDisplayOrchestratorProcess()
         return;
     }
 
+    // Phase 6: Validate orchestrator state consistency
+    if (settings.system.virtual_adapter && !settings.system.render_display_orchestrator) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "SCALER",
+                "orchestrator_config_error virtual_adapter enabled but render_display_orchestrator disabled");
+        }
+    }
+
     if (!sOrchestratorActive) {
         sOrchestratorActive = true;
         sOrchestratorHasTarget = false;
@@ -680,6 +689,14 @@ void renderDisplayOrchestratorProcess()
             viewportScale,
             detailClamped ? 1 : 0,
             maxHdScale);
+    }
+
+    // Phase 6: Track orchestrator frame metrics
+    extern RenderCommandStats gRenderCommandStats;
+    gRenderCommandStats.orchestratorFrames++;
+    uint32_t totalFallback = tileFallbackCommands + objectFallbackCommands + uiFallbackCommands;
+    if (totalFallback > 0) {
+        gRenderCommandStats.fallbackFrames++;
     }
 }
 
