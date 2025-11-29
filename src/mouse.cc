@@ -6,6 +6,7 @@
 #include "input.h"
 #include "kb.h"
 #include "memory.h"
+#include "render_commands.h"
 #include "svga.h"
 #include "touch.h"
 
@@ -346,6 +347,17 @@ void mouseShowCursor()
         } else {
             _mouse_blit(gMouseCursorData, gMouseCursorWidth, gMouseCursorHeight, v7, v9, v8, v10, v7 + gMouseCursorX, v9 + gMouseCursorY);
         }
+
+        // Phase 2: Emit cursor command for orchestrator
+        RenderCommandCursorBlitPayload cursorPayload;
+        cursorPayload.screenRect.left = v7 + gMouseCursorX;
+        cursorPayload.screenRect.top = v9 + gMouseCursorY;
+        cursorPayload.screenRect.right = cursorPayload.screenRect.left + v8 - 1;
+        cursorPayload.screenRect.bottom = cursorPayload.screenRect.top + v10 - 1;
+        cursorPayload.paletteId = 0;
+        cursorPayload.flags = RenderCommandFlag_Masked;
+        cursorPayload.windowId = -1;
+        renderCommandEmitCursorBlit(cursorPayload);
 
         v2 = gMouseCursorData;
         gCursorIsHidden = false;

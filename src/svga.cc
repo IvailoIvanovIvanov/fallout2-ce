@@ -809,6 +809,12 @@ void directDrawSetPaletteInRange(unsigned char* palette, int start, int count)
         }
         updateTexturePaletteRange(start, count, palette);
 
+        // Phase 2: Emit palette effect command for orchestrator
+        RenderCommandPaletteEffectPayload palettePayload;
+        palettePayload.type = 2; // palette update
+        palettePayload.param = static_cast<uint16_t>(start | (count << 8));
+        renderCommandEmitPaletteEffect(palettePayload);
+
         if (windowIsVirtualScreenEnabled()) {
             windowVirtualScreenInvalidateAll();
         }

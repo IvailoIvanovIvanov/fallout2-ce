@@ -475,6 +475,50 @@ void handleViewportEvent(const RenderViewportEvent& event)
     }
 }
 
+void processCursorCommands()
+{
+    RenderCommandCursorBufferView cursorView;
+    if (!renderCommandsPeekCursorBlits(cursorView)) {
+        return;
+    }
+
+    if (cursorView.count == 0) {
+        return;
+    }
+
+    // Cursor commands are informational - the actual rendering happens via legacy path
+    // This just tracks them for metrics and future HD cursor support
+    if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        diagnosticsLog(DiagnosticsLevel::Trace,
+            "SCALER",
+            "cursor_commands count=%zu frame=%u",
+            cursorView.count,
+            cursorView.frameIndex);
+    }
+}
+
+void processPaletteCommands()
+{
+    RenderCommandPaletteBufferView paletteView;
+    if (!renderCommandsPeekPaletteEffects(paletteView)) {
+        return;
+    }
+
+    if (paletteView.count == 0) {
+        return;
+    }
+
+    // Palette commands are informational - the actual palette update happens via legacy path
+    // This tracks them for metrics and future palette animation support
+    if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        diagnosticsLog(DiagnosticsLevel::Trace,
+            "SCALER",
+            "palette_commands count=%zu frame=%u",
+            paletteView.count,
+            paletteView.frameIndex);
+    }
+}
+
 } // namespace
 
 bool renderDisplayOrchestratorEnabled()
@@ -541,6 +585,10 @@ void renderDisplayOrchestratorProcess()
     }
 
     processViewportEvents();
+
+    // Phase 2: Process cursor and palette commands
+    processCursorCommands();
+    processPaletteCommands();
 
     RenderCommandBufferView bufferView;
     if (!renderCommandsPeekTileCommands(bufferView)) {
