@@ -245,6 +245,16 @@ Point displayScalerGetLetterboxOffset()
 
 Point displayScalerLogicalToPhysical(const Point& logicalPoint)
 {
+#ifdef DEBUG
+    // Verify input is in logical bounds
+    if (logicalPoint.x < 0 || logicalPoint.x > gLogicalBounds.right ||
+        logicalPoint.y < 0 || logicalPoint.y > gLogicalBounds.bottom) {
+        diagnosticsLog(DiagnosticsLevel::Warning,
+            "SCALER",
+            "logicalToPhysical: point (%d,%d) out of logical bounds",
+            logicalPoint.x, logicalPoint.y);
+    }
+#endif
     Point result;
     result.x = clampToPhysicalX(gPhysicalViewport.left + logicalPoint.x * gScale);
     result.y = clampToPhysicalY(gPhysicalViewport.top + logicalPoint.y * gScale);
@@ -253,6 +263,17 @@ Point displayScalerLogicalToPhysical(const Point& logicalPoint)
 
 Point displayScalerPhysicalToLogical(const Point& physicalPoint)
 {
+#ifdef DEBUG
+    // Verify input is in physical bounds
+    if (physicalPoint.x < 0 || physicalPoint.x >= gPhysicalSpace.width ||
+        physicalPoint.y < 0 || physicalPoint.y >= gPhysicalSpace.height) {
+        diagnosticsLog(DiagnosticsLevel::Warning,
+            "SCALER",
+            "physicalToLogical: point (%d,%d) out of physical space (%dx%d)",
+            physicalPoint.x, physicalPoint.y,
+            gPhysicalSpace.width, gPhysicalSpace.height);
+    }
+#endif
     const double localX = static_cast<double>(physicalPoint.x - gPhysicalViewport.left);
     const double localY = static_cast<double>(physicalPoint.y - gPhysicalViewport.top);
 
@@ -307,6 +328,15 @@ Rect displayScalerPhysicalToLogical(const Rect& physicalRect)
 
 DisplayScalerVirtualMapping displayScalerMapPointToVirtual(int physicalX, int physicalY)
 {
+#ifdef DEBUG
+    // Sanity check: physical coordinates should be non-negative
+    if (physicalX < 0 || physicalY < 0) {
+        diagnosticsLog(DiagnosticsLevel::Warning,
+            "SCALER",
+            "mapPointToVirtual: negative physical coords (%d,%d)",
+            physicalX, physicalY);
+    }
+#endif
     DisplayScalerVirtualMapping mapping = {};
     mapping.viewport = gPhysicalViewport;
 
