@@ -942,12 +942,10 @@ void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect
         return;
     }
 
-    // Phase 5: Warn if this legacy path is used with virtual adapter enabled
-    // (orchestrator should handle all rendering)
-    if (settings.system.virtual_adapter && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-        diagnosticsLog(DiagnosticsLevel::Info,
-            "SCALER",
-            "blitIndexedRectToTexture called with virtual_adapter enabled - check orchestrator config");
+    // Phase 6 SAFEGUARD: In virtual adapter mode, orchestrator owns presenter.
+    // Block legacy direct indexed blits to texture to avoid dual render paths.
+    if (settings.system.virtual_adapter && settings.system.render_display_orchestrator) {
+        return;
     }
 
     // Phase 6: Track direct write metric
@@ -1365,6 +1363,13 @@ static bool createRenderer()
     }
 
     gSdlTextureSurface = SDL_CreateRGBSurfaceWithFormat(0, presenterWidth, presenterHeight, SDL_BITSPERPIXEL(format), format);
+        // Phase 6 FIX: Clear texture to black to prevent uninitialized memory artifacts
+        // (triangular pattern garbage visible during screen transitions)
+        SDL_SetRenderTarget(gSdlRenderer, gSdlTexture);
+        SDL_SetRenderDrawColor(gSdlRenderer, 0, 0, 0, 255);
+        SDL_RenderClear(gSdlRenderer);
+        SDL_SetRenderTarget(gSdlRenderer, nullptr);
+
     if (gSdlTextureSurface == nullptr) {
         return false;
     }
@@ -1525,6 +1530,12 @@ static bool ensurePresenterSurfaceMatchesBounds()
 
     gSdlTexture = newTexture;
     gSdlTextureSurface = newSurface;
+    // Phase 6 FIX: Clear texture to black to prevent uninitialized memory artifacts
+    SDL_SetRenderTarget(gSdlRenderer, gSdlTexture);
+    SDL_SetRenderDrawColor(gSdlRenderer, 0, 0, 0, 255);
+    SDL_RenderClear(gSdlRenderer);
+    SDL_SetRenderTarget(gSdlRenderer, nullptr);
+
 
     windowVirtualScreenInvalidateAll();
 

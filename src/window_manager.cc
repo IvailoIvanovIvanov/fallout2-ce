@@ -1644,35 +1644,43 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                                 dest_pitch);
                         }
                     } else {
-                        if (_buffering) {
-                            if (window->flags & WINDOW_TRANSPARENT) {
-                                window->blitProc(
-                                    window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
-                                    v20->rect.right - v20->rect.left + 1,
-                                    v20->rect.bottom - v20->rect.top + 1,
-                                    window->width,
-                                    _screen_buffer + v20->rect.top * screenWidth + v20->rect.left,
-                                    screenWidth);
-                            } else {
-                                blitBufferToBuffer(
-                                    window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
-                                    v20->rect.right - v20->rect.left + 1,
-                                    v20->rect.bottom - v20->rect.top + 1,
-                                    window->width,
-                                    _screen_buffer + v20->rect.top * screenWidth + v20->rect.left,
-                                    screenWidth);
-                            }
+                        // Phase 6 SAFEGUARD: In virtual adapter orchestration mode, do not blit
+                        // directly to `_screen_buffer` or presenter. Mark virtual screen dirty
+                        // and let orchestrator composite.
+                        if (renderDisplayOrchestratorEnabled()) {
+                            Rect dirty = v20->rect;
+                            virtualScreenInvalidateRect(&dirty);
                         } else {
-                            _scr_blit(
-                                window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
-                                window->width,
-                                v20->rect.bottom - v20->rect.top + 1,
-                                0,
-                                0,
-                                v20->rect.right - v20->rect.left + 1,
-                                v20->rect.bottom - v20->rect.top + 1,
-                                v20->rect.left,
-                                v20->rect.top);
+                            if (_buffering) {
+                                if (window->flags & WINDOW_TRANSPARENT) {
+                                    window->blitProc(
+                                        window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
+                                        v20->rect.right - v20->rect.left + 1,
+                                        v20->rect.bottom - v20->rect.top + 1,
+                                        window->width,
+                                        _screen_buffer + v20->rect.top * screenWidth + v20->rect.left,
+                                        screenWidth);
+                                } else {
+                                    blitBufferToBuffer(
+                                        window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
+                                        v20->rect.right - v20->rect.left + 1,
+                                        v20->rect.bottom - v20->rect.top + 1,
+                                        window->width,
+                                        _screen_buffer + v20->rect.top * screenWidth + v20->rect.left,
+                                        screenWidth);
+                                }
+                            } else {
+                                _scr_blit(
+                                    window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
+                                    window->width,
+                                    v20->rect.bottom - v20->rect.top + 1,
+                                    0,
+                                    0,
+                                    v20->rect.right - v20->rect.left + 1,
+                                    v20->rect.bottom - v20->rect.top + 1,
+                                    v20->rect.left,
+                                    v20->rect.top);
+                            }
                         }
                     }
 
