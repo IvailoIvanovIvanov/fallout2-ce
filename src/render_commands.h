@@ -16,6 +16,10 @@ enum class RenderCommandOp : uint8_t {
     ScreenClear,
     ViewportEvent,
     DebugGlyph,
+    // Phase 2 additions
+    PaletteEffect,
+    CursorBlit,
+    VideoFrame,
 };
 
 enum RenderCommandFlags : uint16_t {
@@ -113,6 +117,64 @@ struct RenderViewportEventBufferView {
     uint16_t frameIndex = 0;
 };
 
+// -------- Phase 2: Additional command payloads --------
+
+struct RenderCommandCursorBlitPayload {
+    Rect screenRect {};
+    uint16_t paletteId = 0; // for indexed cursor frames, optional
+    uint16_t flags = RenderCommandFlag_None;
+    int16_t windowId = -1;
+};
+
+struct RenderCommandCursorBlit {
+    RenderCommandHeader header;
+    RenderCommandOp op = RenderCommandOp::CursorBlit;
+    RenderCommandCursorBlitPayload payload;
+};
+
+struct RenderCommandPaletteEffectPayload {
+    uint8_t type = 0; // 0=fadeOut,1=fadeIn,2=gammaShift, etc.
+    uint16_t param = 0; // strength/index
+};
+
+struct RenderCommandPaletteEffect {
+    RenderCommandHeader header;
+    RenderCommandOp op = RenderCommandOp::PaletteEffect;
+    RenderCommandPaletteEffectPayload payload;
+};
+
+struct RenderCommandVideoFramePayload {
+    Rect screenRect {};
+    uint16_t width = 0;
+    uint16_t height = 0;
+    const unsigned char* indexed = nullptr; // optional for legacy frames
+    const uint32_t* rgba = nullptr;         // optional for HD frames
+};
+
+struct RenderCommandVideoFrame {
+    RenderCommandHeader header;
+    RenderCommandOp op = RenderCommandOp::VideoFrame;
+    RenderCommandVideoFramePayload payload;
+};
+
+struct RenderCommandCursorBufferView {
+    const RenderCommandCursorBlit* commands = nullptr;
+    size_t count = 0;
+    uint16_t frameIndex = 0;
+};
+
+struct RenderCommandPaletteBufferView {
+    const RenderCommandPaletteEffect* commands = nullptr;
+    size_t count = 0;
+    uint16_t frameIndex = 0;
+};
+
+struct RenderCommandVideoBufferView {
+    const RenderCommandVideoFrame* commands = nullptr;
+    size_t count = 0;
+    uint16_t frameIndex = 0;
+};
+
 bool renderCommandCaptureEnabled();
 void renderCommandsInit();
 void renderCommandsBeforePresent();
@@ -133,6 +195,14 @@ bool renderCommandBuildPerPixelIntensityMap(const RenderCommandTileBlitPayload& 
 bool renderCommandDirectBlitFallbackActive();
 const char* renderCommandDirectBlitFallbackReason();
 void renderCommandTriggerDirectBlitFallback(const char* reason);
+
+// Phase 2: emit/peek for new commands
+void renderCommandEmitCursorBlit(const RenderCommandCursorBlitPayload& payload);
+bool renderCommandsPeekCursorBlits(RenderCommandCursorBufferView& outView);
+void renderCommandEmitPaletteEffect(const RenderCommandPaletteEffectPayload& payload);
+bool renderCommandsPeekPaletteEffects(RenderCommandPaletteBufferView& outView);
+void renderCommandEmitVideoFrame(const RenderCommandVideoFramePayload& payload);
+bool renderCommandsPeekVideoFrames(RenderCommandVideoBufferView& outView);
 
 } // namespace fallout
 

@@ -21,6 +21,9 @@ namespace {
 
 constexpr size_t kRenderCommandTileCapacity = 4096;
 constexpr size_t kRenderViewportEventCapacity = 128;
+constexpr size_t kRenderCommandCursorCapacity = 256;
+constexpr size_t kRenderCommandPaletteCapacity = 128;
+constexpr size_t kRenderCommandVideoCapacity = 64;
 constexpr int kRenderCommandsDumpHotkey = KEY_CTRL_F9;
 constexpr uint32_t kRenderCommandSerializedMagic = 'RCMD';
 constexpr uint16_t kRenderCommandSerializedVersion = 2;
@@ -101,6 +104,12 @@ constexpr std::array<TileLightingRowEntry, 13> kUpsideDownRowTable = {
 
 std::array<RenderCommandTileBlit, kRenderCommandTileCapacity> gTileCommands;
 size_t gTileCommandCount = 0;
+std::array<RenderCommandCursorBlit, kRenderCommandCursorCapacity> gCursorCommands;
+size_t gCursorCommandCount = 0;
+std::array<RenderCommandPaletteEffect, kRenderCommandPaletteCapacity> gPaletteCommands;
+size_t gPaletteCommandCount = 0;
+std::array<RenderCommandVideoFrame, kRenderCommandVideoCapacity> gVideoCommands;
+size_t gVideoCommandCount = 0;
 RenderCommandStats gRenderCommandStats = {};
 uint32_t gRenderCommandSequence = 0;
 uint16_t gRenderCommandFrameIndex = 0;
@@ -199,6 +208,9 @@ void renderCommandsResetFrameCaches()
     gLastFrameReferenceWidth = 0;
     gLastFrameReferenceHeight = 0;
     gReplayStats = {};
+    gCursorCommandCount = 0;
+    gPaletteCommandCount = 0;
+    gVideoCommandCount = 0;
 }
 
 void renderCommandResetFallbackState()
@@ -255,6 +267,86 @@ bool renderCommandCaptureEnabled()
 
     if (renderCommandDirectBlitFallbackActive()) {
         return false;
+
+    // ---------------- Phase 2: emit/peek for new commands ----------------
+
+    void renderCommandEmitCursorBlit(const RenderCommandCursorBlitPayload& payload)
+    {
+        renderCommandsEnsureInitialized();
+        if (gCursorCommandCount >= kRenderCommandCursorCapacity) {
+            gRenderCommandStats.dropped++;
+            return;
+        }
+
+        RenderCommandCursorBlit& cmd = gCursorCommands[gCursorCommandCount++];
+        cmd.header.sequence = ++gRenderCommandSequence;
+        cmd.header.frameIndex = gRenderCommandFrameIndex;
+        cmd.header.payloadSize = static_cast<uint16_t>(sizeof(RenderCommandCursorBlitPayload));
+        cmd.op = RenderCommandOp::CursorBlit;
+        cmd.payload = payload;
+        gRenderCommandStats.queued++;
+    }
+
+    bool renderCommandsPeekCursorBlits(RenderCommandCursorBufferView& outView)
+    {
+        renderCommandsEnsureInitialized();
+        outView.commands = gCursorCommands.data();
+        outView.count = gCursorCommandCount;
+        outView.frameIndex = gRenderCommandFrameIndex;
+        return true;
+    }
+
+    void renderCommandEmitPaletteEffect(const RenderCommandPaletteEffectPayload& payload)
+    {
+        renderCommandsEnsureInitialized();
+        if (gPaletteCommandCount >= kRenderCommandPaletteCapacity) {
+            gRenderCommandStats.dropped++;
+            return;
+        }
+
+        RenderCommandPaletteEffect& cmd = gPaletteCommands[gPaletteCommandCount++];
+        cmd.header.sequence = ++gRenderCommandSequence;
+        cmd.header.frameIndex = gRenderCommandFrameIndex;
+        cmd.header.payloadSize = static_cast<uint16_t>(sizeof(RenderCommandPaletteEffectPayload));
+        cmd.op = RenderCommandOp::PaletteEffect;
+        cmd.payload = payload;
+        gRenderCommandStats.queued++;
+    }
+
+    bool renderCommandsPeekPaletteEffects(RenderCommandPaletteBufferView& outView)
+    {
+        renderCommandsEnsureInitialized();
+        outView.commands = gPaletteCommands.data();
+        outView.count = gPaletteCommandCount;
+        outView.frameIndex = gRenderCommandFrameIndex;
+        return true;
+    }
+
+    void renderCommandEmitVideoFrame(const RenderCommandVideoFramePayload& payload)
+    {
+        renderCommandsEnsureInitialized();
+        if (gVideoCommandCount >= kRenderCommandVideoCapacity) {
+            gRenderCommandStats.dropped++;
+            return;
+        }
+
+        RenderCommandVideoFrame& cmd = gVideoCommands[gVideoCommandCount++];
+        cmd.header.sequence = ++gRenderCommandSequence;
+        cmd.header.frameIndex = gRenderCommandFrameIndex;
+        cmd.header.payloadSize = static_cast<uint16_t>(sizeof(RenderCommandVideoFramePayload));
+        cmd.op = RenderCommandOp::VideoFrame;
+        cmd.payload = payload;
+        gRenderCommandStats.queued++;
+    }
+
+    bool renderCommandsPeekVideoFrames(RenderCommandVideoBufferView& outView)
+    {
+        renderCommandsEnsureInitialized();
+        outView.commands = gVideoCommands.data();
+        outView.count = gVideoCommandCount;
+        outView.frameIndex = gRenderCommandFrameIndex;
+        return true;
+    }
     }
 
     return settings.system.render_display_orchestrator;
