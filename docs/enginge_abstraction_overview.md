@@ -192,10 +192,10 @@ Paths that currently emit commands:
 - [x] Objects/critters → `ObjectBlit`
 - [x] UI widgets → `UiBlit`
 - [x] Viewport changes → `ViewportEvent`
+- [x] Mouse cursor → `CursorBlit` command (tracked, legacy rendering)
+- [x] Palette effects → `PaletteEffect` command (tracked, legacy rendering)
 
 Paths that need command coverage:
-- [ ] Palette effects (fades, gamma) → Add `PaletteEffect` command
-- [ ] Mouse cursor → Add `CursorBlit` command
 - [ ] Movie playback → Add `VideoFrame` command
 - [ ] Debug overlays → Add `DebugGlyph` command
 
@@ -350,6 +350,8 @@ if (!orchestratorOwnsPresenter) {
 
 ### Phase 6: Testing & Diagnostics
 
+**Status:** ✅ Complete
+
 #### 6.1 Diagnostic Channels
 
 ```
@@ -360,13 +362,36 @@ RENDERTRACE - Individual blit operations
 
 #### 6.2 Coverage Metrics
 
-Add per-frame metrics:
-- Commands emitted vs. direct writes (should be 100% / 0%)
-- HD cache hit rate
-- Fallback usage count
-- Frame time breakdown (phantom vs. orchestrator)
+Implemented per-frame metrics:
+- [x] Commands queued vs. dropped (overflow detection)
+- [x] HD cache hit rate (orchestratorFrames, fallbackFrames)
+- [x] Direct write tracking (legacy path usage)
+- [x] Frame time breakdown (renderCommandLogFrameMetrics every 300 frames)
 
-#### 6.3 Test Scenarios
+#### 6.3 Critical Rendering Fixes Discovered
+
+**Issue 1: Black Screen**
+- **Root Cause:** Orchestrator composited overlays but never marked virtual screen dirty
+- **Fix:** Added `windowVirtualScreenInvalidateRect()` call after orchestrator processing
+- **Location:** `render_display_orchestrator.cc` line ~760
+
+**Issue 2: Missing Base Layer**  
+- **Root Cause:** When orchestrator active, `clearPresenterRect()` was called instead of rendering indexed background
+- **Fix:** Always render indexed background via `blitIndexedRectToTexture()`, orchestrator only affects overlays
+- **Location:** `window_manager.cc` line ~3605
+
+**Issue 3: Grid Artifacts & Movement Trails**
+- **Root Cause:** Physical overlay buffers accumulated data across frames without being cleared
+- **Fix:** Clear entire tile window overlay at start of each frame before processing commands
+- **Location:** `render_display_orchestrator.cc` line ~750
+- **Key Insight:** Must clear ENTIRE overlay buffer per frame, not per-command, to prevent stale data
+
+**Issue 4: Cursor/Palette Integration**
+- **Implementation:** Cursor and palette commands now emitted and tracked by orchestrator
+- **Location:** `mouse.cc` (cursor), `svga.cc` (palette), `render_display_orchestrator.cc` (processing)
+- **Status:** Commands tracked for metrics; actual rendering still via legacy paths (intentional)
+
+#### 6.4 Test Scenarios
 
 | Scenario | What to Verify |
 |----------|----------------|
@@ -404,6 +429,89 @@ src/
 ├── real_display.h/.cc         # NEW: Encapsulates physical output + HD cache
 ├── display_abstraction.h      # NEW: Shared interface contracts
 ```
+
+---
+
+## Actual Rendering Pipeline (As Implemented)
+
+### Frame Lifecycle
+
+```
+1. Game Logic Updates (Phantom Display)
+   - Game code writes to _screen_buffer (640×480 indexed)
+   - Marks regions dirty via windowVirtualScreenInvalidateRect()
+   - Emits render commands for tiles/objects/UI
+
+2. windowPresentVirtualScreen() Called
+   a. renderDisplayOrchestratorProcess()
+      - Processes viewport events (scroll, fade, etc.)
+      - Processes cursor commands (tracking only)
+      - Processes palette commands (tracking only)
+      - CLEARS entire tile window physical overlay buffer
+      - For each tile/object/UI command:
+        * Queries HD asset registry
+        * Composites HD pixels to physical overlay with lighting
+      - Marks virtual screen dirty if content rendered
+   
+   b. Render Indexed Background
+      - blitIndexedRectToTexture(virtualScreenBuffer, ...)
+      - Converts 8-bit indexed → RGBA using texture palette
+      - Writes to SDL presenter texture (gSdlTextureSurface)
+   
+   c. Composite HD Overlays
+      - windowCompositeTrueColorOverlays()
+      - For each window with physical overlay:
+        * blitPhysicalTrueColorRectToTexture()
+        * Composites RGBA overlays on top of indexed base
+        * Respects mask: only overwrites where mask != 0
+
+3. renderPresent() Called
+   - SDL_UpdateTexture() uploads presenter texture to GPU
+   - SDL_RenderCopy() renders with letterboxing
+   - SDL_RenderPresent() swaps buffers
+   - Logs frame metrics every 300 frames
+```
+
+### Layer Compositing Order
+
+```
+Final Frame = Base Layer + Overlay Layer
+
+Base Layer (8-bit indexed):
+  - Source: _screen_buffer (640×480)
+  - Method: blitIndexedRectToTexture
+  - Output: SDL presenter texture
+  - Always rendered every frame
+
+Overlay Layer (32-bit RGBA):
+  - Source: Physical overlay buffers (per window)
+  - Method: blitPhysicalTrueColorRectToTexture  
+  - Output: SDL presenter texture (composited on top)
+  - Only rendered where mask != 0
+  - Cleared every frame before orchestrator writes
+```
+
+### Critical Implementation Details
+
+**1. Overlay Buffer Management**
+- Each window has TWO overlay buffers:
+  - Logical overlay: 640×480 RGBA (for non-scaled rendering)
+  - Physical overlay: Viewport-sized RGBA (for HD rendering)
+- Orchestrator writes ONLY to physical overlays
+- Physical overlays MUST be cleared every frame (not per-command)
+- Compositing happens AFTER indexed background is rendered
+
+**2. Coordinate System**
+- All game logic uses logical coordinates (640×480)
+- Render commands carry logical rects
+- Display scaler maps logical → physical via scale tables
+- Physical overlays are viewport-sized but indexed by logical coords
+
+**3. Asset Resolution**
+- HD assets queried via `renderAssetRegistryGetHdView()`
+- Cache miss → auto-generates fallback from 8-bit indexed
+- Fallback is cached permanently until restart
+- HD assets rendered at full resolution with bilinear filtering
 
 ---
 

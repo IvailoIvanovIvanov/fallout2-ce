@@ -476,10 +476,7 @@ bool processIsoCommand(const RenderCommandTileBlit& command,
         return false;
     }
 
-    // CRITICAL FIX: Clear the overlay region BEFORE rendering to prevent visual artifacts
-    // This fixes grid artifacts and character movement trails
-    clearOverlayRegion(target, clippedRect);
-
+    // Note: Overlay is cleared once per frame in renderDisplayOrchestratorProcess, not per-command
     if (!blitToPhysicalOverlay(target, view, clippedRect, sampledOffsetX, sampledOffsetY, copyWidth, copyHeight, lighting, samplingContext)) {
         return false;
     }
@@ -744,6 +741,16 @@ void renderDisplayOrchestratorProcess()
     }
     sLastTileFrameIndex = bufferView.frameIndex;
     sForceRedraw = false;
+
+    // CRITICAL FIX: Clear the entire tile window overlay at start of each frame
+    // This prevents artifacts from previous frames (grid patterns, movement trails)
+    if (tileWindowId != -1 && tileTargetAvailable) {
+        const int windowWidth = rectGetWidth(&tileTarget.windowRect);
+        const int windowHeight = rectGetHeight(&tileTarget.windowRect);
+        if (windowWidth > 0 && windowHeight > 0) {
+            windowClearTrueColorRegion(tileWindowId, 0, 0, windowWidth, windowHeight);
+        }
+    }
 
     if (sBlackoutActive) {
         return;

@@ -3601,27 +3601,27 @@ void windowPresentVirtualScreen()
     }
     windowAccumulatePhysicalRectStats(physicalDirtyRect);
 
-    // Phase 5: When orchestrator is active, it handles rendering. Otherwise use direct blit.
+    // Phase 5: When orchestrator is active, it handles HD overlays but base indexed background still needs rendering
     const bool orchestratorOwnsPresenter = renderDisplayOrchestratorOwnsPresenter();
+    
+    // Always render the indexed background to presenter (8-bit base layer)
+    const unsigned char* virtualScreenBuffer = windowGetVirtualScreenBuffer();
+    if (virtualScreenBuffer != nullptr) {
+        const int pitch = windowGetVirtualScreenPitch();
+        blitIndexedRectToTexture(virtualScreenBuffer, pitch, rect);
+    }
+    
     if (orchestratorOwnsPresenter) {
-        clearPresenterRect(rect);
         if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
             diagnosticsLog(DiagnosticsLevel::Trace,
                 "SCALER",
-                "presenter_clear reason=orchestrator rect=(%d,%d %dx%d)",
+                "orchestrator_active rendering base+overlays rect=(%d,%d %dx%d)",
                 rect.left,
                 rect.top,
                 width,
                 height);
         }
     } else {
-        // Orchestrator not active - use direct indexed blit (standard rendering path)
-        const unsigned char* virtualScreenBuffer = windowGetVirtualScreenBuffer();
-        if (virtualScreenBuffer != nullptr) {
-            const int pitch = windowGetVirtualScreenPitch();
-            blitIndexedRectToTexture(virtualScreenBuffer, pitch, rect);
-        }
-        
         // Only warn if virtual adapter is explicitly enabled but orchestrator isn't working
         if (gVirtualScreenEnabled && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
             diagnosticsLog(DiagnosticsLevel::Info,
