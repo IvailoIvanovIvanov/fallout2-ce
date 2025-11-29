@@ -3601,8 +3601,7 @@ void windowPresentVirtualScreen()
     }
     windowAccumulatePhysicalRectStats(physicalDirtyRect);
 
-    // Phase 5: Orchestrator is now mandatory when virtual adapter is enabled.
-    // Legacy blitIndexedRectToTexture path removed.
+    // Phase 5: When orchestrator is active, it handles rendering. Otherwise use direct blit.
     const bool orchestratorOwnsPresenter = renderDisplayOrchestratorOwnsPresenter();
     if (orchestratorOwnsPresenter) {
         clearPresenterRect(rect);
@@ -3616,11 +3615,18 @@ void windowPresentVirtualScreen()
                 height);
         }
     } else {
-        // Virtual adapter enabled but orchestrator inactive - should not happen in Phase 5+
+        // Orchestrator not active - use direct indexed blit (standard rendering path)
+        const unsigned char* virtualScreenBuffer = windowGetVirtualScreenBuffer();
+        if (virtualScreenBuffer != nullptr) {
+            const int pitch = windowGetVirtualScreenPitch();
+            blitIndexedRectToTexture(virtualScreenBuffer, pitch, rect);
+        }
+        
+        // Only warn if virtual adapter is explicitly enabled but orchestrator isn't working
         if (gVirtualScreenEnabled && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
             diagnosticsLog(DiagnosticsLevel::Info,
                 "SCALER",
-                "virtual_adapter enabled but orchestrator inactive - check config");
+                "virtual_adapter enabled but orchestrator inactive - using fallback rendering");
         }
     }
 
