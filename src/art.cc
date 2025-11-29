@@ -79,7 +79,8 @@ struct HdPngStream {
 };
 
 static std::unordered_map<int, HdArtInfo> gHdArtInfoCache;
-static std::unordered_map<const unsigned char*, HdTrueColorFrameView> gHdTrueColorFrameRegistry;
+// Note: HD frame registry moved to render_asset_registry.cc.
+// artRegisterTrueColorFrameData now delegates to renderAssetRegistryAttachHdView.
 static std::unordered_map<const unsigned char*, std::unique_ptr<uint32_t[]>> gHdTrueColorFrameStorage;
 static std::unordered_map<const void*, std::vector<const unsigned char*>> gHdTrueColorArtFrameOwners;
 struct HdTrueColorCacheStats {
@@ -90,7 +91,7 @@ static HdTrueColorCacheStats gHdTrueColorCacheStats;
 static std::unordered_set<int> gHdTrueColorActiveFids;
 static void hdTrueColorRegistryClear()
 {
-    gHdTrueColorFrameRegistry.clear();
+    // gHdTrueColorFrameRegistry removed - render_asset_registry owns HD views
     gHdTrueColorFrameStorage.clear();
     gHdTrueColorArtFrameOwners.clear();
 }
@@ -2238,7 +2239,8 @@ bool artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t*
     view.height = height;
     view.alphaMode = alphaMode;
 
-    gHdTrueColorFrameRegistry[indexed] = view;
+    // Delegate to render_asset_registry (the single source of truth for HD views)
+    renderAssetRegistryAttachHdView(indexed, view, false);
 
     if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
         diagnosticsLog(DiagnosticsLevel::Trace,
@@ -2250,8 +2252,6 @@ bool artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t*
             hdAlphaModeToString(alphaMode));
     }
 
-    renderAssetRegistryAttachHdView(indexed, view, false);
-
     return true;
 }
 
@@ -2261,12 +2261,7 @@ void artUnregisterTrueColorFrameData(const unsigned char* indexed)
         return;
     }
 
-    auto it = gHdTrueColorFrameRegistry.find(indexed);
-    if (it == gHdTrueColorFrameRegistry.end()) {
-        return;
-    }
-
-    gHdTrueColorFrameRegistry.erase(it);
+    // Delegate to render_asset_registry (single source of truth)
     gHdTrueColorFrameStorage.erase(indexed);
     renderAssetRegistryDetachHdView(indexed);
 
@@ -2322,17 +2317,14 @@ bool artLookupRegisteredTrueColorFrame(const unsigned char* indexed, HdTrueColor
 
     gHdTrueColorCacheStats.requests++;
 
-    auto it = gHdTrueColorFrameRegistry.find(indexed);
-    if (it == gHdTrueColorFrameRegistry.end()) {
-        return false;
-    }
-
-    out = it->second;
-    bool hit = out.pixels != nullptr && out.width > 0 && out.height > 0;
-    if (hit) {
+    // Delegate to render_asset_registry
+    bool found = renderAssetRegistryGetHdViewByPointer(indexed, out, nullptr);
+    if (found && out.pixels != nullptr && out.width > 0 && out.height > 0) {
         gHdTrueColorCacheStats.hits++;
+        return true;
     }
-    return hit;
+    
+    return false;
 }
 
 bool artConformTrueColorFrame(int fid, int frameWidth, int frameHeight, HdTrueColorFrameView& view)

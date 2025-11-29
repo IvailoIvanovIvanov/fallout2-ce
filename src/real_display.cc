@@ -5,6 +5,10 @@
 
 namespace fallout {
 
+RealDisplay::RealDisplay() = default;
+
+RealDisplay::~RealDisplay() = default;
+
 void RealDisplay::processCommands(const RenderCommandBufferView& /*commands*/) const
 {
     // The orchestrator already owns command retrieval from internal queues.

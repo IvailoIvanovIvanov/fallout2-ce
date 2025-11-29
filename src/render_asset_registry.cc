@@ -54,10 +54,6 @@ using AssetMap = std::unordered_map<RenderAssetKey, RenderAssetMetadata, RenderA
 using PointerMap = std::unordered_map<const unsigned char*, RenderAssetKey>;
 using OwnerMap = std::unordered_map<const void*, std::unordered_set<const unsigned char*>>;
 
-AssetMap gAssets;
-PointerMap gPointerToAsset;
-OwnerMap gOwnerToPointers;
-
 RenderAssetKey makeKey(const RenderAssetHandle& handle)
 {
     return RenderAssetKey { handle.fid, handle.frame, handle.rotation, handle.variant };
@@ -71,37 +67,58 @@ uint64_t computeAssetId(const RenderAssetHandle& handle)
         | (static_cast<uint64_t>(handle.variant) << 56);
 }
 
-RenderAssetMetadata* findMetadata(const RenderAssetHandle& handle)
+} // namespace
+
+struct RenderAssetRegistry::Impl {
+    AssetMap assets;
+    PointerMap pointerToAsset;
+    OwnerMap ownerToPointers;
+
+    RenderAssetMetadata* findMetadata(const RenderAssetHandle& handle);
+    const RenderAssetMetadata* findMetadata(const RenderAssetHandle& handle) const;
+    RenderAssetMetadata* findMetadataByPointer(const unsigned char* indexed);
+    void ensureFallback(RenderAssetMetadata& metadata, const unsigned char* indexed);
+    bool conformHdView(RenderAssetMetadata& metadata);
+};
+
+RenderAssetMetadata* RenderAssetRegistry::Impl::findMetadata(const RenderAssetHandle& handle)
 {
-    auto it = gAssets.find(makeKey(handle));
-    if (it == gAssets.end()) {
+    auto it = assets.find(makeKey(handle));
+    if (it == assets.end()) {
         return nullptr;
     }
     return &(it->second);
 }
 
-RenderAssetMetadata* findMetadataByPointer(const unsigned char* indexed)
+const RenderAssetMetadata* RenderAssetRegistry::Impl::findMetadata(const RenderAssetHandle& handle) const
+{
+    auto it = assets.find(makeKey(handle));
+    if (it == assets.end()) {
+        return nullptr;
+    }
+    return &(it->second);
+}
+
+RenderAssetMetadata* RenderAssetRegistry::Impl::findMetadataByPointer(const unsigned char* indexed)
 {
     if (indexed == nullptr) {
         return nullptr;
     }
 
-    auto pointerIt = gPointerToAsset.find(indexed);
-    if (pointerIt == gPointerToAsset.end()) {
+    auto pointerIt = pointerToAsset.find(indexed);
+    if (pointerIt == pointerToAsset.end()) {
         return nullptr;
     }
 
-    auto assetIt = gAssets.find(pointerIt->second);
-    if (assetIt == gAssets.end()) {
+    auto assetIt = assets.find(pointerIt->second);
+    if (assetIt == assets.end()) {
         return nullptr;
     }
 
     return &(assetIt->second);
 }
 
-static bool conformHdView(RenderAssetMetadata& metadata);
-
-void ensureFallback(RenderAssetMetadata& metadata, const unsigned char* indexed)
+void RenderAssetRegistry::Impl::ensureFallback(RenderAssetMetadata& metadata, const unsigned char* indexed)
 {
     if (metadata.hdViewValid && !metadata.hdIsFallback) {
         return;
@@ -144,7 +161,7 @@ void ensureFallback(RenderAssetMetadata& metadata, const unsigned char* indexed)
     metadata.hdIsFallback = true;
 
     if (metadata.hdViewValid) {
-        conformHdView(metadata);
+        this->conformHdView(metadata);
     }
 
     if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
@@ -158,7 +175,7 @@ void ensureFallback(RenderAssetMetadata& metadata, const unsigned char* indexed)
     }
 }
 
-static bool conformHdView(RenderAssetMetadata& metadata)
+bool RenderAssetRegistry::Impl::conformHdView(RenderAssetMetadata& metadata)
 {
     if (!metadata.hdViewValid) {
         return false;
@@ -183,16 +200,21 @@ static bool conformHdView(RenderAssetMetadata& metadata)
     return true;
 }
 
-} // namespace
-
-void renderAssetRegistryReset()
+RenderAssetRegistry::RenderAssetRegistry()
+    : impl_(std::make_unique<Impl>())
 {
-    gAssets.clear();
-    gPointerToAsset.clear();
-    gOwnerToPointers.clear();
 }
 
-void renderAssetRegistryTrackFrame(const RenderAssetHandle& handle,
+RenderAssetRegistry::~RenderAssetRegistry() = default;
+
+void RenderAssetRegistry::reset()
+{
+    impl_->assets.clear();
+    impl_->pointerToAsset.clear();
+    impl_->ownerToPointers.clear();
+}
+
+void RenderAssetRegistry::trackFrame(const RenderAssetHandle& handle,
     const void* owner,
     const unsigned char* indexed,
     uint16_t width,
@@ -203,7 +225,7 @@ void renderAssetRegistryTrackFrame(const RenderAssetHandle& handle,
     }
 
     RenderAssetKey key = makeKey(handle);
-    RenderAssetMetadata& metadata = gAssets[key];
+    RenderAssetMetadata& metadata = impl_->assets[key];
     metadata.handle = handle;
     metadata.key = key;
     metadata.id = computeAssetId(handle);
@@ -211,36 +233,36 @@ void renderAssetRegistryTrackFrame(const RenderAssetHandle& handle,
     metadata.height = height;
     metadata.indexed = indexed;
 
-    gPointerToAsset[indexed] = key;
+    impl_->pointerToAsset[indexed] = key;
 
     if (owner != nullptr) {
-        gOwnerToPointers[owner].insert(indexed);
+        impl_->ownerToPointers[owner].insert(indexed);
     }
 
     if (!metadata.hdViewValid) {
-        ensureFallback(metadata, indexed);
+        impl_->ensureFallback(metadata, indexed);
     }
 }
 
-void renderAssetRegistryReleaseFramesForOwner(const void* owner)
+void RenderAssetRegistry::releaseFramesForOwner(const void* owner)
 {
     if (owner == nullptr) {
         return;
     }
 
-    auto ownerIt = gOwnerToPointers.find(owner);
-    if (ownerIt == gOwnerToPointers.end()) {
+    auto ownerIt = impl_->ownerToPointers.find(owner);
+    if (ownerIt == impl_->ownerToPointers.end()) {
         return;
     }
 
     for (const unsigned char* indexed : ownerIt->second) {
-        auto pointerIt = gPointerToAsset.find(indexed);
-        if (pointerIt == gPointerToAsset.end()) {
+        auto pointerIt = impl_->pointerToAsset.find(indexed);
+        if (pointerIt == impl_->pointerToAsset.end()) {
             continue;
         }
 
-        auto assetIt = gAssets.find(pointerIt->second);
-        if (assetIt != gAssets.end() && assetIt->second.indexed == indexed) {
+        auto assetIt = impl_->assets.find(pointerIt->second);
+        if (assetIt != impl_->assets.end() && assetIt->second.indexed == indexed) {
             assetIt->second.indexed = nullptr;
             if (!assetIt->second.hdIsFallback) {
                 assetIt->second.hdView = {};
@@ -248,17 +270,17 @@ void renderAssetRegistryReleaseFramesForOwner(const void* owner)
             }
         }
 
-        gPointerToAsset.erase(pointerIt);
+        impl_->pointerToAsset.erase(pointerIt);
     }
 
-    gOwnerToPointers.erase(ownerIt);
+    impl_->ownerToPointers.erase(ownerIt);
 }
 
-bool renderAssetRegistryAttachHdView(const unsigned char* indexed,
+bool RenderAssetRegistry::attachHdView(const unsigned char* indexed,
     const HdTrueColorFrameView& view,
     bool isFallback)
 {
-    RenderAssetMetadata* metadata = findMetadataByPointer(indexed);
+    RenderAssetMetadata* metadata = impl_->findMetadataByPointer(indexed);
     if (metadata == nullptr) {
         return false;
     }
@@ -274,16 +296,16 @@ bool renderAssetRegistryAttachHdView(const unsigned char* indexed,
         return false;
     }
 
-    if (!conformHdView(*metadata)) {
-        ensureFallback(*metadata, indexed);
+    if (!impl_->conformHdView(*metadata)) {
+        impl_->ensureFallback(*metadata, indexed);
     }
 
     return metadata->hdViewValid;
 }
 
-void renderAssetRegistryDetachHdView(const unsigned char* indexed)
+void RenderAssetRegistry::detachHdView(const unsigned char* indexed)
 {
-    RenderAssetMetadata* metadata = findMetadataByPointer(indexed);
+    RenderAssetMetadata* metadata = impl_->findMetadataByPointer(indexed);
     if (metadata == nullptr || metadata->hdIsFallback) {
         return;
     }
@@ -292,11 +314,11 @@ void renderAssetRegistryDetachHdView(const unsigned char* indexed)
     metadata->hdViewValid = false;
 }
 
-bool renderAssetRegistryGetHdView(const RenderAssetHandle& handle,
+bool RenderAssetRegistry::getHdView(const RenderAssetHandle& handle,
     HdTrueColorFrameView& outView,
-    bool* outIsFallback)
+    bool* outIsFallback) const
 {
-    RenderAssetMetadata* metadata = findMetadata(handle);
+    const RenderAssetMetadata* metadata = impl_->findMetadata(handle);
     if (metadata == nullptr || !metadata->hdViewValid) {
         if (outIsFallback != nullptr) {
             *outIsFallback = false;
@@ -312,9 +334,30 @@ bool renderAssetRegistryGetHdView(const RenderAssetHandle& handle,
     return true;
 }
 
-bool renderAssetRegistryGetState(const RenderAssetHandle& handle, RenderAssetState& outState)
+bool RenderAssetRegistry::getHdViewByPointer(const unsigned char* indexed,
+    HdTrueColorFrameView& outView,
+    bool* outIsFallback) const
 {
-    RenderAssetMetadata* metadata = findMetadata(handle);
+    const RenderAssetMetadata* metadata = const_cast<const RenderAssetMetadata*>(
+        const_cast<Impl*>(impl_.get())->findMetadataByPointer(indexed));
+    if (metadata == nullptr || !metadata->hdViewValid) {
+        if (outIsFallback != nullptr) {
+            *outIsFallback = false;
+        }
+        return false;
+    }
+
+    outView = metadata->hdView;
+    if (outIsFallback != nullptr) {
+        *outIsFallback = metadata->hdIsFallback;
+    }
+
+    return true;
+}
+
+bool RenderAssetRegistry::getState(const RenderAssetHandle& handle, RenderAssetState& outState) const
+{
+    const RenderAssetMetadata* metadata = impl_->findMetadata(handle);
     if (metadata == nullptr) {
         return false;
     }
@@ -324,8 +367,64 @@ bool renderAssetRegistryGetState(const RenderAssetHandle& handle, RenderAssetSta
     outState.width = metadata->width;
     outState.height = metadata->height;
     outState.hdAvailable = metadata->hdViewValid;
-    outState.hdIsFallback = metadata->hdViewValid && metadata->hdIsFallback;
+    outState.hdIsFallback = metadata->hdIsFallback;
+
     return true;
+}
+
+// Legacy global singleton instance
+namespace {
+RenderAssetRegistry gLegacyRegistry;
+}
+
+void renderAssetRegistryReset()
+{
+    gLegacyRegistry.reset();
+}
+
+void renderAssetRegistryTrackFrame(const RenderAssetHandle& handle,
+    const void* owner,
+    const unsigned char* indexed,
+    uint16_t width,
+    uint16_t height)
+{
+    gLegacyRegistry.trackFrame(handle, owner, indexed, width, height);
+}
+
+void renderAssetRegistryReleaseFramesForOwner(const void* owner)
+{
+    gLegacyRegistry.releaseFramesForOwner(owner);
+}
+
+bool renderAssetRegistryAttachHdView(const unsigned char* indexed,
+    const HdTrueColorFrameView& view,
+    bool isFallback)
+{
+    return gLegacyRegistry.attachHdView(indexed, view, isFallback);
+}
+
+void renderAssetRegistryDetachHdView(const unsigned char* indexed)
+{
+    gLegacyRegistry.detachHdView(indexed);
+}
+
+bool renderAssetRegistryGetHdView(const RenderAssetHandle& handle,
+    HdTrueColorFrameView& outView,
+    bool* outIsFallback)
+{
+    return gLegacyRegistry.getHdView(handle, outView, outIsFallback);
+}
+
+bool renderAssetRegistryGetHdViewByPointer(const unsigned char* indexed,
+    HdTrueColorFrameView& outView,
+    bool* outIsFallback)
+{
+    return gLegacyRegistry.getHdViewByPointer(indexed, outView, outIsFallback);
+}
+
+bool renderAssetRegistryGetState(const RenderAssetHandle& handle, RenderAssetState& outState)
+{
+    return gLegacyRegistry.getState(handle, outState);
 }
 
 } // namespace fallout
