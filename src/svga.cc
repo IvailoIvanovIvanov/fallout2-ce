@@ -936,6 +936,14 @@ void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect
         return;
     }
 
+    // Phase 5: Warn if this legacy path is used with virtual adapter enabled
+    // (orchestrator should handle all rendering)
+    if (settings.system.virtual_adapter && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        diagnosticsLog(DiagnosticsLevel::Info,
+            "SCALER",
+            "blitIndexedRectToTexture called with virtual_adapter enabled - check orchestrator config");
+    }
+
     Rect logicalRect;
     Rect presenterRect;
     if (!resolvePresenterRect(rect, &logicalRect, &presenterRect)) {

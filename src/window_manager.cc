@@ -3601,6 +3601,8 @@ void windowPresentVirtualScreen()
     }
     windowAccumulatePhysicalRectStats(physicalDirtyRect);
 
+    // Phase 5: Orchestrator is now mandatory when virtual adapter is enabled.
+    // Legacy blitIndexedRectToTexture path removed.
     const bool orchestratorOwnsPresenter = renderDisplayOrchestratorOwnsPresenter();
     if (orchestratorOwnsPresenter) {
         clearPresenterRect(rect);
@@ -3614,7 +3616,12 @@ void windowPresentVirtualScreen()
                 height);
         }
     } else {
-        blitIndexedRectToTexture(_screen_buffer, _screen_buffer_pitch, rect);
+        // Virtual adapter enabled but orchestrator inactive - should not happen in Phase 5+
+        if (gVirtualScreenEnabled && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "SCALER",
+                "virtual_adapter enabled but orchestrator inactive - check config");
+        }
     }
 
     int overlayPixels = windowCompositeTrueColorOverlays(rect);

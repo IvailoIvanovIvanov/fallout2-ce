@@ -479,11 +479,27 @@ void handleViewportEvent(const RenderViewportEvent& event)
 
 bool renderDisplayOrchestratorEnabled()
 {
-    if (renderCommandDirectBlitFallbackActive()) {
+    // Phase 5: When virtual adapter is enabled, orchestrator must be active.
+    // Direct blit fallback is only for catastrophic failures (queue overflow).
+    const bool virtualAdapterActive = settings.system.virtual_adapter && settings.system.virtual_adapter_fullres;
+    
+    if (!virtualAdapterActive) {
         return false;
     }
 
-    return settings.system.render_display_orchestrator && settings.system.virtual_adapter && settings.system.virtual_adapter_fullres;
+    if (renderCommandDirectBlitFallbackActive()) {
+        // Log warning - this should only happen on queue overflow
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "SCALER",
+                "orchestrator disabled due to fallback: %s",
+                renderCommandDirectBlitFallbackReason());
+        }
+        return false;
+    }
+
+    // Orchestrator is mandatory when virtual adapter is enabled
+    return settings.system.render_display_orchestrator;
 }
 
 bool renderDisplayOrchestratorConsumesTileOverlays()
