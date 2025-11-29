@@ -219,6 +219,72 @@ uint32_t sampleHdPixelBilinear(const HdSamplingContext& context,
         | clampComponent(b);
 }
 
+void clearOverlayRegion(const WindowOverlayTarget& target,
+    const Rect& logicalRect)
+{
+    if (target.physical.pixels == nullptr || target.physical.mask == nullptr || target.physical.pitch <= 0) {
+        return;
+    }
+
+    const DisplayScalerScaleTable& scaleTable = displayScalerGetScaleTable();
+    if (!scaleTable.valid) {
+        return;
+    }
+
+    const int horizontalLimit = static_cast<int>(scaleTable.horizontal.starts.size());
+    const int verticalLimit = static_cast<int>(scaleTable.vertical.starts.size());
+
+    const int width = rectGetWidth(&logicalRect);
+    const int height = rectGetHeight(&logicalRect);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    // Clear the physical region corresponding to this logical rect
+    for (int logicalRow = 0; logicalRow < height; logicalRow++) {
+        const int logicalY = logicalRect.top + logicalRow;
+        if (logicalY < 0 || logicalY >= verticalLimit) {
+            continue;
+        }
+
+        int physicalRowStart = scaleTable.vertical.starts[logicalY] - target.physical.viewport.top;
+        int physicalRowEnd = scaleTable.vertical.ends[logicalY] - target.physical.viewport.top;
+        physicalRowStart = std::max(physicalRowStart, 0);
+        physicalRowEnd = std::min(physicalRowEnd, target.physical.height - 1);
+
+        if (physicalRowStart > physicalRowEnd) {
+            continue;
+        }
+
+        for (int physicalRow = physicalRowStart; physicalRow <= physicalRowEnd; physicalRow++) {
+            uint32_t* destRow = target.physical.pixels + physicalRow * target.physical.pitch;
+            unsigned char* maskRow = target.physical.mask + physicalRow * target.physical.pitch;
+
+            for (int logicalColumn = 0; logicalColumn < width; logicalColumn++) {
+                const int logicalX = logicalRect.left + logicalColumn;
+                if (logicalX < 0 || logicalX >= horizontalLimit) {
+                    continue;
+                }
+
+                int physicalColumnStart = scaleTable.horizontal.starts[logicalX] - target.physical.viewport.left;
+                int physicalColumnEnd = scaleTable.horizontal.ends[logicalX] - target.physical.viewport.left;
+                physicalColumnStart = std::max(physicalColumnStart, 0);
+                physicalColumnEnd = std::min(physicalColumnEnd, target.physical.width - 1);
+
+                if (physicalColumnStart > physicalColumnEnd) {
+                    continue;
+                }
+
+                // Clear all physical pixels in this span
+                for (int physicalColumn = physicalColumnStart; physicalColumn <= physicalColumnEnd; physicalColumn++) {
+                    destRow[physicalColumn] = 0;
+                    maskRow[physicalColumn] = 0;
+                }
+            }
+        }
+    }
+}
+
 bool blitToPhysicalOverlay(const WindowOverlayTarget& target,
     const HdTrueColorFrameView& view,
     const Rect& logicalRect,
@@ -409,6 +475,10 @@ bool processIsoCommand(const RenderCommandTileBlit& command,
     if (samplingContext.base == nullptr || samplingContext.stride <= 0 || samplingContext.textureWidth <= 0 || samplingContext.textureHeight <= 0) {
         return false;
     }
+
+    // CRITICAL FIX: Clear the overlay region BEFORE rendering to prevent visual artifacts
+    // This fixes grid artifacts and character movement trails
+    clearOverlayRegion(target, clippedRect);
 
     if (!blitToPhysicalOverlay(target, view, clippedRect, sampledOffsetX, sampledOffsetY, copyWidth, copyHeight, lighting, samplingContext)) {
         return false;
