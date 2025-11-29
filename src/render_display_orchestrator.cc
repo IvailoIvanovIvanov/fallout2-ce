@@ -698,6 +698,13 @@ void renderDisplayOrchestratorProcess()
     if (totalFallback > 0) {
         gRenderCommandStats.fallbackFrames++;
     }
+
+    // CRITICAL FIX: Mark virtual screen dirty so windowPresentVirtualScreen actually presents
+    // Without this, orchestrator composites to overlays but nothing appears on screen!
+    if (sOrchestratorHasTarget && logicalPixelsDrawn > 0) {
+        Rect fullScreen = { 0, 0, 639, 479 };
+        windowVirtualScreenInvalidateRect(fullScreen);
+    }
 }
 
 } // namespace fallout
