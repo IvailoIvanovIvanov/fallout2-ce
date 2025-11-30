@@ -739,7 +739,24 @@ void renderDisplayOrchestratorProcess()
 
     std::unordered_set<int> clearedWindowIds;
 
+    // Clear the tile window overlay at the start of EVERY frame when we have commands.
+    // This prevents stale HD pixels from accumulating across frames.
+    // The overlay should be transparent except where HD tiles are explicitly drawn this frame.
+    if (tileTargetAvailable && bufferView.count > 0) {
+        const int windowWidth = rectGetWidth(&tileTarget.windowRect);
+        const int windowHeight = rectGetHeight(&tileTarget.windowRect);
+        if (windowWidth > 0 && windowHeight > 0) {
+            windowClearTrueColorRegion(tileTarget.windowId, 0, 0, windowWidth, windowHeight);
+            clearedWindowIds.insert(tileTarget.windowId);
+        }
+    }
+
     auto clearWindowTargetIfNeeded = [&](WindowOverlayTarget& target) {
+        // Already cleared, or needs special handling
+        if (clearedWindowIds.count(target.windowId) > 0) {
+            return;
+        }
+
         if (!(fullClearRequested || blackoutClearRequested)) {
             return;
         }

@@ -81,6 +81,7 @@ struct RenderCommandTileBlit {
 struct RenderCommandStats {
     uint32_t queued = 0;
     uint32_t dropped = 0;
+    uint32_t tileDropped = 0;       // Tile commands specifically dropped (triggers fallback)
     // Phase 6: Extended metrics
     uint32_t directWrites = 0;      // Legacy path usage counter
     uint32_t orchestratorFrames = 0; // Frames handled by orchestrator

@@ -949,37 +949,26 @@ void _GNW95_ShowRect(unsigned char* src, int srcPitch, int a3, int srcX, int src
 
 void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect& rect)
 {
-    // Block legacy presenter uploads ONLY when orchestrator actually owns the presenter
-    // for this frame (i.e., tile commands are being processed). During menus/loading 
-    // screens, the orchestrator is configured but not active, so indexed blits must 
-    // proceed to render the fallback background.
-    if (renderDisplayOrchestratorOwnsPresenter()) {
-        if (settings.debug.render_path_trace) {
-            diagnosticsLog(DiagnosticsLevel::Info,
-                "RENDERPATH",
-                "BLOCKED: legacy indexed_blit - orchestrator owns presenter rect=(%d,%d %dx%d)",
-                rect.left,
-                rect.top,
-                rectGetWidth(&rect),
-                rectGetHeight(&rect));
-        }
-        return;
-    }
+    // NOTE: We do NOT block indexed blits here. The indexed base layer must always
+    // render to provide the background for UI, objects without HD assets, etc.
+    // The HD overlay from the orchestrator is composited ON TOP of this base layer.
+    // The "dual display" architecture means both layers render - indexed first, then HD overlay.
 
     if (src == nullptr || gSdlTextureSurface == nullptr) {
         return;
     }
 
-    // RENDER PATH TRACE: Log when legacy indexed path is actually drawing
+    // RENDER PATH TRACE: Log indexed path activity (informational, not an error)
     if (settings.debug.render_path_trace && settings.system.virtual_adapter) {
-        diagnosticsLog(DiagnosticsLevel::Info,
+        bool orchestratorOwns = renderDisplayOrchestratorOwnsPresenter();
+        diagnosticsLog(DiagnosticsLevel::Trace,  // Changed to Trace level - this is normal operation
             "RENDERPATH",
-            "LEGACY: indexed_blit ACTIVE (should NOT happen in phantom mode) rect=(%d,%d %dx%d) orchestrator_enabled=%d",
+            "indexed_blit: rect=(%d,%d %dx%d) orchestrator_owns=%d",
             rect.left,
             rect.top,
             rectGetWidth(&rect),
             rectGetHeight(&rect),
-            renderDisplayOrchestratorEnabled() ? 1 : 0);
+            orchestratorOwns ? 1 : 0);
     }
 
     // Note: Even in virtual adapter mode, the indexed base layer uploads

@@ -456,6 +456,7 @@ void renderCommandEmitTileBlit(RenderCommandOp op, const RenderCommandTileBlitPa
 
     if (gTileCommandCount >= gTileCommands.size()) {
         gRenderCommandStats.dropped++;
+        gRenderCommandStats.tileDropped++;  // Track tile-specific drops for fallback triggering
         if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
             diagnosticsLog(DiagnosticsLevel::Trace,
                 "SCALER",
@@ -1239,8 +1240,10 @@ void renderCommandsEvaluateAutoFallback()
         return;
     }
 
-    if (gLastFrameStats.dropped > 0) {
-        renderCommandTriggerDirectBlitFallback("command_queue_overflow");
+    // Only trigger fallback on TILE command overflow, not cursor/palette/video
+    // Cursor and palette overflows are minor and shouldn't disable the HD path
+    if (gLastFrameStats.tileDropped > 0) {
+        renderCommandTriggerDirectBlitFallback("tile_command_queue_overflow");
         return;
     }
 
