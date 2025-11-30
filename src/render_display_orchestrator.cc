@@ -480,7 +480,11 @@ bool processIsoCommand(const RenderCommandTileBlit& command,
         return false;
     }
 
-    // Note: Overlay is cleared once per frame in renderDisplayOrchestratorProcess, not per-command
+    // Clear just this tile's region before drawing to prevent accumulation of stale pixels.
+    // This is more efficient than clearing the entire overlay every frame, and works correctly
+    // with scroll memmove operations which preserve existing overlay content.
+    clearOverlayRegion(target, clippedRect);
+
     if (!blitToPhysicalOverlay(target, view, clippedRect, sampledOffsetX, sampledOffsetY, copyWidth, copyHeight, lighting, samplingContext)) {
         return false;
     }
@@ -517,6 +521,11 @@ void handleViewportEvent(const RenderViewportEvent& event)
 {
     switch (event.payload.type) {
     case RenderViewportEventType::Scroll:
+        // NOTE: For scroll events, mapScrollPhysicalTrueColorOverlay() already memmoves
+        // the physical overlay content. We should NOT clear it here as that would erase
+        // the scrolled content. Only mark forceRedraw so new edge tiles get drawn.
+        sForceRedraw = true;
+        break;
     case RenderViewportEventType::Resize:
         sPendingFullClear = true;
         sForceRedraw = true;
@@ -739,24 +748,13 @@ void renderDisplayOrchestratorProcess()
 
     std::unordered_set<int> clearedWindowIds;
 
-    // Clear the tile window overlay at the start of EVERY frame when we have commands.
-    // This prevents stale HD pixels from accumulating across frames.
-    // The overlay should be transparent except where HD tiles are explicitly drawn this frame.
-    if (tileTargetAvailable && bufferView.count > 0) {
-        const int windowWidth = rectGetWidth(&tileTarget.windowRect);
-        const int windowHeight = rectGetHeight(&tileTarget.windowRect);
-        if (windowWidth > 0 && windowHeight > 0) {
-            windowClearTrueColorRegion(tileTarget.windowId, 0, 0, windowWidth, windowHeight);
-            clearedWindowIds.insert(tileTarget.windowId);
-        }
-    }
+    // NOTE: Do NOT clear the overlay every frame! The scroll memmove in mapScrollPhysicalTrueColorOverlay
+    // shifts existing HD content when the map scrolls. Clearing every frame would erase the scrolled
+    // content before we have a chance to draw the new tiles that came into view.
+    // Only clear on fullClearRequested (set by viewport scroll/resize events) or blackout.
 
     auto clearWindowTargetIfNeeded = [&](WindowOverlayTarget& target) {
-        // Already cleared, or needs special handling
-        if (clearedWindowIds.count(target.windowId) > 0) {
-            return;
-        }
-
+        // Skip if not a clear-triggering event
         if (!(fullClearRequested || blackoutClearRequested)) {
             return;
         }
