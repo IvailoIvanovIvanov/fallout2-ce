@@ -509,6 +509,13 @@ SDL_Renderer* gSdlRenderer = nullptr;
 SDL_Texture* gSdlTexture = nullptr;
 SDL_Surface* gSdlTextureSurface = nullptr;
 
+// Phase 7: GPU-resident overlay texture for HD content
+// This texture receives HD tile/object content directly, bypassing CPU overlay buffers
+SDL_Texture* gSdlOverlayTexture = nullptr;       // STREAMING texture for HD overlay
+static bool gGpuOverlayEnabled = false;          // Runtime flag, set from config
+static bool gGpuOverlayHasContent = false;       // Skip blend if nothing drawn this frame
+static Rect gGpuOverlayDirtyRegion = { 0, 0, -1, -1 };  // Track dirty region
+
 // TODO: Remove once migration to update-render cycle is completed.
 FpsLimiter sharedFpsLimiter;
 
@@ -1280,6 +1287,175 @@ int blitPhysicalTrueColorRectToTexture(const uint32_t* src, const unsigned char*
     return pixelsWritten;
 }
 
+// =============================================================================
+// Phase 7: GPU Overlay Functions
+// =============================================================================
+
+bool gpuOverlayIsEnabled()
+{
+    return gGpuOverlayEnabled && gSdlOverlayTexture != nullptr;
+}
+
+int blitToGpuOverlayTexture(const uint32_t* src, int srcPitch, const Rect& rect)
+{
+    if (!gGpuOverlayEnabled || gSdlOverlayTexture == nullptr || src == nullptr) {
+        return 0;
+    }
+
+    // Get presenter bounds for clipping
+    Rect presenterBounds = getPresenterSurfaceBounds();
+    Rect clipped;
+    rectCopy(&clipped, &rect);
+    if (rectIntersection(&clipped, &presenterBounds, &clipped) == -1) {
+        return 0;
+    }
+
+    const int width = rectGetWidth(&clipped);
+    const int height = rectGetHeight(&clipped);
+    if (width <= 0 || height <= 0) {
+        return 0;
+    }
+
+    // Lock only the dirty region of the GPU texture
+    SDL_Rect sdlRect;
+    sdlRect.x = clipped.left;
+    sdlRect.y = clipped.top;
+    sdlRect.w = width;
+    sdlRect.h = height;
+
+    void* pixels = nullptr;
+    int pitch = 0;
+    if (SDL_LockTexture(gSdlOverlayTexture, &sdlRect, &pixels, &pitch) != 0) {
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "GPU_OVERLAY",
+                "failed to lock texture for blit: %s",
+                SDL_GetError());
+        }
+        return 0;
+    }
+
+    // Calculate source offset if rect was clipped
+    const int deltaLeft = clipped.left - rect.left;
+    const int deltaTop = clipped.top - rect.top;
+    const uint32_t* srcStart = src + deltaTop * srcPitch + deltaLeft;
+
+    // Copy rows (memcpy per row is much faster than per-pixel loop)
+    uint8_t* destRow = static_cast<uint8_t*>(pixels);
+    for (int row = 0; row < height; row++) {
+        const uint32_t* srcRow = srcStart + row * srcPitch;
+        memcpy(destRow, srcRow, width * sizeof(uint32_t));
+        destRow += pitch;
+    }
+
+    SDL_UnlockTexture(gSdlOverlayTexture);
+
+    // Expand dirty region for this frame
+    if (gGpuOverlayDirtyRegion.right < gGpuOverlayDirtyRegion.left) {
+        // First dirty region this frame
+        rectCopy(&gGpuOverlayDirtyRegion, &clipped);
+    } else {
+        // Union with existing dirty region
+        if (clipped.left < gGpuOverlayDirtyRegion.left) gGpuOverlayDirtyRegion.left = clipped.left;
+        if (clipped.top < gGpuOverlayDirtyRegion.top) gGpuOverlayDirtyRegion.top = clipped.top;
+        if (clipped.right > gGpuOverlayDirtyRegion.right) gGpuOverlayDirtyRegion.right = clipped.right;
+        if (clipped.bottom > gGpuOverlayDirtyRegion.bottom) gGpuOverlayDirtyRegion.bottom = clipped.bottom;
+    }
+
+    gGpuOverlayHasContent = true;
+    return width * height;
+}
+
+void clearGpuOverlayRect(const Rect& rect)
+{
+    if (!gGpuOverlayEnabled || gSdlOverlayTexture == nullptr) {
+        return;
+    }
+
+    Rect presenterBounds = getPresenterSurfaceBounds();
+    Rect clipped;
+    rectCopy(&clipped, &rect);
+    if (rectIntersection(&clipped, &presenterBounds, &clipped) == -1) {
+        return;
+    }
+
+    const int width = rectGetWidth(&clipped);
+    const int height = rectGetHeight(&clipped);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    // Lock only the region to clear
+    SDL_Rect sdlRect;
+    sdlRect.x = clipped.left;
+    sdlRect.y = clipped.top;
+    sdlRect.w = width;
+    sdlRect.h = height;
+
+    void* pixels = nullptr;
+    int pitch = 0;
+    if (SDL_LockTexture(gSdlOverlayTexture, &sdlRect, &pixels, &pitch) != 0) {
+        return;
+    }
+
+    // Clear to transparent black (0x00000000)
+    uint8_t* destRow = static_cast<uint8_t*>(pixels);
+    for (int row = 0; row < height; row++) {
+        memset(destRow, 0, width * sizeof(uint32_t));
+        destRow += pitch;
+    }
+
+    SDL_UnlockTexture(gSdlOverlayTexture);
+}
+
+void scrollGpuOverlay(int dx, int dy)
+{
+    if (!gGpuOverlayEnabled || gSdlOverlayTexture == nullptr) {
+        return;
+    }
+
+    if (dx == 0 && dy == 0) {
+        return;
+    }
+
+    // For now, just clear the overlay on scroll
+    // A more optimal implementation would use SDL_RenderCopy to shift content
+    // but that requires a second texture and render-to-texture support
+    
+    SDL_SetRenderTarget(gSdlRenderer, gSdlOverlayTexture);
+    SDL_SetRenderDrawColor(gSdlRenderer, 0, 0, 0, 0);
+    SDL_RenderClear(gSdlRenderer);
+    SDL_SetRenderTarget(gSdlRenderer, nullptr);
+    
+    gGpuOverlayHasContent = false;
+    gGpuOverlayDirtyRegion = { 0, 0, -1, -1 };
+    
+    if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        diagnosticsLog(DiagnosticsLevel::Trace,
+            "GPU_OVERLAY",
+            "scroll clear dx=%d dy=%d",
+            dx, dy);
+    }
+}
+
+void gpuOverlayResetForFrame()
+{
+    if (!gGpuOverlayEnabled || gSdlOverlayTexture == nullptr) {
+        return;
+    }
+
+    // Clear the overlay texture for the new frame
+    if (gGpuOverlayHasContent) {
+        SDL_SetRenderTarget(gSdlRenderer, gSdlOverlayTexture);
+        SDL_SetRenderDrawColor(gSdlRenderer, 0, 0, 0, 0);  // Transparent black
+        SDL_RenderClear(gSdlRenderer);
+        SDL_SetRenderTarget(gSdlRenderer, nullptr);
+    }
+
+    gGpuOverlayHasContent = false;
+    gGpuOverlayDirtyRegion = { 0, 0, -1, -1 };
+}
+
 // Clears drawing surface.
 //
 // 0x4CBBC8
@@ -1400,11 +1576,65 @@ static bool createRenderer()
         return false;
     }
 
+    // Phase 7: Create GPU overlay texture for HD content
+    // Only create if virtual adapter with full-res is active
+    if (isFullResPresenterActive() && settings.system.gpu_overlay) {
+        gSdlOverlayTexture = SDL_CreateTexture(
+            gSdlRenderer,
+            SDL_PIXELFORMAT_ARGB8888,
+            SDL_TEXTUREACCESS_STREAMING,
+            presenterWidth,
+            presenterHeight
+        );
+        
+        if (gSdlOverlayTexture != nullptr) {
+            // Enable alpha blending for overlay compositing
+            SDL_SetTextureBlendMode(gSdlOverlayTexture, SDL_BLENDMODE_BLEND);
+            
+            // Clear to transparent black
+            SDL_SetRenderTarget(gSdlRenderer, gSdlOverlayTexture);
+            SDL_SetRenderDrawColor(gSdlRenderer, 0, 0, 0, 0);
+            SDL_RenderClear(gSdlRenderer);
+            SDL_SetRenderTarget(gSdlRenderer, nullptr);
+            
+            gGpuOverlayEnabled = true;
+            gGpuOverlayHasContent = false;
+            gGpuOverlayDirtyRegion = { 0, 0, -1, -1 };
+            
+            if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                diagnosticsLog(DiagnosticsLevel::Info,
+                    "GPU_OVERLAY",
+                    "created overlay texture %dx%d (STREAMING, BLEND)",
+                    presenterWidth,
+                    presenterHeight);
+            }
+        } else {
+            // Fallback to CPU path if GPU texture creation fails
+            gGpuOverlayEnabled = false;
+            if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                diagnosticsLog(DiagnosticsLevel::Info,
+                    "GPU_OVERLAY",
+                    "failed to create overlay texture, falling back to CPU path: %s",
+                    SDL_GetError());
+            }
+        }
+    } else {
+        gGpuOverlayEnabled = false;
+    }
+
     return true;
 }
 
 static void destroyRenderer()
 {
+    // Phase 7: Destroy GPU overlay texture
+    if (gSdlOverlayTexture != nullptr) {
+        SDL_DestroyTexture(gSdlOverlayTexture);
+        gSdlOverlayTexture = nullptr;
+        gGpuOverlayEnabled = false;
+        gGpuOverlayHasContent = false;
+    }
+
     if (gSdlTextureSurface != nullptr) {
         SDL_FreeSurface(gSdlTextureSurface);
         gSdlTextureSurface = nullptr;
@@ -1562,6 +1792,51 @@ static bool ensurePresenterSurfaceMatchesBounds()
     SDL_RenderClear(gSdlRenderer);
     SDL_SetRenderTarget(gSdlRenderer, nullptr);
 
+    // Phase 7: Recreate GPU overlay texture to match new presenter size
+    if (gSdlOverlayTexture != nullptr) {
+        SDL_DestroyTexture(gSdlOverlayTexture);
+        gSdlOverlayTexture = nullptr;
+        gGpuOverlayEnabled = false;
+    }
+    
+    if (wantFullResPresenter && settings.system.gpu_overlay) {
+        gSdlOverlayTexture = SDL_CreateTexture(
+            gSdlRenderer,
+            SDL_PIXELFORMAT_ARGB8888,
+            SDL_TEXTUREACCESS_STREAMING,
+            desiredWidth,
+            desiredHeight
+        );
+        
+        if (gSdlOverlayTexture != nullptr) {
+            SDL_SetTextureBlendMode(gSdlOverlayTexture, SDL_BLENDMODE_BLEND);
+            
+            SDL_SetRenderTarget(gSdlRenderer, gSdlOverlayTexture);
+            SDL_SetRenderDrawColor(gSdlRenderer, 0, 0, 0, 0);
+            SDL_RenderClear(gSdlRenderer);
+            SDL_SetRenderTarget(gSdlRenderer, nullptr);
+            
+            gGpuOverlayEnabled = true;
+            gGpuOverlayHasContent = false;
+            gGpuOverlayDirtyRegion = { 0, 0, -1, -1 };
+            
+            if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                diagnosticsLog(DiagnosticsLevel::Info,
+                    "GPU_OVERLAY",
+                    "resized overlay texture to %dx%d",
+                    desiredWidth,
+                    desiredHeight);
+            }
+        } else {
+            gGpuOverlayEnabled = false;
+            if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                diagnosticsLog(DiagnosticsLevel::Info,
+                    "GPU_OVERLAY",
+                    "failed to resize overlay texture: %s",
+                    SDL_GetError());
+            }
+        }
+    }
 
     windowVirtualScreenInvalidateAll();
 
@@ -1899,7 +2174,24 @@ void renderPresent()
         SDL_RenderFillRects(gSdlRenderer, letterboxRects, rectCount);
     }
 
+    // Render the base indexed layer
     SDL_RenderCopy(gSdlRenderer, gSdlTexture, &srcRect, &destRect);
+    
+    // Phase 7: Composite GPU overlay on top if enabled and has content
+    if (gGpuOverlayEnabled && gGpuOverlayHasContent && gSdlOverlayTexture != nullptr) {
+        SDL_RenderCopy(gSdlRenderer, gSdlOverlayTexture, &srcRect, &destRect);
+        
+        if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+            diagnosticsLog(DiagnosticsLevel::Trace,
+                "GPU_OVERLAY",
+                "composited overlay dirty=(%d,%d %dx%d)",
+                gGpuOverlayDirtyRegion.left,
+                gGpuOverlayDirtyRegion.top,
+                rectGetWidth(&gGpuOverlayDirtyRegion),
+                rectGetHeight(&gGpuOverlayDirtyRegion));
+        }
+    }
+    
     virtualInputRenderOverlay(gSdlRenderer);
     SDL_RenderPresent(gSdlRenderer);
 

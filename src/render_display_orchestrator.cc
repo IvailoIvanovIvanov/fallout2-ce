@@ -13,6 +13,7 @@
 #include "render_asset_registry.h"
 #include "render_commands.h"
 #include "settings.h"
+#include "svga.h"
 #include "tile.h"
 #include "window_manager.h"
 
@@ -525,6 +526,12 @@ void handleViewportEvent(const RenderViewportEvent& event)
         // the physical overlay content. We should NOT clear it here as that would erase
         // the scrolled content. Only mark forceRedraw so new edge tiles get drawn.
         sForceRedraw = true;
+        
+        // Phase 7: GPU overlay scroll handling
+        // For now, scrollGpuOverlay clears the texture. Future optimization could
+        // use render-to-texture to shift content like the CPU path does.
+        // param0 = dx, param1 = dy for scroll events
+        scrollGpuOverlay(event.payload.param0, event.payload.param1);
         break;
     case RenderViewportEventType::Resize:
         sPendingFullClear = true;
@@ -705,6 +712,10 @@ void renderDisplayOrchestratorProcess()
     }
 
     processViewportEvents();
+
+    // Phase 7: Reset GPU overlay at start of frame (if enabled)
+    // This clears the overlay texture so we start with a clean slate
+    gpuOverlayResetForFrame();
 
     // Phase 2: Process cursor and palette commands
     processCursorCommands();

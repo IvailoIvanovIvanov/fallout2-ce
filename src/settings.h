@@ -31,6 +31,7 @@ struct SystemSettings {
     bool render_command_replay = false;
     bool render_display_orchestrator = false;
     bool render_command_direct_blit_fallback = true;
+    bool gpu_overlay = false;  // Phase 7: GPU-resident overlay texture for HD content
 };
 
 struct PreferencesSettings {

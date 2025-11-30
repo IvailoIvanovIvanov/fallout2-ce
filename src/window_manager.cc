@@ -723,19 +723,42 @@ static int windowCompositeTrueColorOverlays(const Rect& rect)
 
                     Rect presenterRect = physicalRect;
                     rectOffset(&presenterRect, -viewport.left, -viewport.top);
-                    int written = blitPhysicalTrueColorRectToTexture(overlayStart, maskStart, window->trueColorPhysicalPitch, presenterRect);
                     
-                    // RENDER PATH TRACE: Log HD overlay compositing
-                    if (settings.debug.render_path_trace && written > 0) {
-                        diagnosticsLog(DiagnosticsLevel::Info,
-                            "RENDERPATH",
-                            "PHANTOM: HD overlay composited win=%d pixels=%d physical=(%d,%d %dx%d)",
-                            window->id,
-                            written,
-                            physicalRect.left,
-                            physicalRect.top,
-                            physicalWidth,
-                            physicalHeight);
+                    int written = 0;
+                    
+                    // Phase 7: Use GPU overlay when enabled for hardware-accelerated compositing
+                    if (gpuOverlayIsEnabled()) {
+                        // GPU path: upload directly to GPU overlay texture
+                        // Alpha blending handles transparency, no mask processing needed
+                        written = blitToGpuOverlayTexture(overlayStart, window->trueColorPhysicalPitch, presenterRect);
+                        
+                        if (settings.debug.render_path_trace && written > 0) {
+                            diagnosticsLog(DiagnosticsLevel::Info,
+                                "GPU_OVERLAY",
+                                "composited win=%d pixels=%d physical=(%d,%d %dx%d)",
+                                window->id,
+                                written,
+                                physicalRect.left,
+                                physicalRect.top,
+                                physicalWidth,
+                                physicalHeight);
+                        }
+                    } else {
+                        // CPU path: copy to presenter surface with mask
+                        written = blitPhysicalTrueColorRectToTexture(overlayStart, maskStart, window->trueColorPhysicalPitch, presenterRect);
+                        
+                        // RENDER PATH TRACE: Log HD overlay compositing
+                        if (settings.debug.render_path_trace && written > 0) {
+                            diagnosticsLog(DiagnosticsLevel::Info,
+                                "RENDERPATH",
+                                "PHANTOM: HD overlay composited win=%d pixels=%d physical=(%d,%d %dx%d)",
+                                window->id,
+                                written,
+                                physicalRect.left,
+                                physicalRect.top,
+                                physicalWidth,
+                                physicalHeight);
+                        }
                     }
                     
                     windowAccumulateHdPhysicalPixels(written);

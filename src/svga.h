@@ -17,6 +17,7 @@ extern SDL_Surface* gSdlSurface;
 extern SDL_Renderer* gSdlRenderer;
 extern SDL_Texture* gSdlTexture;
 extern SDL_Surface* gSdlTextureSurface;
+extern SDL_Texture* gSdlOverlayTexture;  // Phase 7: GPU-resident overlay for HD content
 extern FpsLimiter sharedFpsLimiter;
 
 int _init_mode_320_200();
@@ -43,6 +44,13 @@ void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect
 void clearPresenterRect(const Rect& rect);
 int blitTrueColorRectToTexture(const uint32_t* src, const unsigned char* mask, int srcPitch, const Rect& rect);
 int blitPhysicalTrueColorRectToTexture(const uint32_t* src, const unsigned char* mask, int srcPitch, const Rect& rect);
+
+// Phase 7: GPU overlay API
+bool gpuOverlayIsEnabled();
+int blitToGpuOverlayTexture(const uint32_t* src, int srcPitch, const Rect& rect);
+void clearGpuOverlayRect(const Rect& rect);
+void scrollGpuOverlay(int dx, int dy);
+void gpuOverlayResetForFrame();
 
 int screenGetWidth();
 int screenGetHeight();
