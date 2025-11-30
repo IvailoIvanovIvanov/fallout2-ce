@@ -124,6 +124,7 @@ render_command_replay=0        ; Debug: self-test replay harness
 virtual_adapter_trace=0        ; Verbose SCALER channel logging
 input_overlay=0                ; Visual debug overlay for coordinates
 hd_missing_watermark=0         ; Show marker when HD asset missing
+render_path_trace=0            ; Focused logging: LEGACY vs PHANTOM render paths
 ```
 
 ---
@@ -358,7 +359,44 @@ if (!orchestratorOwnsPresenter) {
 SCALER - Scale table, viewport, present stats
 VA_TRACE - Virtual adapter dirty rects
 RENDERTRACE - Individual blit operations
+RENDERPATH - Focused legacy vs phantom display path tracing
 ```
+
+#### 6.1.1 Render Path Trace (render_path_trace=1)
+
+This focused diagnostic helps identify whether legacy or phantom display code is drawing to the screen.
+
+**Enable in fallout2.cfg:**
+```ini
+[debug]
+render_path_trace=1
+```
+
+**Log Messages:**
+
+| Log Pattern | Meaning | Expected in Phantom Mode |
+|-------------|---------|--------------------------|
+| `PHANTOM: orchestrator processing N commands` | HD orchestrator is rendering tiles/objects | ✅ Yes |
+| `PHANTOM: orchestrator drew N pixels` | HD content was composited to overlay | ✅ Yes |
+| `PHANTOM: HD overlay composited` | HD overlay being presented | ✅ Yes |
+| `BLOCKED: legacy indexed_blit` | Legacy path blocked by orchestrator | ✅ Yes (good!) |
+| `LEGACY: indexed_blit ACTIVE` | Legacy indexed path is drawing | ❌ Should NOT appear |
+| `LEGACY: _GNW_win_refresh blit` | Legacy window blit to _screen_buffer | ❌ Should NOT appear |
+| `PHANTOM: orchestrator idle (no commands)` | No tile commands this frame | ⚠️ OK during menus |
+| `isoDisable: transitioning to menu` | Game world paused for menu | ℹ️ Informational |
+| `isoDisable: preserving HD overlay` | HD content preserved behind menu | ✅ Yes (expected) |
+
+**Interpreting Results:**
+
+In **phantom display mode** (virtual_adapter=1, render_display_orchestrator=1):
+- You should see `PHANTOM:` logs when game world is active
+- You should see `BLOCKED:` when legacy paths are correctly blocked
+- You should **NOT** see `LEGACY:` logs during gameplay (indicates fallback leak)
+
+If you see `LEGACY: indexed_blit ACTIVE` during gameplay, it means:
+1. The orchestrator doesn't "own" the presenter
+2. Check `hadContent` and `ownsPresenter` values in the log
+3. This causes low-res tiles to overwrite HD content
 
 #### 6.2 Coverage Metrics
 
@@ -390,6 +428,15 @@ Implemented per-frame metrics:
 - **Implementation:** Cursor and palette commands now emitted and tracked by orchestrator
 - **Location:** `mouse.cc` (cursor), `svga.cc` (palette), `render_display_orchestrator.cc` (processing)
 - **Status:** Commands tracked for metrics; actual rendering still via legacy paths (intentional)
+
+**Issue 5: Command Queue Overflow Disabling Orchestrator**
+- **Root Cause:** `kRenderCommandTileCapacity` was set to 4096, but complex maps emit more tile/object commands per frame
+- **Symptom:** Log shows `command_fallback activated reason=command_queue_overflow`, followed by `orchestrator_enabled=0` and legacy rendering taking over
+- **Fix 1:** Increased `kRenderCommandTileCapacity` from 4096 to 16384 in `render_commands.cc`
+- **Fix 2:** Exposed `renderCommandResetFallbackState()` as public API
+- **Fix 3:** Added fallback reset call in `mapLoad()` to give orchestrator fresh start on new maps
+- **Location:** `render_commands.cc` line ~22 (capacity), `map.cc` (reset call)
+- **Key Insight:** Once fallback is triggered, it was permanent for the entire session; now resets on map transitions
 
 #### 6.4 Test Scenarios
 

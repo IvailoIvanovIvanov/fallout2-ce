@@ -19,6 +19,7 @@
 #include "mouse.h"
 #include "render_trace.h"
 #include "render_commands.h"
+#include "render_display_orchestrator.h"
 #include "settings.h"
 #include "virtual_input.h"
 #include "win32.h"
@@ -671,6 +672,16 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
             fullscreen ? 1 : 0,
             scale,
             integerScaling ? 1 : 0);
+        
+        // Log render path configuration for debugging
+        diagnosticsLog(
+            DiagnosticsLevel::Info,
+            "RENDERPATH",
+            "CONFIG: virtual_adapter=%d virtual_adapter_fullres=%d render_display_orchestrator=%d render_path_trace=%d",
+            settings.system.virtual_adapter ? 1 : 0,
+            settings.system.virtual_adapter_fullres ? 1 : 0,
+            settings.system.render_display_orchestrator ? 1 : 0,
+            settings.debug.render_path_trace ? 1 : 0);
     }
 
     if (_GNW95_init_window(width, height, fullscreen, scale) == -1) {
@@ -938,15 +949,41 @@ void _GNW95_ShowRect(unsigned char* src, int srcPitch, int a3, int srcX, int src
 
 void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect& rect)
 {
+    // Block legacy presenter uploads ONLY when orchestrator actually owns the presenter
+    // for this frame (i.e., tile commands are being processed). During menus/loading 
+    // screens, the orchestrator is configured but not active, so indexed blits must 
+    // proceed to render the fallback background.
+    if (renderDisplayOrchestratorOwnsPresenter()) {
+        if (settings.debug.render_path_trace) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "RENDERPATH",
+                "BLOCKED: legacy indexed_blit - orchestrator owns presenter rect=(%d,%d %dx%d)",
+                rect.left,
+                rect.top,
+                rectGetWidth(&rect),
+                rectGetHeight(&rect));
+        }
+        return;
+    }
+
     if (src == nullptr || gSdlTextureSurface == nullptr) {
         return;
     }
 
-    // Phase 6 SAFEGUARD: In virtual adapter mode, orchestrator owns presenter.
-    // Block legacy direct indexed blits to texture to avoid dual render paths.
-    if (settings.system.virtual_adapter && settings.system.render_display_orchestrator) {
-        return;
+    // RENDER PATH TRACE: Log when legacy indexed path is actually drawing
+    if (settings.debug.render_path_trace && settings.system.virtual_adapter) {
+        diagnosticsLog(DiagnosticsLevel::Info,
+            "RENDERPATH",
+            "LEGACY: indexed_blit ACTIVE (should NOT happen in phantom mode) rect=(%d,%d %dx%d) orchestrator_enabled=%d",
+            rect.left,
+            rect.top,
+            rectGetWidth(&rect),
+            rectGetHeight(&rect),
+            renderDisplayOrchestratorEnabled() ? 1 : 0);
     }
+
+    // Note: Even in virtual adapter mode, the indexed base layer uploads
+    // are required to populate the presenter with the 640x480 background.
 
     // Phase 6: Track direct write metric
     extern RenderCommandStats gRenderCommandStats;

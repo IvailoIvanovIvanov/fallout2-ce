@@ -19,7 +19,9 @@
 namespace fallout {
 namespace {
 
-constexpr size_t kRenderCommandTileCapacity = 4096;
+// Increased from 4096 to 16384 to handle complex maps without overflow
+// Maps with many tiles/objects can easily exceed 4096 commands per frame
+constexpr size_t kRenderCommandTileCapacity = 16384;
 constexpr size_t kRenderViewportEventCapacity = 128;
 constexpr size_t kRenderCommandCursorCapacity = 256;
 constexpr size_t kRenderCommandPaletteCapacity = 128;
@@ -166,7 +168,7 @@ void renderCommandsLogStatsIfNeeded()
 }
 
 void renderCommandsResetFrameCaches();
-void renderCommandResetFallbackState();
+// renderCommandResetFallbackState is now public (defined after namespace)
 void renderCommandsCaptureReferenceFrame();
 void renderCommandsSerializeLastFrame();
 void renderCommandsRunReplaySelfTest();
@@ -212,6 +214,12 @@ void renderCommandsResetFrameCaches()
     gVideoCommandCount = 0;
 }
 
+// Moved from anonymous namespace to be callable from outside (map transitions, etc.)
+// Forward declaration removed; this function is now public via header
+
+} // namespace
+
+// Phase 6: Fallback state reset - must be outside anonymous namespace for external linkage
 void renderCommandResetFallbackState()
 {
     gRenderCommandDirectBlitFallbackActive = false;
@@ -219,9 +227,11 @@ void renderCommandResetFallbackState()
         sizeof(gRenderCommandDirectBlitFallbackReason),
         "%s",
         "none");
+    
+    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        diagnosticsLog(DiagnosticsLevel::Info, "SCALER", "command_fallback reset (state cleared)");
+    }
 }
-
-} // namespace
 
 // Phase 6: Global stats instance (must be outside anonymous namespace for extern linkage)
 RenderCommandStats gRenderCommandStats = {};

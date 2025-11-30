@@ -83,6 +83,8 @@ struct DebugSettings {
     bool input_overlay = false;
     bool hd_missing_watermark = false;
     bool virtual_adapter_trace = false;
+    // Focused logging for render path debugging (legacy vs orchestrator)
+    bool render_path_trace = false;
 };
 
 struct MapperSettings {

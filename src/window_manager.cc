@@ -724,6 +724,20 @@ static int windowCompositeTrueColorOverlays(const Rect& rect)
                     Rect presenterRect = physicalRect;
                     rectOffset(&presenterRect, -viewport.left, -viewport.top);
                     int written = blitPhysicalTrueColorRectToTexture(overlayStart, maskStart, window->trueColorPhysicalPitch, presenterRect);
+                    
+                    // RENDER PATH TRACE: Log HD overlay compositing
+                    if (settings.debug.render_path_trace && written > 0) {
+                        diagnosticsLog(DiagnosticsLevel::Info,
+                            "RENDERPATH",
+                            "PHANTOM: HD overlay composited win=%d pixels=%d physical=(%d,%d %dx%d)",
+                            window->id,
+                            written,
+                            physicalRect.left,
+                            physicalRect.top,
+                            physicalWidth,
+                            physicalHeight);
+                    }
+                    
                     windowAccumulateHdPhysicalPixels(written);
                     pixelsOverridden += written;
                 }
@@ -1644,14 +1658,29 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                                 dest_pitch);
                         }
                     } else {
-                        // Phase 6 SAFEGUARD: In virtual adapter orchestration mode, do not blit
-                        // directly to `_screen_buffer` or presenter. Mark virtual screen dirty
-                        // and let orchestrator composite.
-                        if (renderDisplayOrchestratorEnabled()) {
-                            Rect dirty = v20->rect;
-                            virtualScreenInvalidateRect(&dirty);
-                        } else {
-                            if (_buffering) {
+                        // When orchestrator owns the presenter (tile scene active), skip legacy writes.
+                        // During menus/loading screens, the orchestrator is configured but not active,
+                        // so legacy writes must proceed to populate _screen_buffer.
+                        if (_buffering) {
+                            if (renderDisplayOrchestratorOwnsPresenter()) {
+                                if (virtualAdapterTraceEnabled()) {
+                                    char stage[64];
+                                    std::snprintf(stage, sizeof(stage), "gnw_refresh skipped write win=%d", window->id);
+                                    logVirtualAdapterTraceRect(stage, v20->rect);
+                                }
+                                virtualScreenInvalidateRect(&(v20->rect));
+                            } else {
+                                // RENDER PATH TRACE: Legacy window blit to _screen_buffer
+                                if (settings.debug.render_path_trace && settings.system.virtual_adapter) {
+                                    diagnosticsLog(DiagnosticsLevel::Info,
+                                        "RENDERPATH",
+                                        "LEGACY: _GNW_win_refresh blit to _screen_buffer win=%d rect=(%d,%d %dx%d)",
+                                        window->id,
+                                        v20->rect.left,
+                                        v20->rect.top,
+                                        rectGetWidth(&v20->rect),
+                                        rectGetHeight(&v20->rect));
+                                }
                                 if (window->flags & WINDOW_TRANSPARENT) {
                                     window->blitProc(
                                         window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
@@ -1669,24 +1698,25 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                                         _screen_buffer + v20->rect.top * screenWidth + v20->rect.left,
                                         screenWidth);
                                 }
-                            } else {
-                                _scr_blit(
-                                    window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
-                                    window->width,
-                                    v20->rect.bottom - v20->rect.top + 1,
-                                    0,
-                                    0,
-                                    v20->rect.right - v20->rect.left + 1,
-                                    v20->rect.bottom - v20->rect.top + 1,
-                                    v20->rect.left,
-                                    v20->rect.top);
                             }
+                        } else {
+                            _scr_blit(
+                                window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
+                                window->width,
+                                v20->rect.bottom - v20->rect.top + 1,
+                                0,
+                                0,
+                                v20->rect.right - v20->rect.left + 1,
+                                v20->rect.bottom - v20->rect.top + 1,
+                                v20->rect.left,
+                                v20->rect.top);
                         }
                     }
 
                     v20 = v20->next;
                 }
             } else {
+                // Background window (id=0) - also needs orchestrator guard
                 RectListNode* v16 = v26;
                 while (v16 != nullptr) {
                     int width = v16->rect.right - v16->rect.left + 1;
@@ -1704,12 +1734,15 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                                 dest_pitch);
                         } else {
                             if (_buffering) {
-                                blitBufferToBuffer(buf,
-                                    width,
-                                    height,
-                                    width,
-                                    _screen_buffer + v16->rect.top * screenWidth + v16->rect.left,
-                                    screenWidth);
+                                // Guard for orchestrator: when active, skip legacy writes
+                                if (!renderDisplayOrchestratorOwnsPresenter()) {
+                                    blitBufferToBuffer(buf,
+                                        width,
+                                        height,
+                                        width,
+                                        _screen_buffer + v16->rect.top * screenWidth + v16->rect.left,
+                                        screenWidth);
+                                }
                             } else {
                                 _scr_blit(buf, width, height, 0, 0, width, height, v16->rect.left, v16->rect.top);
                             }

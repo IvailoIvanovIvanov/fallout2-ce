@@ -7,6 +7,8 @@ bool renderDisplayOrchestratorEnabled();
 bool renderDisplayOrchestratorConsumesTileOverlays();
 bool renderDisplayOrchestratorOwnsPresenter();
 void renderDisplayOrchestratorProcess();
+// Call when leaving the game world (map change, exit to menu) to clear persistent HD content state.
+void renderDisplayOrchestratorResetContent();
 
 } // namespace fallout
 

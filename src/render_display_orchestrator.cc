@@ -109,6 +109,10 @@ bool sForceRedraw = true;
 bool sBlackoutActive = false;
 bool sOrchestratorActive = false;
 bool sOrchestratorHasTarget = false;
+// Persistent flag: once HD content was rendered, orchestrator should continue to
+// block indexed blits even when no new commands are coming in (e.g., during menus).
+// Reset only on explicit map change or orchestrator disable.
+bool sOrchestratorHadContent = false;
 
 void processViewportEvents();
 void handleViewportEvent(const RenderViewportEvent& event);
@@ -595,6 +599,18 @@ bool renderDisplayOrchestratorEnabled()
     const bool virtualAdapterActive = settings.system.virtual_adapter && settings.system.virtual_adapter_fullres;
     
     if (!virtualAdapterActive) {
+        // RENDER PATH TRACE: Log why orchestrator is disabled
+        if (settings.debug.render_path_trace) {
+            static int sConfigLogThrottle = 0;
+            if (++sConfigLogThrottle >= 300) { // Log once per ~300 calls
+                diagnosticsLog(DiagnosticsLevel::Info,
+                    "RENDERPATH",
+                    "orchestrator DISABLED: virtual_adapter=%d virtual_adapter_fullres=%d (both must be 1)",
+                    settings.system.virtual_adapter ? 1 : 0,
+                    settings.system.virtual_adapter_fullres ? 1 : 0);
+                sConfigLogThrottle = 0;
+            }
+        }
         return false;
     }
 
@@ -609,8 +625,22 @@ bool renderDisplayOrchestratorEnabled()
         return false;
     }
 
+    // Check if render_display_orchestrator setting is enabled
+    if (!settings.system.render_display_orchestrator) {
+        if (settings.debug.render_path_trace) {
+            static int sOrchestratorLogThrottle = 0;
+            if (++sOrchestratorLogThrottle >= 300) {
+                diagnosticsLog(DiagnosticsLevel::Info,
+                    "RENDERPATH",
+                    "orchestrator DISABLED: render_display_orchestrator=0 (must be 1)");
+                sOrchestratorLogThrottle = 0;
+            }
+        }
+        return false;
+    }
+
     // Orchestrator is mandatory when virtual adapter is enabled
-    return settings.system.render_display_orchestrator;
+    return true;
 }
 
 bool renderDisplayOrchestratorConsumesTileOverlays()
@@ -620,7 +650,20 @@ bool renderDisplayOrchestratorConsumesTileOverlays()
 
 bool renderDisplayOrchestratorOwnsPresenter()
 {
-    return renderDisplayOrchestratorEnabled() && sOrchestratorActive && sOrchestratorHasTarget;
+    // Orchestrator owns presenter if:
+    // 1. It's enabled and active
+    // 2. AND either has content this frame OR had content previously (menus over game world)
+    return renderDisplayOrchestratorEnabled() && sOrchestratorActive && (sOrchestratorHasTarget || sOrchestratorHadContent);
+}
+
+void renderDisplayOrchestratorResetContent()
+{
+    // Reset persistent HD content state. Called when leaving the game world
+    // (map change, exit to main menu, etc.) to allow indexed fallback rendering.
+    sOrchestratorHadContent = false;
+    sOrchestratorHasTarget = false;
+    sPendingFullClear = true;
+    sForceRedraw = true;
 }
 
 void renderDisplayOrchestratorProcess()
@@ -628,6 +671,7 @@ void renderDisplayOrchestratorProcess()
     if (!renderDisplayOrchestratorEnabled()) {
         sOrchestratorActive = false;
         sOrchestratorHasTarget = false;
+        sOrchestratorHadContent = false;
         return;
     }
 
@@ -666,6 +710,18 @@ void renderDisplayOrchestratorProcess()
     const bool blackoutClearRequested = sBlackoutActive;
 
     if (bufferView.count == 0 && !fullClearRequested && !blackoutClearRequested) {
+        // RENDER PATH TRACE: Log when orchestrator has no commands
+        if (settings.debug.render_path_trace) {
+            static int sNoCommandsLogThrottle = 0;
+            if (++sNoCommandsLogThrottle >= 60) { // Log once per ~60 frames
+                diagnosticsLog(DiagnosticsLevel::Info,
+                    "RENDERPATH",
+                    "PHANTOM: orchestrator idle (no commands) hadContent=%d ownsPresenter=%d",
+                    sOrchestratorHadContent ? 1 : 0,
+                    renderDisplayOrchestratorOwnsPresenter() ? 1 : 0);
+                sNoCommandsLogThrottle = 0;
+            }
+        }
         sPendingFullClear = false;
         return;
     }
@@ -766,6 +822,15 @@ void renderDisplayOrchestratorProcess()
     bool detailClamped = false;
     double maxHdScale = 1.0;
 
+    // RENDER PATH TRACE: Log when orchestrator starts processing commands
+    if (settings.debug.render_path_trace && bufferView.count > 0) {
+        diagnosticsLog(DiagnosticsLevel::Info,
+            "RENDERPATH",
+            "PHANTOM: orchestrator processing %zu commands (frame=%u)",
+            bufferView.count,
+            bufferView.frameIndex);
+    }
+
     for (size_t index = 0; index < bufferView.count; index++) {
         const RenderCommandTileBlit& command = bufferView.commands[index];
         WindowOverlayTarget* target = requestTarget(command.payload.windowId);
@@ -776,6 +841,8 @@ void renderDisplayOrchestratorProcess()
         bool usedFallback = false;
         if (processIsoCommand(command, *target, logicalPixelsDrawn, usedFallback, viewportScale, detailClamped, maxHdScale)) {
             sOrchestratorHasTarget = true;
+            // Mark that we've rendered HD content - persist across frames for menu overlays
+            sOrchestratorHadContent = true;
             const bool isObjectCommand = command.op == RenderCommandOp::ObjectBlit;
             const bool isUiCommand = command.op == RenderCommandOp::UiBlit;
             if (usedFallback) {
@@ -796,6 +863,18 @@ void renderDisplayOrchestratorProcess()
                 }
             }
         }
+    }
+
+    // RENDER PATH TRACE: Log orchestrator results
+    if (settings.debug.render_path_trace && logicalPixelsDrawn > 0) {
+        diagnosticsLog(DiagnosticsLevel::Info,
+            "RENDERPATH",
+            "PHANTOM: orchestrator drew %llu pixels (hd_tiles=%u fallback_tiles=%u hd_obj=%u fallback_obj=%u)",
+            logicalPixelsDrawn,
+            tileHdCommands,
+            tileFallbackCommands,
+            objectHdCommands,
+            objectFallbackCommands);
     }
 
     if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {

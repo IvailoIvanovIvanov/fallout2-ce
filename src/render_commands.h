@@ -202,6 +202,7 @@ bool renderCommandBuildPerPixelIntensityMap(const RenderCommandTileBlitPayload& 
 bool renderCommandDirectBlitFallbackActive();
 const char* renderCommandDirectBlitFallbackReason();
 void renderCommandTriggerDirectBlitFallback(const char* reason);
+void renderCommandResetFallbackState();
 
 // Phase 6: Diagnostics and metrics
 void renderCommandLogFrameMetrics();
