@@ -3903,10 +3903,12 @@ void windowClearTrueColorRegion(int win, int left, int top, int width, int heigh
                             physYStart = std::max(physYStart, 0);
                             physYEnd = std::min(physYEnd, window->trueColorPhysicalHeight - 1);
 
+                            // Phase 8.1 Optimization: Use efficient row-based memset
+                            // This clears contiguous physical rows for each logical row
                             for (int physY = physYStart; physY <= physYEnd; physY++) {
                                 int offset = physY * window->trueColorPhysicalPitch + physXStart;
-                                memset(window->trueColorPhysicalMask + offset, 0, physWidth);
-                                memset(window->trueColorPhysicalOverlay + offset, 0, physBytes);
+                                std::memset(window->trueColorPhysicalMask + offset, 0, physWidth);
+                                std::memset(window->trueColorPhysicalOverlay + offset, 0, physBytes);
                             }
                         }
                     }
