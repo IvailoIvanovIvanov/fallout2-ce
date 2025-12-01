@@ -586,6 +586,8 @@ SDL_Texture* gSdlOverlayTexture = nullptr;       // STREAMING texture for HD ove
 static bool gGpuOverlayEnabled = false;          // Runtime flag, set from config
 static bool gGpuOverlayHasContent = false;       // Skip blend if nothing drawn this frame
 static Rect gGpuOverlayDirtyRegion = { 0, 0, -1, -1 };  // Track dirty region
+static int gOverlayTextureWidth = 0;             // Phase 8.3 fix: Track overlay dimensions
+static int gOverlayTextureHeight = 0;            // to detect when resize is needed
 
 // TODO: Remove once migration to update-render cycle is completed.
 FpsLimiter sharedFpsLimiter;
@@ -1710,6 +1712,8 @@ static bool createRenderer()
             gGpuOverlayEnabled = true;
             gGpuOverlayHasContent = false;
             gGpuOverlayDirtyRegion = { 0, 0, -1, -1 };
+            gOverlayTextureWidth = overlayWidth;   // Track size for resize detection
+            gOverlayTextureHeight = overlayHeight;
             
             if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
                 diagnosticsLog(DiagnosticsLevel::Info,
@@ -1746,6 +1750,8 @@ static void destroyRenderer()
         gSdlOverlayTexture = nullptr;
         gGpuOverlayEnabled = false;
         gGpuOverlayHasContent = false;
+        gOverlayTextureWidth = 0;
+        gOverlayTextureHeight = 0;
     }
 
     if (gSdlTextureSurface != nullptr) {
@@ -1847,7 +1853,27 @@ static bool ensurePresenterSurfaceMatchesBounds()
 
     const int currentWidth = gSdlTextureSurface != nullptr ? gSdlTextureSurface->w : 0;
     const int currentHeight = gSdlTextureSurface != nullptr ? gSdlTextureSurface->h : 0;
-    if (gSdlTexture != nullptr && gSdlTextureSurface != nullptr && currentWidth == desiredWidth && currentHeight == desiredHeight) {
+    
+    // Phase 8.3 fix: Also check if overlay needs recreation
+    // When gpu_scaling is enabled, base texture is 640x480 but overlay needs physical resolution
+    bool overlayNeedsResize = false;
+    if (settings.system.virtual_adapter && settings.system.gpu_overlay) {
+        const Rect& viewport = displayScalerGetPhysicalViewport();
+        const int neededOverlayWidth = std::max(1, rectGetWidth(&viewport));
+        const int neededOverlayHeight = std::max(1, rectGetHeight(&viewport));
+        if (gOverlayTextureWidth != neededOverlayWidth || gOverlayTextureHeight != neededOverlayHeight) {
+            overlayNeedsResize = true;
+            if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                diagnosticsLog(DiagnosticsLevel::Info,
+                    "GPU_OVERLAY",
+                    "overlay resize needed: current=%dx%d needed=%dx%d",
+                    gOverlayTextureWidth, gOverlayTextureHeight,
+                    neededOverlayWidth, neededOverlayHeight);
+            }
+        }
+    }
+    
+    if (gSdlTexture != nullptr && gSdlTextureSurface != nullptr && currentWidth == desiredWidth && currentHeight == desiredHeight && !overlayNeedsResize) {
         logPresenterSurfaceState(wantFullResPresenter ? "fullres_ready" : stateReason, wantFullResPresenter, desiredWidth, desiredHeight);
         return true;
     }
@@ -1918,6 +1944,8 @@ static bool ensurePresenterSurfaceMatchesBounds()
         SDL_DestroyTexture(gSdlOverlayTexture);
         gSdlOverlayTexture = nullptr;
         gGpuOverlayEnabled = false;
+        gOverlayTextureWidth = 0;
+        gOverlayTextureHeight = 0;
     }
     
     const bool needsHdOverlay = settings.system.virtual_adapter && settings.system.gpu_overlay;
@@ -1945,6 +1973,8 @@ static bool ensurePresenterSurfaceMatchesBounds()
             gGpuOverlayEnabled = true;
             gGpuOverlayHasContent = false;
             gGpuOverlayDirtyRegion = { 0, 0, -1, -1 };
+            gOverlayTextureWidth = overlayWidth;   // Track size for resize detection
+            gOverlayTextureHeight = overlayHeight;
             
             if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
                 diagnosticsLog(DiagnosticsLevel::Info,
