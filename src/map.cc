@@ -722,7 +722,13 @@ static void mapScrollPhysicalTrueColorOverlay(int screenDx, int screenDy)
 // 0x4826C0
 int mapScroll(int dx, int dy)
 {
-    if (getTicksSince(gIsoWindowScrollTimestamp) < 33) {
+    // Phase 7: Use target_fps to calculate scroll throttle for smoother scrolling
+    // At 60fps, this is 16ms; at 30fps it's 33ms (original behavior)
+    unsigned int scrollThresholdMs = settings.system.target_fps > 0 
+        ? 1000 / settings.system.target_fps 
+        : 16;  // Default to 60fps if not set
+    
+    if (getTicksSince(gIsoWindowScrollTimestamp) < scrollThresholdMs) {
         return -2;
     }
 

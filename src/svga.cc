@@ -720,6 +720,11 @@ int _init_vesa_mode(int width, int height)
 int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
 {
     if (gSdlWindow == nullptr) {
+        // Phase 7: Configure FPS limiter based on settings
+        if (settings.system.target_fps > 0) {
+            sharedFpsLimiter.setFps(settings.system.target_fps);
+        }
+        
         SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
 
@@ -1539,9 +1544,28 @@ int screenGetPhysicalHeight()
 
 static bool createRenderer()
 {
-    gSdlRenderer = SDL_CreateRenderer(gSdlWindow, -1, 0);
+    // Phase 7: Enable VSync if configured for tear-free rendering
+    Uint32 rendererFlags = 0;
+    if (settings.system.vsync) {
+        rendererFlags |= SDL_RENDERER_PRESENTVSYNC;
+    }
+    
+    gSdlRenderer = SDL_CreateRenderer(gSdlWindow, -1, rendererFlags);
     if (gSdlRenderer == nullptr) {
         return false;
+    }
+    
+    // Log renderer info
+    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        SDL_RendererInfo info;
+        if (SDL_GetRendererInfo(gSdlRenderer, &info) == 0) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "RENDERER",
+                "using %s, vsync=%s, flags=0x%x",
+                info.name,
+                (info.flags & SDL_RENDERER_PRESENTVSYNC) ? "on" : "off",
+                info.flags);
+        }
     }
 
     LogicalSpace logicalSpace = displayScalerGetLogicalSpace();

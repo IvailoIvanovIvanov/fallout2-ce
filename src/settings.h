@@ -32,6 +32,8 @@ struct SystemSettings {
     bool render_display_orchestrator = false;
     bool render_command_direct_blit_fallback = true;
     bool gpu_overlay = false;  // Phase 7: GPU-resident overlay texture for HD content
+    bool vsync = true;         // Phase 7: Enable VSync for tear-free rendering
+    int target_fps = 60;       // Phase 7: Target frame rate for FPS limiter
 };
 
 struct PreferencesSettings {
