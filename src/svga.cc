@@ -2387,8 +2387,10 @@ void renderPresent()
     SDL_RenderCopy(gSdlRenderer, gSdlTexture, &srcRect, &destRect);
     
     // Phase 7: Composite GPU overlay on top if enabled and has content
+    // Note: Overlay texture is at physical resolution (1920x1440), so use nullptr for src
+    // to copy the full texture directly to the viewport destination
     if (gGpuOverlayEnabled && gGpuOverlayHasContent && gSdlOverlayTexture != nullptr) {
-        SDL_RenderCopy(gSdlRenderer, gSdlOverlayTexture, &srcRect, &destRect);
+        SDL_RenderCopy(gSdlRenderer, gSdlOverlayTexture, nullptr, &destRect);
         
         if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
             diagnosticsLog(DiagnosticsLevel::Trace,
