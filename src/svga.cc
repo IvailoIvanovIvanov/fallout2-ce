@@ -724,6 +724,8 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
         if (settings.system.target_fps > 0) {
             sharedFpsLimiter.setFps(settings.system.target_fps);
         }
+        // Phase 7c: VSync awareness - when VSync is on, FPS limiter skips throttling
+        sharedFpsLimiter.setVSyncEnabled(settings.system.vsync);
         
         SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
@@ -935,7 +937,10 @@ void _GNW95_ShowRect(unsigned char* src, int srcPitch, int a3, int srcX, int src
             }
 
             windowVirtualScreenInvalidateRect(destRect);
-            windowPresentVirtualScreen();
+            // Phase 7c: Only present immediately if deferred presentation is disabled
+            if (!windowIsDeferredPresentationEnabled()) {
+                windowPresentVirtualScreen();
+            }
         }
 
         return;
@@ -1567,6 +1572,10 @@ static bool createRenderer()
                 info.flags);
         }
     }
+
+    // Phase 7c: Tell FPS limiter whether VSync is active
+    // When VSync is on, the GPU already limits frame rate so FPS limiter can skip throttling
+    sharedFpsLimiter.setVSyncEnabled(settings.system.vsync);
 
     LogicalSpace logicalSpace = displayScalerGetLogicalSpace();
     int presenterWidth = logicalSpace.width;

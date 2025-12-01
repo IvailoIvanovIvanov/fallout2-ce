@@ -871,6 +871,83 @@ target_fps=60    ; Frame rate target (affects scroll speed, FPS limiter)
 
 ---
 
+## Phase 7c: Deferred Presentation (Flicker Elimination)
+
+### Problem Analysis
+
+The game's animation system caused flickering around characters because:
+
+1. **Multiple presents per frame** - Each animated object called `tileWindowRefreshRect()` which triggered `windowRefreshRect()` → `windowPresentVirtualScreen()` immediately
+2. **Partial state visibility** - User sees intermediate states where some objects are updated but others aren't
+3. **N objects = N texture uploads** - Each moving object caused a separate texture upload to GPU
+
+### Root Cause Chain
+
+```
+_object_animate() [called from tickersExecute]
+  ↓ for each animated object
+  tileWindowRefreshRect()
+    ↓
+  isoWindowRefreshRect() 
+    ↓
+  windowRefreshRect()
+    ↓
+  windowPresentVirtualScreen()  ← IMMEDIATE PRESENT = FLICKER!
+```
+
+### Solution: Deferred Presentation
+
+Added a deferred presentation mode (`window_manager.cc`):
+
+```cpp
+static bool gDeferredPresentationEnabled = false;
+
+void windowSetDeferredPresentation(bool enabled);
+bool windowIsDeferredPresentationEnabled();
+
+void windowRefreshRect(int win, const Rect* rect)
+{
+    // ... update screen buffer ...
+    
+    // Only present immediately if deferred presentation is disabled
+    if (!gDeferredPresentationEnabled) {
+        windowPresentVirtualScreen();
+    }
+}
+```
+
+The main game loop now enables deferred presentation:
+
+```cpp
+static void mainLoop()
+{
+    windowSetDeferredPresentation(true);  // Enable deferred mode
+    
+    while (_game_user_wants_to_quit == 0) {
+        sharedFpsLimiter.mark();
+        
+        int keyCode = inputGetInput();   // Runs tickersExecute() → _object_animate()
+        // ... game logic ...
+        
+        renderPresent();                  // Single present per frame!
+        sharedFpsLimiter.throttle();
+    }
+    
+    windowSetDeferredPresentation(false);
+}
+```
+
+### Performance Benefits
+
+| Aspect | Before | After |
+|--------|--------|-------|
+| Presents per frame | N (one per animated object) | 1 |
+| Texture uploads | N | 1 |
+| Visual flickering | Visible around moving objects | Eliminated |
+| Frame coherence | Partial states visible | Complete frames only |
+
+---
+
 ## Quick Start (Running Upscaled Today)
 
 The system **already works**. To run the game upscaled:

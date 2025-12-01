@@ -323,6 +323,10 @@ static void mainLoop()
 
     scriptsEnable();
 
+    // Phase 7b: Enable deferred presentation for smooth animation
+    // This prevents multiple partial screen presents per frame
+    windowSetDeferredPresentation(true);
+
     while (_game_user_wants_to_quit == 0) {
         sharedFpsLimiter.mark();
 
@@ -350,6 +354,9 @@ static void mainLoop()
         renderPresent();
         sharedFpsLimiter.throttle();
     }
+
+    // Phase 7b: Disable deferred presentation when leaving main loop
+    windowSetDeferredPresentation(false);
 
     scriptsDisable();
 

@@ -240,6 +240,10 @@ int _win_set_button_rest_state(int btn, bool checked, int flags);
 int _win_group_radio_buttons(int buttonCount, int* btns);
 int _win_button_press_and_release(int btn);
 
+// Phase 7b: Deferred presentation to reduce flickering during animations
+void windowSetDeferredPresentation(bool enabled);
+bool windowIsDeferredPresentationEnabled();
+
 } // namespace fallout
 
 #endif /* WINDOW_MANAGER_H */

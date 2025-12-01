@@ -18,6 +18,7 @@ FpsLimiter::FpsLimiter(unsigned int fps)
     : _fps(fps)
     , _frameTimeUs(fps > 0 ? 1000000.0 / fps : 0)
     , _startCounter(0)
+    , _vsyncEnabled(false)
 {
 #ifdef _WIN32
     LARGE_INTEGER freq;
@@ -47,6 +48,12 @@ void FpsLimiter::mark()
 
 void FpsLimiter::throttle() const
 {
+    // Phase 7c: When VSync is enabled, the GPU already limits frame rate
+    // so we don't need to do any additional throttling
+    if (_vsyncEnabled) {
+        return;
+    }
+    
     if (_fps == 0 || _frameTimeUs <= 0) {
         return;
     }

@@ -105,6 +105,11 @@ static Rect gVirtualScreenDirtyRect = { 0, 0, -1, -1 };
 static bool gVirtualScreenDirty = false;
 static uint32_t gVirtualScreenDirtySequence = 0;
 
+// Phase 7b: Deferred presentation to reduce flickering
+// When true, windowRefreshRect() will NOT call windowPresentVirtualScreen()
+// The main game loop's renderPresent() will handle presentation once per frame
+static bool gDeferredPresentationEnabled = false;
+
 // 0x51E400
 static bool _insideWinExit = false;
 
@@ -1597,7 +1602,10 @@ void windowRefresh(int win)
 
     _GNW_win_refresh(window, &(window->rect), nullptr);
 
-    windowPresentVirtualScreen();
+    // Phase 7b: Only present immediately if deferred presentation is disabled
+    if (!gDeferredPresentationEnabled) {
+        windowPresentVirtualScreen();
+    }
 }
 
 // 0x4D6F80
@@ -1618,7 +1626,11 @@ void windowRefreshRect(int win, const Rect* rect)
     rectOffset(&newRect, window->rect.left, window->rect.top);
 
     _GNW_win_refresh(window, &newRect, nullptr);
-    windowPresentVirtualScreen();
+    
+    // Phase 7b: Only present immediately if deferred presentation is disabled
+    if (!gDeferredPresentationEnabled) {
+        windowPresentVirtualScreen();
+    }
 }
 
 // 0x4D6FD8
@@ -1973,7 +1985,10 @@ void _refresh_all(Rect* rect, unsigned char* a2)
             }
         }
 
-        windowPresentVirtualScreen();
+        // Phase 7c: Only present immediately if deferred presentation is disabled
+        if (!gDeferredPresentationEnabled) {
+            windowPresentVirtualScreen();
+        }
     }
 }
 
@@ -3991,6 +4006,17 @@ void windowDebugStampMissingHdGlyph(int win, int left, int top, int width, int h
         overlayRow += window->width;
         maskRow += window->width;
     }
+}
+
+// Phase 7b: Deferred presentation control
+void windowSetDeferredPresentation(bool enabled)
+{
+    gDeferredPresentationEnabled = enabled;
+}
+
+bool windowIsDeferredPresentationEnabled()
+{
+    return gDeferredPresentationEnabled;
 }
 
 } // namespace fallout
