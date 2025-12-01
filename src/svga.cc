@@ -45,6 +45,7 @@ static void logPaletteUploadSamples(int start, int count, const unsigned char* p
 static void updateTexturePaletteRange(int start, int count, const unsigned char* palette);
 static bool isFullResPresenterActive();
 static Rect getPresenterSurfaceBounds();
+static Rect getGpuOverlayBounds();  // Phase 8.3: Overlay uses physical viewport size
 static bool resolvePresenterRect(const Rect& inputRect, Rect* outLogicalRect, Rect* outPresenterRect);
 
 static Rect gLastRenderViewport = { 0, 0, -1, -1 };
@@ -529,6 +530,24 @@ static Rect getPresenterSurfaceBounds()
         }
     }
 
+    return bounds;
+}
+
+// Phase 8.3: GPU overlay always uses physical viewport size
+// This is different from presenter bounds when gpu_scaling is enabled
+static Rect getGpuOverlayBounds()
+{
+    Rect bounds = { 0, 0, -1, -1 };
+    
+    // Overlay texture is always at physical resolution
+    const Rect& viewport = displayScalerGetPhysicalViewport();
+    int width = rectGetWidth(&viewport);
+    int height = rectGetHeight(&viewport);
+    if (width > 0 && height > 0) {
+        bounds.right = width - 1;
+        bounds.bottom = height - 1;
+    }
+    
     return bounds;
 }
 
@@ -1385,11 +1404,11 @@ int blitToGpuOverlayTexture(const uint32_t* src, int srcPitch, const Rect& rect)
         return 0;
     }
 
-    // Get presenter bounds for clipping
-    Rect presenterBounds = getPresenterSurfaceBounds();
+    // Phase 8.3: Use overlay bounds (physical resolution) not presenter bounds
+    Rect overlayBounds = getGpuOverlayBounds();
     Rect clipped;
     rectCopy(&clipped, &rect);
-    if (rectIntersection(&clipped, &presenterBounds, &clipped) == -1) {
+    if (rectIntersection(&clipped, &overlayBounds, &clipped) == -1) {
         return 0;
     }
 
@@ -1455,10 +1474,11 @@ void clearGpuOverlayRect(const Rect& rect)
         return;
     }
 
-    Rect presenterBounds = getPresenterSurfaceBounds();
+    // Phase 8.3: Use overlay bounds (physical resolution) not presenter bounds
+    Rect overlayBounds = getGpuOverlayBounds();
     Rect clipped;
     rectCopy(&clipped, &rect);
-    if (rectIntersection(&clipped, &presenterBounds, &clipped) == -1) {
+    if (rectIntersection(&clipped, &overlayBounds, &clipped) == -1) {
         return;
     }
 

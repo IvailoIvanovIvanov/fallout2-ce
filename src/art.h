@@ -182,6 +182,8 @@ void artTrueColorStatsReset();
 void artTrueColorStatsLog(const char* mapName);
 void artTrueColorMarkActive(int fid);
 bool artTrueColorMarkInactive(int fid, const char* reason = nullptr);
+double artGetDetectedHdAssetScale();  // Returns 0.0 if not yet detected
+int artGetHdAssetScaleMismatchCount();  // Count of assets with mismatched scales
 
 class FrmImage {
 public:

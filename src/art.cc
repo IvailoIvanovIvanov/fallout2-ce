@@ -89,11 +89,23 @@ struct HdTrueColorCacheStats {
 };
 static HdTrueColorCacheStats gHdTrueColorCacheStats;
 static std::unordered_set<int> gHdTrueColorActiveFids;
+
+// Phase 8: Auto-detected HD asset scale
+// The first loaded HD asset sets the expected scale, subsequent assets should match
+static double gDetectedHdAssetScale = 0.0;  // 0 = not yet detected
+static int gHdAssetScaleDetectionCount = 0;
+static int gHdAssetScaleMismatchCount = 0;
+
 static void hdTrueColorRegistryClear()
 {
     // gHdTrueColorFrameRegistry removed - render_asset_registry owns HD views
     gHdTrueColorFrameStorage.clear();
     gHdTrueColorArtFrameOwners.clear();
+    
+    // Reset scale detection for new session/map
+    gDetectedHdAssetScale = 0.0;
+    gHdAssetScaleDetectionCount = 0;
+    gHdAssetScaleMismatchCount = 0;
 }
 
 static const char* hdAlphaModeToString(HdAlphaMode mode)
@@ -1711,6 +1723,36 @@ static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* da
         return true;
     }
 
+    // Phase 8: Track detected HD asset scale for auto-detection
+    const double detectedScale = scaleX;  // scaleX == scaleY at this point
+    gHdAssetScaleDetectionCount++;
+    
+    if (gDetectedHdAssetScale == 0.0) {
+        // First HD asset - set the expected scale
+        gDetectedHdAssetScale = detectedScale;
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "ART",
+                "Auto-detected HD asset scale: %.1fx (from fid %08X, %dx%d -> %dx%d)",
+                detectedScale,
+                fid,
+                logicalWidth, logicalHeight,
+                width, height);
+        }
+    } else if (std::fabs(detectedScale - gDetectedHdAssetScale) > 0.001) {
+        // Scale mismatch - log warning
+        gHdAssetScaleMismatchCount++;
+        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "ART",
+                "HD asset scale mismatch: fid %08X is %.1fx, expected %.1fx (mismatch #%d)",
+                fid,
+                detectedScale,
+                gDetectedHdAssetScale,
+                gHdAssetScaleMismatchCount);
+        }
+    }
+
     const long long pixelCount = 1LL * width * height;
     std::unique_ptr<uint32_t[]> hdPixels;
     if (pixelCount > 0) {
@@ -1813,17 +1855,16 @@ static int artCacheGetFileSizeImpl(int fid, int* sizePtr)
 {
     int result = -1;
 
-    if (sizePtr != nullptr) {
-        HdArtInfo hdInfo;
-        if (hdArtProbe(fid, hdInfo)) {
-            *sizePtr = hdArtComputeDataSize(hdInfo.width, hdInfo.height);
-            return 0;
-        }
+    if (sizePtr == nullptr) {
+        return result;
     }
 
+    // First, try to get the actual FRM file size - we need this even for HD assets
+    // because the FRM might have multiple rotations/frames that require more space
+    // than the HD-computed size (which assumes a single frame).
+    int frmSize = 0;
     char* artFilePath = artBuildFilePath(fid);
     if (artFilePath != nullptr) {
-        bool loaded = false;
         File* stream = nullptr;
 
         if (gArtLanguageInitialized) {
@@ -1845,11 +1886,28 @@ static int artCacheGetFileSizeImpl(int fid, int* sizePtr)
         if (stream != nullptr) {
             Art art;
             if (artReadHeader(&art, stream) == 0) {
-                *sizePtr = artGetDataSize(&art);
+                frmSize = artGetDataSize(&art);
                 result = 0;
             }
             fileClose(stream);
         }
+    }
+
+    // Check for HD asset - if present, compute HD size and use the maximum
+    // of FRM size and HD size to ensure buffer is large enough for both.
+    HdArtInfo hdInfo;
+    if (hdArtProbe(fid, hdInfo)) {
+        int hdSize = hdArtComputeDataSize(hdInfo.width, hdInfo.height);
+        // Use the larger of the two sizes to ensure the buffer can hold
+        // both the FRM structure (with all rotations/frames) and has
+        // enough space for HD data operations.
+        *sizePtr = std::max(frmSize, hdSize);
+        return 0;
+    }
+
+    // No HD asset - use FRM size if we got it
+    if (result == 0) {
+        *sizePtr = frmSize;
     }
 
     return result;
@@ -2388,6 +2446,16 @@ bool artTrueColorMarkInactive(int fid, const char* reason)
     }
 
     return true;
+}
+
+double artGetDetectedHdAssetScale()
+{
+    return gDetectedHdAssetScale;
+}
+
+int artGetHdAssetScaleMismatchCount()
+{
+    return gHdAssetScaleMismatchCount;
 }
 
 } // namespace fallout
