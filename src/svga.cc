@@ -407,8 +407,21 @@ static void logVirtualAdapterSourceSamples(const char* stage, const unsigned cha
         sampleEndValue);
 }
 
+// Phase 8.3: Check if GPU scaling is enabled
+// When true, the indexed layer stays at logical resolution and GPU scales during render
+static bool isGpuScalingActive()
+{
+    return settings.system.gpu_scaling && settings.system.virtual_adapter;
+}
+
 static bool isFullResPresenterActive()
 {
+    // Phase 8.3: If GPU scaling is enabled, never use full-res presenter for indexed layer
+    // This keeps the texture at 640x480 and lets the GPU scale to physical resolution
+    if (isGpuScalingActive()) {
+        return false;
+    }
+    
     if (!settings.system.virtual_adapter || !settings.system.virtual_adapter_fullres) {
         return false;
     }
@@ -1609,15 +1622,21 @@ static bool createRenderer()
         return false;
     }
 
-    // Phase 7: Create GPU overlay texture for HD content
-    // Only create if virtual adapter with full-res is active
-    if (isFullResPresenterActive() && settings.system.gpu_overlay) {
+    // Phase 7/8.3: Create GPU overlay texture for HD content
+    // The overlay always needs physical resolution for HD assets, regardless of base layer scaling
+    // When gpu_scaling is enabled, base layer is 640x480 but overlay is still physical res
+    const bool needsHdOverlay = settings.system.virtual_adapter && settings.system.gpu_overlay;
+    if (needsHdOverlay) {
+        const Rect& viewport = displayScalerGetPhysicalViewport();
+        const int overlayWidth = std::max(1, rectGetWidth(&viewport));
+        const int overlayHeight = std::max(1, rectGetHeight(&viewport));
+        
         gSdlOverlayTexture = SDL_CreateTexture(
             gSdlRenderer,
             SDL_PIXELFORMAT_ARGB8888,
             SDL_TEXTUREACCESS_STREAMING,
-            presenterWidth,
-            presenterHeight
+            overlayWidth,
+            overlayHeight
         );
         
         if (gSdlOverlayTexture != nullptr) {
@@ -1637,9 +1656,12 @@ static bool createRenderer()
             if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
                 diagnosticsLog(DiagnosticsLevel::Info,
                     "GPU_OVERLAY",
-                    "created overlay texture %dx%d (STREAMING, BLEND)",
+                    "created overlay texture %dx%d (STREAMING, BLEND), base=%dx%d gpu_scaling=%d",
+                    overlayWidth,
+                    overlayHeight,
                     presenterWidth,
-                    presenterHeight);
+                    presenterHeight,
+                    isGpuScalingActive() ? 1 : 0);
             }
         } else {
             // Fallback to CPU path if GPU texture creation fails
@@ -1729,7 +1751,14 @@ static bool ensurePresenterSurfaceMatchesBounds()
     int desiredHeight = 0;
     const char* stateReason = nullptr;
 
-    if (settings.system.virtual_adapter && settings.system.virtual_adapter_fullres) {
+    // Phase 8.3: If GPU scaling is enabled, always use logical resolution for base layer
+    // The GPU will scale during SDL_RenderCopy, which is much faster than CPU scaling
+    if (isGpuScalingActive()) {
+        const Rect& logicalBounds = displayScalerGetLogicalBounds();
+        desiredWidth = rectGetWidth(&logicalBounds);
+        desiredHeight = rectGetHeight(&logicalBounds);
+        stateReason = "gpu_scaling_active";
+    } else if (settings.system.virtual_adapter && settings.system.virtual_adapter_fullres) {
         const double scale = displayScalerGetScale();
         if (scale >= 1.0 - 1.0e-4) {
             const Rect& viewport = displayScalerGetPhysicalViewport();
@@ -1744,7 +1773,7 @@ static bool ensurePresenterSurfaceMatchesBounds()
         }
     }
 
-    if (!wantFullResPresenter) {
+    if (!wantFullResPresenter && desiredWidth <= 0) {
         const Rect& logicalBounds = displayScalerGetLogicalBounds();
         desiredWidth = rectGetWidth(&logicalBounds);
         desiredHeight = rectGetHeight(&logicalBounds);
@@ -1825,20 +1854,26 @@ static bool ensurePresenterSurfaceMatchesBounds()
     SDL_RenderClear(gSdlRenderer);
     SDL_SetRenderTarget(gSdlRenderer, nullptr);
 
-    // Phase 7: Recreate GPU overlay texture to match new presenter size
+    // Phase 7/8.3: Recreate GPU overlay texture
+    // Overlay always needs physical resolution for HD assets, even when base uses gpu_scaling
     if (gSdlOverlayTexture != nullptr) {
         SDL_DestroyTexture(gSdlOverlayTexture);
         gSdlOverlayTexture = nullptr;
         gGpuOverlayEnabled = false;
     }
     
-    if (wantFullResPresenter && settings.system.gpu_overlay) {
+    const bool needsHdOverlay = settings.system.virtual_adapter && settings.system.gpu_overlay;
+    if (needsHdOverlay) {
+        const Rect& viewport = displayScalerGetPhysicalViewport();
+        const int overlayWidth = std::max(1, rectGetWidth(&viewport));
+        const int overlayHeight = std::max(1, rectGetHeight(&viewport));
+        
         gSdlOverlayTexture = SDL_CreateTexture(
             gSdlRenderer,
             SDL_PIXELFORMAT_ARGB8888,
             SDL_TEXTUREACCESS_STREAMING,
-            desiredWidth,
-            desiredHeight
+            overlayWidth,
+            overlayHeight
         );
         
         if (gSdlOverlayTexture != nullptr) {
@@ -1856,9 +1891,12 @@ static bool ensurePresenterSurfaceMatchesBounds()
             if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
                 diagnosticsLog(DiagnosticsLevel::Info,
                     "GPU_OVERLAY",
-                    "resized overlay texture to %dx%d",
+                    "resized overlay texture to %dx%d (base=%dx%d gpu_scaling=%d)",
+                    overlayWidth,
+                    overlayHeight,
                     desiredWidth,
-                    desiredHeight);
+                    desiredHeight,
+                    isGpuScalingActive() ? 1 : 0);
             }
         } else {
             gGpuOverlayEnabled = false;
