@@ -452,6 +452,14 @@ static inline const TilePhysicalOverlayView* tileGetPhysicalOverlayView()
     return gTilePhysicalOverlayView.valid() ? &gTilePhysicalOverlayView : nullptr;
 }
 
+// Edge-aligned sampling for tiles to prevent visible grid lines at tile boundaries.
+// Unlike center-weighted sampling used for sprites, tiles need edge-to-edge alignment
+// so that adjacent tiles seamlessly connect without visible seams.
+//
+// For tiles: the first physical pixel samples from the first HD texel, and the last
+// physical pixel samples from the last HD texel, with linear distribution between.
+// This ensures that when two tiles meet, their edge pixels sample from matching
+// texel positions.
 static inline int tileSelectSampleIndex(int position, int spanLength, int sampleCount)
 {
     if (sampleCount <= 1 || spanLength <= 0) {
@@ -459,12 +467,15 @@ static inline int tileSelectSampleIndex(int position, int spanLength, int sample
     }
 
     if (spanLength == 1) {
-        return 0;
+        // Single physical pixel - sample from center of HD texel range
+        return sampleCount / 2;
     }
 
-    const int numerator = (2 * position + 1) * sampleCount;
-    const int denominator = 2 * spanLength;
-    int index = numerator / denominator;
+    // Edge-aligned linear interpolation:
+    // position 0 -> sample 0
+    // position spanLength-1 -> sample sampleCount-1
+    // This ensures tile edges align perfectly
+    const int index = (position * (sampleCount - 1)) / (spanLength - 1);
     if (index < 0) {
         return 0;
     }
@@ -605,8 +616,9 @@ static void tileBlitTrueColorOverlayPhysical(const TilePhysicalOverlayView& phys
                 const int columnSpanWidth = physicalColumnEnd - physicalColumnStart + 1;
                 const unsigned char indexedValue = *indexedPixel++;
                 if (indexedValue == 0) {
-                    memset(destRow + physicalColumnStart, 0, columnSpanWidth * sizeof(uint32_t));
-                    memset(maskRow + physicalColumnStart, 0, columnSpanWidth);
+                    // Skip transparent pixels - don't erase previously rendered tiles.
+                    // Tiles are rendered in order and may overlap at diamond-shaped edges.
+                    // Erasing here would create visible grid lines by clearing adjacent tile content.
                     continue;
                 }
 
@@ -2211,9 +2223,11 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
                 const int stepX = std::max(1, trueColorView.scaleX);
                 const int stepY = std::max(1, trueColorView.scaleY);
                 const int rowAdvance = srcStride * stepY;
-                const int sampleOffsetX = stepX > 1 ? std::min(stepX / 2, stepX - 1) : 0;
-                const int sampleOffsetY = stepY > 1 ? std::min(stepY / 2, stepY - 1) : 0;
-                const int sampleYOffset = sampleOffsetY * srcStride;
+                // For tiles: use edge-aligned sampling (no center offset) to prevent
+                // visible grid lines at tile boundaries
+                const int sampleOffsetX = 0;
+                const int sampleOffsetY = 0;
+                const int sampleYOffset = 0;
 
                 const uint32_t* trueColorBaseRow = trueColorView.pixels + v78 * rowAdvance + v79 * stepX;
                 uint32_t* trueColorDestRow = gTileWindowTrueColorOverlay + gTileWindowWidth * y + x;
@@ -2230,10 +2244,9 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
                         if (*indexedPixel != 0) {
                             *trueColorDestPixel = colorApplyLightingToArgb(*trueColorPixel, intensityIndex);
                             *trueColorMaskPixel = 1;
-                        } else {
-                            *trueColorDestPixel = 0;
-                            *trueColorMaskPixel = 0;
                         }
+                        // Skip transparent pixels - don't erase previously rendered tiles.
+                        // Tiles overlap at diamond edges; erasing would create visible grid lines.
 
                         indexedPixel++;
                         trueColorPixel += stepX;
@@ -2404,9 +2417,11 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
         const int stepX = hasTrueColor ? std::max(1, trueColorView.scaleX) : 1;
         const int stepY = hasTrueColor ? std::max(1, trueColorView.scaleY) : 1;
         const int rowAdvance = srcStride * stepY;
-        const int sampleOffsetX = stepX > 1 ? std::min(stepX / 2, stepX - 1) : 0;
-        const int sampleOffsetY = stepY > 1 ? std::min(stepY / 2, stepY - 1) : 0;
-        const int sampleYOffset = sampleOffsetY * srcStride;
+        // For tiles: use edge-aligned sampling (no center offset) to prevent
+        // visible grid lines at tile boundaries
+        const int sampleOffsetX = 0;
+        const int sampleOffsetY = 0;
+        const int sampleYOffset = 0;
 
         const uint32_t* trueColorBaseRow = nullptr;
         uint32_t* trueColorDestRow = nullptr;
@@ -2440,8 +2455,8 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
                         trueColorMaskPixel++;
                     }
                 } else if (hasTrueColor) {
-                    *trueColorDestPixel = 0;
-                    *trueColorMaskPixel = 0;
+                    // Skip transparent pixels - don't erase previously rendered tiles.
+                    // Tiles overlap at diamond edges; erasing would create visible grid lines.
                     trueColorSrcPixel += stepX;
                     trueColorDestPixel++;
                     trueColorMaskPixel++;
