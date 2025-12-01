@@ -948,6 +948,312 @@ static void mainLoop()
 
 ---
 
+## Phase 8: Critical Performance Optimizations
+
+### Problem Statement
+
+After implementing Phases 7, 7b, and 7c, the rendering pipeline is functionally correct but has severe performance bottlenecks. Analysis of frame timing revealed:
+
+- **VSync works** (16-17ms frame intervals when idle)
+- **Frames with tile rendering take 50-200ms** instead of the expected 16ms
+- **Flickering persists** due to CPU-bound rendering not keeping up with display refresh
+
+### Root Cause Analysis
+
+The rendering pipeline has **five major architectural bottlenecks**:
+
+```
+Current Frame Flow (CPU-Bound):
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 1. ORCHESTRATOR PROCESSING (per tile command)                              │
+│    ┌─────────────────────────────────────────────────────────────────────┐  │
+│    │ clearOverlayRegion()          ← 4-level nested loop, clears 9 px/src│  │
+│    │ sampleHdPixelBilinear()       ← 4 texture reads + 8 lerps per pixel │  │
+│    │ blitToPhysicalOverlay()       ← 4-level nested loop, 9 writes/src   │  │
+│    └─────────────────────────────────────────────────────────────────────┘  │
+│    × 100-400 tile commands per frame = MASSIVE CPU LOAD                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 2. INDEXED BASE LAYER (blitIndexedRectToTexture)                           │
+│    ┌─────────────────────────────────────────────────────────────────────┐  │
+│    │ for each logical pixel (640×480):                                   │  │
+│    │   for each physical row (3 at 3× scale):                            │  │
+│    │     for each physical column (3 at 3× scale):                       │  │
+│    │       destRow[col] = paletteColor;  ← 9 writes per source pixel     │  │
+│    └─────────────────────────────────────────────────────────────────────┘  │
+│    640×480 × 9 = 2,764,800 pixel writes (CPU)                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 3. HD OVERLAY COMPOSITING (windowCompositeTrueColorOverlays)               │
+│    ┌─────────────────────────────────────────────────────────────────────┐  │
+│    │ blitPhysicalTrueColorRectToTexture()                                │  │
+│    │   for each row:                                                     │  │
+│    │     for each column:                                                │  │
+│    │       if (mask[col]) destRow[col] = srcRow[col];  ← per-pixel copy  │  │
+│    └─────────────────────────────────────────────────────────────────────┘  │
+│    Another ~2.7M pixel operations                                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 4. TEXTURE UPLOAD (SDL_UpdateTexture)                                      │
+│    Entire presenter surface (1920×1440 × 4 bytes) = 11MB upload to GPU     │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 5. GPU RENDER (SDL_RenderCopy + SDL_RenderPresent)                         │
+│    Actually fast! The GPU is idle waiting for CPU work.                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Bottleneck #1: Per-Tile Overlay Clearing
+
+**Location:** `render_display_orchestrator.cc` - `clearOverlayRegion()`
+
+**Problem:** Before each tile is drawn, its physical region is cleared with nested loops:
+```cpp
+for (int logicalRow = 0; logicalRow < height; logicalRow++) {
+    for (int physicalRow = physicalRowStart; physicalRow <= physicalRowEnd; physicalRow++) {
+        for (int logicalColumn = 0; logicalColumn < width; logicalColumn++) {
+            for (int physicalColumn = physicalColumnStart; physicalColumnEnd; physicalColumn++) {
+                destRow[physicalColumn] = 0;
+                maskRow[physicalColumn] = 0;
+            }
+        }
+    }
+}
+```
+
+**Impact:** 
+- Each tile clears ~8,000 physical pixels
+- 100 tiles/frame × 8,000 = 800,000 extra memory writes
+- Already clearing entire window at frame start (redundant!)
+
+**Solution:** Remove per-tile clearing. The full-window clear at frame start is sufficient.
+
+---
+
+### Bottleneck #2: Double-Precision Bilinear Sampling
+
+**Location:** `render_display_orchestrator.cc` - `sampleHdPixelBilinear()`
+
+**Problem:** Every output pixel requires expensive floating-point math:
+```cpp
+// Per-pixel operations (called ~2.7M times per frame at 3× scale):
+const double localX = context.texelOriginX 
+    + static_cast<double>(logicalColumn) * context.texelsPerLogicalX
+    + computeSampleCoordinate(...);  // More double math
+    
+// 4 texture reads
+const uint32_t c00 = context.base[y0 * context.stride + x0];
+const uint32_t c10 = context.base[y0 * context.stride + x1];
+const uint32_t c01 = context.base[y1 * context.stride + x0];
+const uint32_t c11 = context.base[y1 * context.stride + x1];
+
+// 8 lerp operations with double precision
+const double aTop = lerp(component(c00, 24), component(c10, 24), fx);
+// ... 7 more lerps for R, G, B channels × 2 directions
+
+// Expensive rounding
+return (clampComponent(a) << 24) | ...;  // Uses std::lround()
+```
+
+**Impact:**
+- 4 memory reads + ~20 FP operations per output pixel
+- At 3× scale: 2.7M pixels × 20 ops = 54M floating-point operations per frame
+
+**Solution:** 
+1. Use 16.16 fixed-point math instead of double
+2. Cache texel coordinates per logical pixel (don't recompute for each span pixel)
+3. Use nearest-neighbor sampling for sub-pixel spans (imperceptible at 3× scale)
+
+---
+
+### Bottleneck #3: CPU Pixel Expansion (Scaling)
+
+**Location:** `svga.cc` - `blitIndexedRectToTexture()`
+
+**Problem:** At 3× scale, every 640×480 source pixel expands to 9 destination pixels via nested CPU loops:
+```cpp
+for (int column = 0; column < width; column++) {
+    const uint32_t mappedColor = gTexturePalette[srcRow[column]];
+    
+    // 3× scale = 3 rows × 3 columns = 9 writes per source pixel
+    for (int physicalRow = physicalRowStart; physicalRow <= physicalRowEnd; physicalRow++) {
+        for (int physicalColumn = physicalColumnStart; physicalColumnEnd; physicalColumn++) {
+            destRow[physicalColumn] = mappedColor;
+        }
+    }
+}
+```
+
+**Impact:** 640×480 × 9 = 2,764,800 individual pixel writes per frame
+
+**Solution:** Let the GPU do the scaling:
+1. Render indexed→RGBA at 640×480 (307,200 pixels)
+2. Use `SDL_RenderCopy` with destination rect to scale (hardware accelerated)
+3. Saves 2.4M CPU pixel writes per frame
+
+---
+
+### Bottleneck #4: Redundant Full-Surface Operations
+
+**Location:** `render_display_orchestrator.cc` line ~827
+
+**Problem:** The orchestrator clears the ENTIRE tile window overlay every frame:
+```cpp
+// Called at start of every frame:
+windowClearTrueColorRegion(tileWindowId, 0, 0, windowWidth, windowHeight);
+// At 1920×1440 = 2,764,800 pixels cleared to zero
+```
+
+Then each tile ALSO clears its own region (Bottleneck #1). Double clear!
+
+**Solution:** Clear once at frame start OR per-tile, not both. Single memset is faster than per-pixel loop.
+
+---
+
+### Bottleneck #5: Full Texture Upload Every Frame
+
+**Location:** `svga.cc` - `renderPresent()`
+
+**Problem:** Every frame uploads the entire presenter surface to GPU:
+```cpp
+SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch);
+// At 1920×1440×4 = 11MB upload per frame
+```
+
+Even if only a small region changed, we upload everything.
+
+**Solution:** Track dirty regions and use `SDL_UpdateTexture` with a rect parameter to upload only changed areas.
+
+---
+
+### Optimization Implementation Plan
+
+#### Phase 8.1: Remove Redundant Clearing (LOW RISK - HIGH IMPACT)
+
+**Goal:** Eliminate double-clearing of overlay buffers
+
+**Changes:**
+1. Remove `clearOverlayRegion()` call from `processIsoCommand()`
+2. Keep single `windowClearTrueColorRegion()` at frame start
+3. Use `memset()` for the frame-start clear instead of per-pixel loop
+
+**Expected improvement:** ~30% reduction in CPU time per frame
+
+---
+
+#### Phase 8.2: Optimize Bilinear Sampling (MEDIUM RISK - HIGH IMPACT)
+
+**Goal:** Replace double-precision math with fixed-point
+
+**Changes:**
+1. Pre-compute texel coordinates per logical pixel at frame start
+2. Use 16.16 fixed-point for interpolation
+3. Replace `std::lround()` with bit-shift rounding
+4. Consider nearest-neighbor for physical sub-pixels (same visual at 3× scale)
+
+**Expected improvement:** ~40% reduction in sampling overhead
+
+---
+
+#### Phase 8.3: GPU-Based Scaling (MEDIUM RISK - VERY HIGH IMPACT)
+
+**Goal:** Let GPU scale from 640×480 to physical resolution
+
+**Changes:**
+1. Create a 640×480 texture for indexed→RGBA conversion
+2. Render base layer at native 640×480 (palette lookup only)
+3. Use `SDL_RenderCopy` with scaling to output at physical resolution
+4. GPU does the 3× expansion in hardware
+
+**New rendering flow:**
+```
+Indexed (640×480) → RGBA Texture (640×480) → GPU Scale (1920×1440) → Present
+        ↓                    ↓                      ↓
+   307K pixels          307K pixels           Hardware (free!)
+```
+
+**Expected improvement:** ~60% reduction in base layer rendering time
+
+---
+
+#### Phase 8.4: Dirty Region Tracking (MEDIUM RISK - MEDIUM IMPACT)
+
+**Goal:** Only upload changed regions to GPU
+
+**Changes:**
+1. Track dirty rect for presenter surface
+2. Accumulate dirty rects during frame
+3. Call `SDL_UpdateTexture` with union of dirty rects
+4. For scroll operations, use GPU-to-GPU copy (`SDL_RenderCopy`)
+
+**Expected improvement:** ~20% reduction in GPU upload time (varies by scene)
+
+---
+
+#### Phase 8.5: Streaming Texture for HD Overlay (HIGH RISK - HIGH IMPACT)
+
+**Goal:** Eliminate CPU→RAM→GPU copy chain for HD overlays
+
+**Changes:**
+1. Create `SDL_TEXTUREACCESS_STREAMING` texture for HD overlay
+2. Use `SDL_LockTexture` to get direct pointer to GPU-mapped memory
+3. Write HD pixels directly to locked texture region
+4. Unlock and let GPU composite with hardware alpha blend
+
+**New HD overlay flow:**
+```
+HD Asset → SDL_LockTexture → Write directly → SDL_UnlockTexture → GPU Blend
+              ↓                                        ↓
+         Direct to VRAM                        Hardware composite
+```
+
+**Expected improvement:** ~50% reduction in HD overlay compositing time
+
+---
+
+### Implementation Priority
+
+| Phase | Risk | Impact | Dependencies | Priority |
+|-------|------|--------|--------------|----------|
+| 8.1 Remove Double Clear | Low | High | None | **1st** |
+| 8.2 Fixed-Point Sampling | Medium | High | None | **2nd** |
+| 8.3 GPU Scaling | Medium | Very High | Phase 8.1 | **3rd** |
+| 8.4 Dirty Regions | Medium | Medium | Phase 8.3 | 4th |
+| 8.5 Streaming Texture | High | High | Phase 8.3 | 5th |
+
+### Performance Targets
+
+| Metric | Current | Target | Improvement |
+|--------|---------|--------|-------------|
+| Frame time (100 tiles) | 50-200ms | <16ms | 3-12× faster |
+| Base layer render | ~15ms | ~2ms | 7× faster |
+| HD overlay composite | ~30ms | ~5ms | 6× faster |
+| Texture upload | ~5ms | ~1ms | 5× faster |
+| Overall frame budget | Overflowing | 16.67ms headroom | Stable 60fps |
+
+### Debug Configuration
+
+To diagnose performance issues:
+
+```ini
+[system]
+render_command_replay=0     ; DISABLE - causes 3-12× slowdown
+render_command_trace=0      ; DISABLE for performance testing
+
+[debug]
+diagnostics_level=0         ; 0=Off, 1=Info, 2=Trace (trace = ~33 log lines/frame)
+render_path_trace=0         ; DISABLE - verbose logging
+```
+
+**Critical:** The `render_command_replay=1` debug feature was found to cause frame times of 50-200ms because it rebuilds every frame in a scratch buffer for validation. This should NEVER be enabled for normal play.
+
+---
+
 ## Quick Start (Running Upscaled Today)
 
 The system **already works**. To run the game upscaled:
@@ -985,19 +1291,42 @@ This architecture allows:
 - ✅ Input coordinates map correctly
 - ✅ Fallback to 8-bit when HD assets missing
 - ✅ No modifications to original gameplay code
+- ✅ VSync and frame timing working correctly
+- ✅ Deferred presentation eliminates per-object flickering
 
-The remaining work is architectural cleanup—encapsulating scattered state, completing command coverage, and removing legacy fallback paths.
+### Current Status
 
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Phantom Display (640×480) | ✅ Complete | Game runs at original resolution |
+| Command Bus | ✅ Complete | All render operations captured |
+| HD Asset Registry | ✅ Complete | Auto-fallback when HD missing |
+| Display Orchestrator | ✅ Complete | Composites HD overlays |
+| VSync + Frame Timing | ✅ Complete | Stable 16.67ms when idle |
+| Deferred Presentation | ✅ Complete | Single present per frame |
+| **Performance** | ⚠️ In Progress | CPU-bound, needs Phase 8 optimizations |
 
+### Remaining Work
 
-# The Enginge_abstraction_overview.md describes a clean architectural vision with four key pillars:
+**Phase 8 (Performance)** - Critical path to 60fps:
+1. Remove redundant overlay clearing (double-clear issue)
+2. Replace double-precision bilinear sampling with fixed-point
+3. Move pixel scaling from CPU loops to GPU hardware
+4. Implement dirty region tracking for partial texture uploads
+5. Use streaming textures for direct GPU memory access
 
-1. Phantom Display (640×480) – The game runs natively at the original resolution with its own asset cache, completely isolated from rendering decisions.
+The architectural foundation is solid. The remaining work is optimizing the hot paths identified through profiling to achieve butter-smooth 60fps gameplay.
 
-2. Command-Based Communication – The phantom display doesn't render directly; it sends commands to the real display describing what to draw, not how.
+---
 
-3. Logical Unit Coordinate System – Both displays share a unified logical coordinate space for perfect position mapping between input/output.
+## Appendix: The Four Pillars
 
-4. Separate HD Asset Cache – The real display maintains its own HD asset cache and renders at physical resolution while respecting logical coordinates.
+1. **Phantom Display (640×480)** – The game runs natively at the original resolution with its own asset cache, completely isolated from rendering decisions.
+
+2. **Command-Based Communication** – The phantom display doesn't render directly; it sends commands to the real display describing what to draw, not how.
+
+3. **Logical Unit Coordinate System** – Both displays share a unified logical coordinate space for perfect position mapping between input/output.
+
+4. **Separate HD Asset Cache** – The real display maintains its own HD asset cache and renders at physical resolution while respecting logical coordinates.
 
 
