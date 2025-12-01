@@ -3739,6 +3739,32 @@ uint32_t windowVirtualScreenGetDirtySequence()
     return gVirtualScreenDirtySequence;
 }
 
+// Phase 8.4: Get the current dirty rect and reset for next frame
+// Returns true if there was a dirty region, false if nothing was dirty
+bool windowVirtualScreenGetDirtyRect(Rect* outRect)
+{
+    if (outRect == nullptr) {
+        return false;
+    }
+    
+    if (!gVirtualScreenDirty) {
+        // Nothing dirty - return invalid rect
+        outRect->left = 0;
+        outRect->top = 0;
+        outRect->right = -1;
+        outRect->bottom = -1;
+        return false;
+    }
+    
+    // Copy the dirty rect
+    *outRect = gVirtualScreenDirtyRect;
+    
+    // Reset for next frame
+    virtualScreenResetDirty();
+    
+    return true;
+}
+
 void windowRefreshPhysicalTrueColorBuffers()
 {
     windowSyncPhysicalTrueColorBuffersIfNeeded();

@@ -2145,11 +2145,58 @@ void renderPresent()
     srcRect.w = presenterWidth;
     srcRect.h = presenterHeight;
 
-    Rect uploadRect = presenterBounds;
-
-    int textureUpdateResult = SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch);
-    bool textureUploadOk = textureUpdateResult == 0;
+    // Phase 8.4: Dirty region tracking - only upload changed pixels
+    // This can reduce upload from 1.2MB (full frame) to just a few KB for UI updates
+    Rect dirtyRect;
+    bool hasDirtyRegion = windowVirtualScreenGetDirtyRect(&dirtyRect);
+    
+    bool textureUploadOk = true;
     bool textureUploadFallbackUsed = false;
+    Rect uploadRect = presenterBounds;
+    
+    if (hasDirtyRegion) {
+        // Clip dirty rect to presenter bounds
+        if (dirtyRect.left < 0) dirtyRect.left = 0;
+        if (dirtyRect.top < 0) dirtyRect.top = 0;
+        if (dirtyRect.right >= presenterWidth) dirtyRect.right = presenterWidth - 1;
+        if (dirtyRect.bottom >= presenterHeight) dirtyRect.bottom = presenterHeight - 1;
+        
+        const int dirtyWidth = rectGetWidth(&dirtyRect);
+        const int dirtyHeight = rectGetHeight(&dirtyRect);
+        
+        if (dirtyWidth > 0 && dirtyHeight > 0) {
+            uploadRect = dirtyRect;
+            
+            // Calculate pointer to dirty region in surface
+            const int bytesPerPixel = gSdlTextureSurface->format->BytesPerPixel;
+            const unsigned char* srcPixels = static_cast<const unsigned char*>(gSdlTextureSurface->pixels);
+            const unsigned char* dirtyPixels = srcPixels + dirtyRect.top * gSdlTextureSurface->pitch + dirtyRect.left * bytesPerPixel;
+            
+            SDL_Rect sdlDirtyRect;
+            sdlDirtyRect.x = dirtyRect.left;
+            sdlDirtyRect.y = dirtyRect.top;
+            sdlDirtyRect.w = dirtyWidth;
+            sdlDirtyRect.h = dirtyHeight;
+            
+            int textureUpdateResult = SDL_UpdateTexture(gSdlTexture, &sdlDirtyRect, dirtyPixels, gSdlTextureSurface->pitch);
+            textureUploadOk = textureUpdateResult == 0;
+            
+            if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+                const int fullPixels = presenterWidth * presenterHeight;
+                const int dirtyPixels = dirtyWidth * dirtyHeight;
+                const int savingsPercent = fullPixels > 0 ? 100 - (dirtyPixels * 100 / fullPixels) : 0;
+                diagnosticsLog(DiagnosticsLevel::Trace,
+                    "DIRTY_UPLOAD",
+                    "partial upload (%d,%d %dx%d) saved %d%% vs full frame",
+                    dirtyRect.left, dirtyRect.top, dirtyWidth, dirtyHeight, savingsPercent);
+            }
+        }
+    } else {
+        // No dirty region tracked - upload full frame (fallback for first frame, resize, etc.)
+        int textureUpdateResult = SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch);
+        textureUploadOk = textureUpdateResult == 0;
+    }
+    
     if (!textureUploadOk) {
         if (gTextureUploadFailureLogBudget > 0 && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
             diagnosticsLog(DiagnosticsLevel::Info, "RENDERER", "SDL_UpdateTexture failed: %s", SDL_GetError());

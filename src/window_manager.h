@@ -195,6 +195,7 @@ void windowPresentVirtualScreen();
 void windowVirtualScreenInvalidateAll();
 void windowVirtualScreenInvalidateRect(const Rect& rect);
 uint32_t windowVirtualScreenGetDirtySequence();
+bool windowVirtualScreenGetDirtyRect(Rect* outRect);  // Phase 8.4: Get and reset dirty region
 // Legacy true-color/true-screen helpers kept for compatibility while the
 // virtual adapter is rolled out. They currently return safe defaults.
 void windowTrueColorSetPaletteBaseline(const unsigned char* palette);
