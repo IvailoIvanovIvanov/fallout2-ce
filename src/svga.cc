@@ -89,6 +89,64 @@ static bool clipRectToSurface(Rect* rect, const Rect& logicalBounds, const Rect&
     return true;
 }
 
+// Phase 8.5: Streaming texture upload using SDL_LockTexture
+// This provides direct GPU memory access, avoiding the extra copy in SDL_UpdateTexture
+// For STREAMING textures, this is the optimal upload path
+static bool streamingSurfaceRectToTexture(SDL_Texture* texture, SDL_Surface* surface, const Rect& rect)
+{
+    if (texture == nullptr || surface == nullptr || surface->format == nullptr) {
+        return false;
+    }
+
+    Rect clipped;
+    rectCopy(&clipped, &rect);
+
+    const Rect presenterBounds = getPresenterSurfaceBounds();
+    Rect surfaceBounds = makeSurfaceBoundsRect(surface->w, surface->h);
+    if (!clipRectToSurface(&clipped, presenterBounds, surfaceBounds)) {
+        return false;
+    }
+
+    const int width = rectGetWidth(&clipped);
+    const int height = rectGetHeight(&clipped);
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
+
+    SDL_Rect sdlRect;
+    sdlRect.x = clipped.left;
+    sdlRect.y = clipped.top;
+    sdlRect.w = width;
+    sdlRect.h = height;
+
+    void* destination = nullptr;
+    int destinationPitch = 0;
+    if (SDL_LockTexture(texture, &sdlRect, &destination, &destinationPitch) != 0 || destination == nullptr) {
+        return false;
+    }
+
+    const uint8_t* sourcePixels = static_cast<const uint8_t*>(surface->pixels);
+    const int sourcePitch = surface->pitch;
+    const int bytesPerPixel = surface->format->BytesPerPixel;
+    const int rowBytes = width * bytesPerPixel;
+    uint8_t* destPixels = static_cast<uint8_t*>(destination);
+    
+    // Optimized row copy - if pitches match and we're copying full width, use single memcpy
+    if (sourcePitch == destinationPitch && clipped.left == 0 && width == surface->w) {
+        // Single contiguous copy for full-width regions
+        std::memcpy(destPixels, sourcePixels + clipped.top * sourcePitch, height * sourcePitch);
+    } else {
+        // Row-by-row copy for partial regions
+        for (int row = 0; row < height; row++) {
+            const uint8_t* sourceRow = sourcePixels + (clipped.top + row) * sourcePitch + clipped.left * bytesPerPixel;
+            std::memcpy(destPixels + row * destinationPitch, sourceRow, rowBytes);
+        }
+    }
+
+    SDL_UnlockTexture(texture);
+    return true;
+}
+
 static bool copySurfaceRectToTexture(SDL_Texture* texture, SDL_Surface* surface, const Rect& rect)
 {
     if (texture == nullptr || surface == nullptr || surface->format == nullptr) {
@@ -2146,12 +2204,12 @@ void renderPresent()
     srcRect.h = presenterHeight;
 
     // Phase 8.4: Dirty region tracking - only upload changed pixels
-    // This can reduce upload from 1.2MB (full frame) to just a few KB for UI updates
+    // Phase 8.5: Use streaming texture upload for direct GPU memory access
     Rect dirtyRect;
     bool hasDirtyRegion = windowVirtualScreenGetDirtyRect(&dirtyRect);
     
-    bool textureUploadOk = true;
-    bool textureUploadFallbackUsed = false;
+    bool textureUploadOk = false;
+    bool usedStreamingUpload = false;
     Rect uploadRect = presenterBounds;
     
     if (hasDirtyRegion) {
@@ -2167,65 +2225,68 @@ void renderPresent()
         if (dirtyWidth > 0 && dirtyHeight > 0) {
             uploadRect = dirtyRect;
             
-            // Calculate pointer to dirty region in surface
-            const int bytesPerPixel = gSdlTextureSurface->format->BytesPerPixel;
-            const unsigned char* srcPixels = static_cast<const unsigned char*>(gSdlTextureSurface->pixels);
-            const unsigned char* dirtyPixels = srcPixels + dirtyRect.top * gSdlTextureSurface->pitch + dirtyRect.left * bytesPerPixel;
+            // Phase 8.5: Use streaming upload (SDL_LockTexture) as primary path
+            // This provides direct GPU memory access without an intermediate copy
+            if (settings.system.streaming_textures) {
+                textureUploadOk = streamingSurfaceRectToTexture(gSdlTexture, gSdlTextureSurface, uploadRect);
+                usedStreamingUpload = textureUploadOk;
+            }
             
-            SDL_Rect sdlDirtyRect;
-            sdlDirtyRect.x = dirtyRect.left;
-            sdlDirtyRect.y = dirtyRect.top;
-            sdlDirtyRect.w = dirtyWidth;
-            sdlDirtyRect.h = dirtyHeight;
-            
-            int textureUpdateResult = SDL_UpdateTexture(gSdlTexture, &sdlDirtyRect, dirtyPixels, gSdlTextureSurface->pitch);
-            textureUploadOk = textureUpdateResult == 0;
+            // Fallback to SDL_UpdateTexture if streaming failed or disabled
+            if (!textureUploadOk) {
+                const int bytesPerPixel = gSdlTextureSurface->format->BytesPerPixel;
+                const unsigned char* srcPixels = static_cast<const unsigned char*>(gSdlTextureSurface->pixels);
+                const unsigned char* dirtyPixels = srcPixels + dirtyRect.top * gSdlTextureSurface->pitch + dirtyRect.left * bytesPerPixel;
+                
+                SDL_Rect sdlDirtyRect;
+                sdlDirtyRect.x = dirtyRect.left;
+                sdlDirtyRect.y = dirtyRect.top;
+                sdlDirtyRect.w = dirtyWidth;
+                sdlDirtyRect.h = dirtyHeight;
+                
+                textureUploadOk = SDL_UpdateTexture(gSdlTexture, &sdlDirtyRect, dirtyPixels, gSdlTextureSurface->pitch) == 0;
+            }
             
             if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
                 const int fullPixels = presenterWidth * presenterHeight;
-                const int dirtyPixels = dirtyWidth * dirtyHeight;
-                const int savingsPercent = fullPixels > 0 ? 100 - (dirtyPixels * 100 / fullPixels) : 0;
+                const int dirtyPixelCount = dirtyWidth * dirtyHeight;
+                const int savingsPercent = fullPixels > 0 ? 100 - (dirtyPixelCount * 100 / fullPixels) : 0;
                 diagnosticsLog(DiagnosticsLevel::Trace,
-                    "DIRTY_UPLOAD",
-                    "partial upload (%d,%d %dx%d) saved %d%% vs full frame",
+                    "TEXTURE_UPLOAD",
+                    "partial %s (%d,%d %dx%d) saved %d%%",
+                    usedStreamingUpload ? "streaming" : "update",
                     dirtyRect.left, dirtyRect.top, dirtyWidth, dirtyHeight, savingsPercent);
             }
+        } else {
+            // Empty dirty region, nothing to upload
+            textureUploadOk = true;
         }
     } else {
-        // No dirty region tracked - upload full frame (fallback for first frame, resize, etc.)
-        int textureUpdateResult = SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch);
-        textureUploadOk = textureUpdateResult == 0;
+        // No dirty region tracked - upload full frame
+        // Phase 8.5: Use streaming upload for full frame too
+        if (settings.system.streaming_textures) {
+            textureUploadOk = streamingSurfaceRectToTexture(gSdlTexture, gSdlTextureSurface, presenterBounds);
+            usedStreamingUpload = textureUploadOk;
+        }
+        
+        if (!textureUploadOk) {
+            textureUploadOk = SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch) == 0;
+        }
     }
     
     if (!textureUploadOk) {
         if (gTextureUploadFailureLogBudget > 0 && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-            diagnosticsLog(DiagnosticsLevel::Info, "RENDERER", "SDL_UpdateTexture failed: %s", SDL_GetError());
+            diagnosticsLog(DiagnosticsLevel::Info, "RENDERER", "texture upload failed: %s", SDL_GetError());
             gTextureUploadFailureLogBudget--;
             if (gTextureUploadFailureLogBudget == 0) {
                 diagnosticsLog(DiagnosticsLevel::Info, "RENDERER", "texture upload failure logging budget exhausted");
             }
         }
-
-        if (copySurfaceRectToTexture(gSdlTexture, gSdlTextureSurface, uploadRect)) {
-            textureUploadFallbackUsed = true;
-            if (gTextureUploadFallbackLogBudget > 0 && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-                diagnosticsLog(DiagnosticsLevel::Info, "RENDERER", "SDL_UpdateTexture fallback copy succeeded for %dx%d", presenterWidth, presenterHeight);
-            }
-        } else if (gTextureUploadFallbackLogBudget > 0 && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-            diagnosticsLog(DiagnosticsLevel::Info, "RENDERER", "SDL_UpdateTexture fallback copy failed for %dx%d", presenterWidth, presenterHeight);
-        }
-
-        if (gTextureUploadFallbackLogBudget > 0) {
-            gTextureUploadFallbackLogBudget--;
-            if (gTextureUploadFallbackLogBudget == 0) {
-                diagnosticsLog(DiagnosticsLevel::Info, "RENDERER", "texture upload fallback logging budget exhausted");
-            }
-        }
     }
 
-    const char* textureUploadLabel = "after_texture_upload";
+    const char* textureUploadLabel = usedStreamingUpload ? "after_streaming_upload" : "after_texture_upload";
     if (!textureUploadOk) {
-        textureUploadLabel = textureUploadFallbackUsed ? "after_texture_fallback_upload" : "after_texture_upload_failed";
+        textureUploadLabel = "after_texture_upload_failed";
     }
     logTextureUploadRectStats(uploadRect, textureUploadLabel);
     const Rect& viewport = displayScalerGetPhysicalViewport();

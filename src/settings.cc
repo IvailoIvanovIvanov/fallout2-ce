@@ -65,6 +65,7 @@ static void settingsFromConfig()
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_RENDER_COMMAND_DIRECT_BLIT_FALLBACK_KEY, settings.system.render_command_direct_blit_fallback);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_GPU_OVERLAY_KEY, settings.system.gpu_overlay);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, "gpu_scaling", settings.system.gpu_scaling);
+    settingsRead(GAME_CONFIG_SYSTEM_KEY, "streaming_textures", settings.system.streaming_textures);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_USE_HD_ART_KEY, settings.system.use_hd_art);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_HD_ART_PATH_KEY, settings.system.hd_art_path);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, "vsync", settings.system.vsync);
@@ -155,6 +156,7 @@ static void settingsToConfig()
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_RENDER_COMMAND_DIRECT_BLIT_FALLBACK_KEY, settings.system.render_command_direct_blit_fallback);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_GPU_OVERLAY_KEY, settings.system.gpu_overlay);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, "gpu_scaling", settings.system.gpu_scaling);
+    settingsWrite(GAME_CONFIG_SYSTEM_KEY, "streaming_textures", settings.system.streaming_textures);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_USE_HD_ART_KEY, settings.system.use_hd_art);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_HD_ART_PATH_KEY, settings.system.hd_art_path);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, "vsync", settings.system.vsync);
