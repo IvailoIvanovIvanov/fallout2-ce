@@ -467,15 +467,14 @@ static inline int tileSelectSampleIndex(int position, int spanLength, int sample
     }
 
     if (spanLength == 1) {
-        // Single physical pixel - sample from center of HD texel range
-        return sampleCount / 2;
+        return 0;
     }
 
-    // Edge-aligned linear interpolation:
-    // position 0 -> sample 0
-    // position spanLength-1 -> sample sampleCount-1
-    // This ensures tile edges align perfectly
-    const int index = (position * (sampleCount - 1)) / (spanLength - 1);
+    // Center-weighted sampling (same as objects use)
+    // Samples from the center of each physical pixel's region for smooth blending
+    const int numerator = (2 * position + 1) * sampleCount;
+    const int denominator = 2 * spanLength;
+    int index = numerator / denominator;
     if (index < 0) {
         return 0;
     }
@@ -626,7 +625,11 @@ static void tileBlitTrueColorOverlayPhysical(const TilePhysicalOverlayView& phys
                 for (int spanColumn = 0; spanColumn < columnSpanWidth; spanColumn++) {
                     const int hdColumnOffset = tileSelectSampleIndex(spanColumn, columnSpanWidth, hdScaleX);
                     const uint32_t hdPixel = hdRow[logicalColumnIndex * hdScaleX + hdColumnOffset];
-                    destRow[physicalColumnStart + spanColumn] = colorApplyLightingToArgb(hdPixel, intensityIndex);
+                    // Force alpha to 255 for opaque tiles to prevent blending artifacts at tile edges.
+                    // HD textures may have semi-transparent edge pixels from anti-aliasing which would
+                    // blend with the indexed render and create visible grid lines.
+                    const uint32_t opaquePixel = hdPixel | 0xFF000000u;
+                    destRow[physicalColumnStart + spanColumn] = colorApplyLightingToArgb(opaquePixel, intensityIndex);
                     maskRow[physicalColumnStart + spanColumn] = 1;
                 }
             }
@@ -2223,26 +2226,27 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
                 const int stepX = std::max(1, trueColorView.scaleX);
                 const int stepY = std::max(1, trueColorView.scaleY);
                 const int rowAdvance = srcStride * stepY;
-                // For tiles: use edge-aligned sampling (no center offset) to prevent
-                // visible grid lines at tile boundaries
-                const int sampleOffsetX = 0;
-                const int sampleOffsetY = 0;
-                const int sampleYOffset = 0;
+                // Center-weighted sampling: sample from center of each logical pixel's HD texel range
+                // This matches the physical overlay sampling for consistent rendering
+                const int sampleOffsetX = (stepX > 1) ? (stepX / 2) : 0;
+                const int sampleOffsetY = (stepY > 1) ? (stepY / 2) : 0;
 
-                const uint32_t* trueColorBaseRow = trueColorView.pixels + v78 * rowAdvance + v79 * stepX;
+                const uint32_t* trueColorBaseRow = trueColorView.pixels + v78 * rowAdvance + v79 * stepX + sampleOffsetY * srcStride;
                 uint32_t* trueColorDestRow = gTileWindowTrueColorOverlay + gTileWindowWidth * y + x;
                 unsigned char* trueColorMaskRow = gTileWindowTrueColorMask + gTileWindowWidth * y + x;
                 unsigned char* indexedRow = buf + frameWidth * v78 + v79;
 
                 for (int row = 0; row < v76; row++) {
-                    const uint32_t* trueColorPixel = trueColorBaseRow + sampleYOffset + sampleOffsetX;
+                    const uint32_t* trueColorPixel = trueColorBaseRow + sampleOffsetX;
                     uint32_t* trueColorDestPixel = trueColorDestRow;
                     unsigned char* trueColorMaskPixel = trueColorMaskRow;
                     unsigned char* indexedPixel = indexedRow;
 
                     for (int col = 0; col < v77; col++) {
                         if (*indexedPixel != 0) {
-                            *trueColorDestPixel = colorApplyLightingToArgb(*trueColorPixel, intensityIndex);
+                            // Force alpha to 255 for opaque tiles to prevent blending artifacts.
+                            const uint32_t opaquePixel = *trueColorPixel | 0xFF000000u;
+                            *trueColorDestPixel = colorApplyLightingToArgb(opaquePixel, intensityIndex);
                             *trueColorMaskPixel = 1;
                         }
                         // Skip transparent pixels - don't erase previously rendered tiles.
@@ -2417,17 +2421,16 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
         const int stepX = hasTrueColor ? std::max(1, trueColorView.scaleX) : 1;
         const int stepY = hasTrueColor ? std::max(1, trueColorView.scaleY) : 1;
         const int rowAdvance = srcStride * stepY;
-        // For tiles: use edge-aligned sampling (no center offset) to prevent
-        // visible grid lines at tile boundaries
-        const int sampleOffsetX = 0;
-        const int sampleOffsetY = 0;
-        const int sampleYOffset = 0;
+        // Center-weighted sampling: sample from center of each logical pixel's HD texel range
+        // This matches the physical overlay sampling for consistent rendering
+        const int sampleOffsetX = (stepX > 1) ? (stepX / 2) : 0;
+        const int sampleOffsetY = (stepY > 1) ? (stepY / 2) : 0;
 
         const uint32_t* trueColorBaseRow = nullptr;
         uint32_t* trueColorDestRow = nullptr;
         unsigned char* trueColorMaskRow = nullptr;
         if (hasTrueColor) {
-            trueColorBaseRow = trueColorView.pixels + v78 * rowAdvance + v79 * stepX;
+            trueColorBaseRow = trueColorView.pixels + v78 * rowAdvance + v79 * stepX + sampleOffsetY * srcStride;
             trueColorDestRow = gTileWindowTrueColorOverlay + gTileWindowWidth * y + x;
             trueColorMaskRow = gTileWindowTrueColorMask + gTileWindowWidth * y + x;
         }
@@ -2437,7 +2440,7 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
             uint32_t* trueColorDestPixel = nullptr;
             unsigned char* trueColorMaskPixel = nullptr;
             if (hasTrueColor) {
-                trueColorSrcPixel = trueColorBaseRow + sampleYOffset + sampleOffsetX;
+                trueColorSrcPixel = trueColorBaseRow + sampleOffsetX;
                 trueColorDestPixel = trueColorDestRow;
                 trueColorMaskPixel = trueColorMaskRow;
             }
@@ -2448,7 +2451,9 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
                     int intensityIndex = *v68 >> 9;
                     *v66 = intensityColorTable[paletteIndex][intensityIndex];
                     if (hasTrueColor) {
-                        *trueColorDestPixel = colorApplyLightingToArgb(*trueColorSrcPixel, intensityIndex);
+                        // Force alpha to 255 for opaque tiles to prevent blending artifacts.
+                        const uint32_t opaquePixel = *trueColorSrcPixel | 0xFF000000u;
+                        *trueColorDestPixel = colorApplyLightingToArgb(opaquePixel, intensityIndex);
                         *trueColorMaskPixel = 1;
                         trueColorSrcPixel += stepX;
                         trueColorDestPixel++;
