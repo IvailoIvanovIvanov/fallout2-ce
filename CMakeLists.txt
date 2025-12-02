@@ -141,6 +141,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/kb.h"
     "src/light.cc"
     "src/light.h"
+    "src/lighting_abstraction.cc"
+    "src/lighting_abstraction.h"
     "src/lips.cc"
     "src/lips.h"
     "src/loadsave.cc"

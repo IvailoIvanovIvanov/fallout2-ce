@@ -70,6 +70,7 @@ static void settingsFromConfig()
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_HD_ART_PATH_KEY, settings.system.hd_art_path);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, "vsync", settings.system.vsync);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, "target_fps", settings.system.target_fps);
+    settingsRead(GAME_CONFIG_SYSTEM_KEY, "hd_lighting_quality", settings.system.hd_lighting_quality);
 
     settingsRead(GAME_CONFIG_PREFERENCES_KEY, GAME_CONFIG_GAME_DIFFICULTY_KEY, settings.preferences.game_difficulty);
     settingsRead(GAME_CONFIG_PREFERENCES_KEY, GAME_CONFIG_COMBAT_DIFFICULTY_KEY, settings.preferences.combat_difficulty);
@@ -161,6 +162,7 @@ static void settingsToConfig()
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_HD_ART_PATH_KEY, settings.system.hd_art_path);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, "vsync", settings.system.vsync);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, "target_fps", settings.system.target_fps);
+    settingsWrite(GAME_CONFIG_SYSTEM_KEY, "hd_lighting_quality", settings.system.hd_lighting_quality);
 
     settingsWrite(GAME_CONFIG_PREFERENCES_KEY, GAME_CONFIG_GAME_DIFFICULTY_KEY, settings.preferences.game_difficulty);
     settingsWrite(GAME_CONFIG_PREFERENCES_KEY, GAME_CONFIG_COMBAT_DIFFICULTY_KEY, settings.preferences.combat_difficulty);

@@ -36,6 +36,7 @@ struct SystemSettings {
     bool streaming_textures = true; // Phase 8.5: Use SDL_LockTexture for direct GPU memory writes
     bool vsync = true;         // Phase 7: Enable VSync for tear-free rendering
     int target_fps = 60;       // Phase 7: Target frame rate for FPS limiter
+    int hd_lighting_quality = 1; // 0=Original, 1=Enhanced (gamma-correct), 2=Smooth (reduced banding)
 };
 
 struct PreferencesSettings {

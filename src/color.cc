@@ -7,7 +7,9 @@
 #include <algorithm>
 
 #include "db.h"
+#include "lighting_abstraction.h"
 #include "memory.h"
+#include "settings.h"
 #include "svga.h"
 #include "window_manager.h"
 
@@ -508,6 +510,10 @@ bool _initColors()
     _setSystemPalette(_cmap);
     windowTrueColorSetPaletteBaseline(_getSystemPalette());
 
+    // Initialize lighting quality based on settings
+    int quality = std::clamp(settings.system.hd_lighting_quality, 0, 2);
+    lightingSetQuality(static_cast<LightingQuality>(quality));
+
     return true;
 }
 
@@ -534,39 +540,14 @@ uint32_t paletteIndexToArgb(unsigned char index)
 
 uint8_t colorApplyIntensityToChannel(uint8_t value, int intensityIndex)
 {
-    if (intensityIndex <= 0) {
-        return 0;
-    }
-
-    if (intensityIndex >= 255) {
-        return 255;
-    }
-
-    if (intensityIndex < 128) {
-        return static_cast<uint8_t>((value * intensityIndex) / 128);
-    }
-
-    int lighten = intensityIndex - 128;
-    return static_cast<uint8_t>(value + ((255 - value) * lighten) / 128);
+    // Use the lighting abstraction for enhanced lighting
+    return LightingProcessor::getInstance().applyLightingToChannel(value, intensityIndex);
 }
 
 uint32_t colorApplyLightingToArgb(uint32_t color, int intensityIndex)
 {
-    intensityIndex = std::clamp(intensityIndex, 0, 255);
-
-    uint8_t a = static_cast<uint8_t>(color >> 24);
-    uint8_t r = static_cast<uint8_t>((color >> 16) & 0xFF);
-    uint8_t g = static_cast<uint8_t>((color >> 8) & 0xFF);
-    uint8_t b = static_cast<uint8_t>(color & 0xFF);
-
-    r = colorApplyIntensityToChannel(r, intensityIndex);
-    g = colorApplyIntensityToChannel(g, intensityIndex);
-    b = colorApplyIntensityToChannel(b, intensityIndex);
-
-    return (static_cast<uint32_t>(a) << 24)
-        | (static_cast<uint32_t>(r) << 16)
-        | (static_cast<uint32_t>(g) << 8)
-        | static_cast<uint32_t>(b);
+    // Use the lighting abstraction for enhanced lighting
+    return LightingProcessor::getInstance().applyLighting(color, intensityIndex);
 }
 
 uint32_t colorPremultiplyArgb(uint32_t color)
