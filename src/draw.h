@@ -18,6 +18,16 @@ void bufferOutline(unsigned char* buf, int width, int height, int pitch, int a5)
 void srcCopy(unsigned char* dest, int destPitch, unsigned char* src, int srcPitch, int width, int height);
 void transSrcCopy(unsigned char* dest, int destPitch, unsigned char* src, int srcPitch, int width, int height);
 
+// Logical draw wrapper:
+// Blit a rectangle from src buffer to the screen at logical coordinates.
+// Parameters:
+//  - src: pointer to source pixels (8-bit indexed)
+//  - srcPitch: bytes per row in src
+//  - srcX, srcY: top-left in src
+//  - srcWidth, srcHeight: rectangle size
+//  - destLogicalX, destLogicalY: destination position in logical screen coords
+void scrBlitLogical(unsigned char* src, int srcPitch, int srcX, int srcY, int srcWidth, int srcHeight, int destLogicalX, int destLogicalY);
+
 } // namespace fallout
 
 #endif /* DRAW_H */

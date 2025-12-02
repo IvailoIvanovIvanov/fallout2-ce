@@ -19,6 +19,20 @@ extern SDL_Texture* gSdlTexture;
 extern SDL_Surface* gSdlTextureSurface;
 extern FpsLimiter sharedFpsLimiter;
 
+// High-res composition mode
+extern bool gHiResEnabled;
+extern int gHiResScale; // 1 = off
+// When true, palette index 0 in 8-bit overlay is treated as transparent over hi-res background.
+// When false, the 8-bit overlay is fully opaque (useful for debugging visibility issues).
+extern bool gHiResOverlayTransparent;
+// Optional: draw a small marker into the 8-bit overlay each frame to verify overlay visibility.
+extern bool gHiResDebugOverlayMarker;
+
+// Optional truecolor background surface for current screen when hi-res is enabled.
+// Ownership is transferred; pass nullptr to clear.
+void hiResSetBackground(SDL_Surface* surface);
+void hiResClearBackground();
+
 int _init_mode_320_200();
 int _init_mode_320_400();
 int _init_mode_640_480_16();

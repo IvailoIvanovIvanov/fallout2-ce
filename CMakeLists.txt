@@ -2,6 +2,15 @@ cmake_minimum_required(VERSION 3.13)
 
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
 
+# Allow older third-party subprojects (like some SDL2 CMake scripts) to
+# configure under modern CMake by declaring the minimum policy version they
+# expect. This avoids errors like:
+#   "Compatibility with CMake < 3.5 has been removed from CMake."
+# Users can also pass -DCMAKE_POLICY_VERSION_MINIMUM=3.5 on the command line.
+if(NOT DEFINED CMAKE_POLICY_VERSION_MINIMUM)
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
+
 set(EXECUTABLE_NAME fallout2-ce)
 
 if(APPLE)
@@ -21,6 +30,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_CXX_EXTENSIONS NO)
 
 option(FALLOUT_VENDORED "Use vendored third-party libraries" ON)
+option(FALLOUT_SDL2_IMAGE "Enable PNG loading via SDL2_image (system dependency)" OFF)
 
 if(ANDROID)
     add_library(${EXECUTABLE_NAME} SHARED)
@@ -35,6 +45,10 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/animation.h"
     "src/art.cc"
     "src/art.h"
+    "src/art_texture.cc"
+    "src/art_texture.h"
+    "src/art_png_loader.cc"
+    "src/art_png_loader.h"
     "src/audio_file.cc"
     "src/audio_file.h"
     "src/audio.cc"
@@ -83,6 +97,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/dinput.h"
     "src/display_monitor.cc"
     "src/display_monitor.h"
+    "src/display_scale.cc"
+    "src/display_scale.h"
     "src/draw.cc"
     "src/draw.h"
     "src/elevator.cc"
@@ -304,6 +320,8 @@ endif()
 if(WIN32)
     target_link_libraries(${EXECUTABLE_NAME}
         winmm
+        ole32
+        windowscodecs
     )
 endif()
 
@@ -313,6 +331,14 @@ if(WIN32)
         "os/windows/fallout2-ce.rc"
     )
 endif()
+
+    # Ensure project root is on the include path so third_party headers resolve from src/
+    target_include_directories(${EXECUTABLE_NAME} PRIVATE ${CMAKE_SOURCE_DIR})
+
+# stb_image minimal implementation unit
+target_sources(${EXECUTABLE_NAME} PRIVATE
+    "src/stb_image_impl.c"
+)
 
 if(APPLE)
     if(IOS)
@@ -358,6 +384,8 @@ if(APPLE)
     set(MACOSX_BUNDLE_BUNDLE_VERSION "1.3.0")
 endif()
 
+# Ensure fpattern builds as a static library to provide a stable import lib name on Windows.
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build fpattern as static" FORCE)
 add_subdirectory("third_party/fpattern")
 target_link_libraries(${EXECUTABLE_NAME} fpattern::fpattern)
 
@@ -366,7 +394,7 @@ if(FALLOUT_VENDORED)
     add_subdirectory("third_party/sdl2")
 else()
     find_package(ZLIB)
-    find_package(SDL2)
+    find_package(SDL2 CONFIG)
 endif()
 
 target_link_libraries(${EXECUTABLE_NAME} ${ZLIB_LIBRARIES})
@@ -374,6 +402,24 @@ target_include_directories(${EXECUTABLE_NAME} PRIVATE ${ZLIB_INCLUDE_DIRS})
 
 target_link_libraries(${EXECUTABLE_NAME} ${SDL2_LIBRARIES})
 target_include_directories(${EXECUTABLE_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
+
+# PNG support via SDL2_image can be enabled independently of vendored/core deps.
+if(FALLOUT_SDL2_IMAGE)
+    # Prefer CONFIG mode so vcpkg's imported target is used.
+    find_package(SDL2_image CONFIG)
+    if(SDL2_image_FOUND OR SDL2_IMAGE_FOUND OR TARGET SDL2_image::SDL2_image)
+        target_compile_definitions(${EXECUTABLE_NAME} PUBLIC HAVE_SDL2_IMAGE)
+        if(TARGET SDL2_image::SDL2_image)
+            target_link_libraries(${EXECUTABLE_NAME} SDL2_image::SDL2_image)
+        else()
+            # Fallback for FindSDL2_image modules exposing legacy variables
+            target_link_libraries(${EXECUTABLE_NAME} ${SDL2_IMAGE_LIBRARIES})
+            target_include_directories(${EXECUTABLE_NAME} PRIVATE ${SDL2_IMAGE_INCLUDE_DIRS})
+        endif()
+    else()
+        message(WARNING "SDL2_image not found; PNG support disabled (HAVE_SDL2_IMAGE not defined)")
+    endif()
+endif()
 
 if(APPLE)
     if(IOS)
@@ -392,4 +438,118 @@ if(APPLE)
     endif()
 
     include(CPack)
+endif()
+
+# Windows: install/bundle helpers to assemble a runnable folder with the exe and DLLs.
+if(WIN32)
+    include(GNUInstallDirs)
+
+    # Install the executable to the root of the install dir
+    install(TARGETS ${EXECUTABLE_NAME} RUNTIME DESTINATION .)
+
+    # If SDL2_image is used and available as a shared lib, install its DLL
+    if(TARGET SDL2_image::SDL2_image)
+        install(FILES $<TARGET_FILE:SDL2_image::SDL2_image> DESTINATION .)
+    endif()
+
+    # If ZLIB is shared, install its DLL as well (some SDL_image builds depend on it)
+    if(TARGET ZLIB::ZLIB)
+        install(FILES $<TARGET_FILE:ZLIB::ZLIB> DESTINATION .)
+    endif()
+
+    # Optional: create a simple ZIP package of the install tree
+    set(CPACK_GENERATOR "ZIP")
+    set(CPACK_PACKAGE_FILE_NAME "fallout2-ce-win64")
+    include(CPack)
+
+    # Convenience: `bundle` target that copies runtime files to a dist folder next to the build outputs
+    set(DIST_DIR "${CMAKE_BINARY_DIR}/dist/$<CONFIG>")
+    add_custom_target(bundle
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${DIST_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${EXECUTABLE_NAME}> "${DIST_DIR}/"
+        COMMENT "Assembling runnable bundle in ${DIST_DIR}"
+    )
+    add_dependencies(bundle ${EXECUTABLE_NAME})
+
+    # Also include MSVC runtime libraries so the bundle runs on fresh machines.
+    if(MSVC)
+        include(InstallRequiredSystemLibraries)
+        if(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
+            foreach(RTLIB ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS})
+                add_custom_command(TARGET bundle POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${RTLIB}" "${DIST_DIR}/"
+                )
+            endforeach()
+        endif()
+    endif()
+
+    if(TARGET SDL2_image::SDL2_image)
+        add_custom_command(TARGET bundle POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL2_image::SDL2_image> "${DIST_DIR}/"
+        )
+    endif()
+    # Copy SDL2 runtime if using shared SDL2 from CONFIG package
+    if(TARGET SDL2::SDL2)
+        add_custom_command(TARGET bundle POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL2::SDL2> "${DIST_DIR}/"
+        )
+    endif()
+    # Copy SDL2 runtime if using vendored shared SDL2 target
+    if(TARGET SDL2)
+        add_custom_command(TARGET bundle POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL2> "${DIST_DIR}/"
+        )
+    endif()
+    if(TARGET ZLIB::ZLIB)
+        add_custom_command(TARGET bundle POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:ZLIB::ZLIB> "${DIST_DIR}/"
+        )
+    endif()
+    # Copy vendored shared zlib if present
+    if(TARGET zlib)
+        add_custom_command(TARGET bundle POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:zlib> "${DIST_DIR}/"
+        )
+    endif()
+
+    # Copy optional data overrides if present at source dir (but do not copy fallout2.cfg by default).
+    if(EXISTS "${CMAKE_SOURCE_DIR}/data")
+        add_custom_command(TARGET bundle POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/data" "${DIST_DIR}/data"
+        )
+    endif()
+
+    # (Readme omitted to avoid Windows shell quoting issues.)
+endif()
+
+# Also copy runtime DLLs next to the built executable so exe and DLLs sit in one folder per configuration
+if(WIN32)
+    # SDL2 (shared) next to exe
+    if(TARGET SDL2::SDL2)
+        add_custom_command(TARGET ${EXECUTABLE_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:${EXECUTABLE_NAME}>/
+        )
+    endif()
+    if(TARGET SDL2)
+        add_custom_command(TARGET ${EXECUTABLE_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL2> $<TARGET_FILE_DIR:${EXECUTABLE_NAME}>/
+        )
+    endif()
+    # SDL2_image (shared) next to exe
+    if(TARGET SDL2_image::SDL2_image)
+        add_custom_command(TARGET ${EXECUTABLE_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL2_image::SDL2_image> $<TARGET_FILE_DIR:${EXECUTABLE_NAME}>/
+        )
+    endif()
+    # ZLIB (shared) next to exe
+    if(TARGET ZLIB::ZLIB)
+        add_custom_command(TARGET ${EXECUTABLE_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:ZLIB::ZLIB> $<TARGET_FILE_DIR:${EXECUTABLE_NAME}>/
+        )
+    endif()
+    if(TARGET zlib)
+        add_custom_command(TARGET ${EXECUTABLE_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:zlib> $<TARGET_FILE_DIR:${EXECUTABLE_NAME}>/
+        )
+    endif()
 endif()

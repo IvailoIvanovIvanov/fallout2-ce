@@ -41,6 +41,7 @@
 #include "text_object.h"
 #include "tile.h"
 #include "window_manager.h"
+#include "art_png_loader.h"
 
 namespace fallout {
 
@@ -60,6 +61,33 @@ namespace fallout {
 #define GAME_DIALOG_OPTIONS_WINDOW_Y 335
 #define GAME_DIALOG_OPTIONS_WINDOW_WIDTH 393
 #define GAME_DIALOG_OPTIONS_WINDOW_HEIGHT 117
+
+// PNG-first support: shared background pointers for the Review window
+static unsigned char* gReviewBackgroundSrc = nullptr;
+static int gReviewBackgroundPitch = 0;
+static bool gReviewBackgroundFromPng = false;
+
+// Helper to load an interface background as indexed data (PNG-first, FRM fallback).
+// If PNG exists, returns cached indexed buffer with current palette mapping.
+// Otherwise locks FRM into outFrmImage and returns its data/size.
+static bool getInterfaceBackgroundIndexed(int frmId,
+    unsigned char** outData,
+    int* outWidth,
+    int* outHeight,
+    FrmImage* outFrmImage)
+{
+    int fid = buildFid(OBJ_TYPE_INTERFACE, frmId, 0, 0, 0);
+    if (artPngGetIndexedCached(fid, outData, outWidth, outHeight)) {
+        return true;
+    }
+    if (outFrmImage != nullptr && outFrmImage->lock(fid)) {
+        *outData = outFrmImage->getData();
+        *outWidth = outFrmImage->getWidth();
+        *outHeight = outFrmImage->getHeight();
+        return true;
+    }
+    return false;
+}
 
 #define GAME_DIALOG_REVIEW_WINDOW_WIDTH 640
 #define GAME_DIALOG_REVIEW_WINDOW_HEIGHT 480
@@ -1323,23 +1351,37 @@ int gameDialogReviewWindowInit(int* win)
         return -1;
     }
 
-    FrmImage backgroundFrmImage;
+    // PNG-first background for the Review window (FRM fallback)
+    unsigned char* windowBuffer = windowGetBuffer(*win);
+    unsigned char* bgData = nullptr;
+    int bgWidth = 0;
+    int bgHeight = 0;
     int fid = buildFid(OBJ_TYPE_INTERFACE, 102, 0, 0, 0);
-    if (!backgroundFrmImage.lock(fid)) {
-        windowDestroy(*win);
-        *win = -1;
-        return -1;
+    gReviewBackgroundFromPng = false;
+    if (artPngGetIndexedCached(fid, &bgData, &bgWidth, &bgHeight)) {
+        gReviewBackgroundFromPng = true;
+    } else {
+        if (!_reviewBackgroundFrmImage.lock(fid)) {
+            windowDestroy(*win);
+            *win = -1;
+            return -1;
+        }
+        bgData = _reviewBackgroundFrmImage.getData();
+        bgWidth = _reviewBackgroundFrmImage.getWidth();
+        bgHeight = _reviewBackgroundFrmImage.getHeight();
     }
 
-    unsigned char* windowBuffer = windowGetBuffer(*win);
-    blitBufferToBuffer(backgroundFrmImage.getData(),
+    // Save shared pointer/pitch for later clears/scrolls
+    gReviewBackgroundSrc = bgData;
+    gReviewBackgroundPitch = bgWidth;
+
+    // Initial blit
+    blitBufferToBuffer(bgData,
         GAME_DIALOG_REVIEW_WINDOW_WIDTH,
         GAME_DIALOG_REVIEW_WINDOW_HEIGHT,
-        GAME_DIALOG_REVIEW_WINDOW_WIDTH,
+        gReviewBackgroundPitch,
         windowBuffer,
         GAME_DIALOG_REVIEW_WINDOW_WIDTH);
-
-    backgroundFrmImage.unlock();
 
     int index;
     for (index = 0; index < GAME_DIALOG_REVIEW_WINDOW_BUTTON_FRM_COUNT; index++) {
@@ -1420,11 +1462,7 @@ int gameDialogReviewWindowInit(int* win)
 
     tickersRemove(gameDialogTicker);
 
-    int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 102, 0, 0, 0);
-    if (!_reviewBackgroundFrmImage.lock(backgroundFid)) {
-        gameDialogReviewWindowFree(win);
-        return -1;
-    }
+    // Background already prepared above (either PNG cached or FRM locked)
 
     return 0;
 }
@@ -1438,7 +1476,12 @@ int gameDialogReviewWindowFree(int* win)
         _reviewFrmImages[index].unlock();
     }
 
-    _reviewBackgroundFrmImage.unlock();
+    if (_reviewBackgroundFrmImage.isLocked()) {
+        _reviewBackgroundFrmImage.unlock();
+    }
+    gReviewBackgroundSrc = nullptr;
+    gReviewBackgroundPitch = 0;
+    gReviewBackgroundFromPng = false;
 
     fontSetCurrent(gGameDialogReviewWindowOldFont);
 
@@ -1531,13 +1574,16 @@ void gameDialogReviewWindowUpdate(int win, int origin)
     }
 
     int width = GAME_DIALOG_WINDOW_WIDTH;
-    blitBufferToBuffer(
-        _reviewBackgroundFrmImage.getData() + width * entriesRect.top + entriesRect.left,
-        width,
-        entriesRect.bottom - entriesRect.top + 15,
-        width,
-        windowBuffer + width * entriesRect.top + entriesRect.left,
-        width);
+    // Restore entries background from PNG (if present) or FRM fallback
+    if (gReviewBackgroundSrc != nullptr) {
+        blitBufferToBuffer(
+            gReviewBackgroundSrc + gReviewBackgroundPitch * entriesRect.top + entriesRect.left,
+            gReviewBackgroundPitch,
+            entriesRect.bottom - entriesRect.top + 15,
+            gReviewBackgroundPitch,
+            windowBuffer + width * entriesRect.top + entriesRect.left,
+            width);
+    }
 
     int y = 76;
     for (int index = origin; index < gGameDialogReviewEntriesLength; index++) {
@@ -3199,18 +3245,16 @@ int _gdialog_barter_create_win()
         frmId = 111;
     }
 
+    // PNG-first background (FRM fallback)
+    unsigned char* backgroundData = nullptr;
+    int backgroundWidth = 0;
+    int backgroundHeight = 0;
     FrmImage backgroundFrmImage;
-    int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, frmId, 0, 0, 0);
-    if (!backgroundFrmImage.lock(backgroundFid)) {
+    if (!getInterfaceBackgroundIndexed(frmId, &backgroundData, &backgroundWidth, &backgroundHeight, &backgroundFrmImage)) {
         return -1;
     }
 
-    unsigned char* backgroundData = backgroundFrmImage.getData();
-    if (backgroundData == nullptr) {
-        return -1;
-    }
-
-    _dialogue_subwin_len = backgroundFrmImage.getHeight();
+    _dialogue_subwin_len = backgroundHeight;
 
     int barterWindowX = (screenGetWidth() - GAME_DIALOG_WINDOW_WIDTH) / 2;
     int barterWindowY = (screenGetHeight() - GAME_DIALOG_WINDOW_HEIGHT) / 2 + GAME_DIALOG_WINDOW_HEIGHT - _dialogue_subwin_len;
@@ -3232,7 +3276,9 @@ int _gdialog_barter_create_win()
 
     _gdialog_scroll_subwin(gGameDialogWindow, true, backgroundData, windowBuffer, nullptr, _dialogue_subwin_len);
 
-    backgroundFrmImage.unlock();
+    if (backgroundFrmImage.isLocked()) {
+        backgroundFrmImage.unlock();
+    }
 
     // TRADE
     _gdialog_buttons[0] = buttonCreate(gGameDialogWindow, 41, 163, 14, 14, -1, -1, -1, KEY_LOWERCASE_M, _redButtonNormalFrmImage.getData(), _redButtonPressedFrmImage.getData(), nullptr, BUTTON_FLAG_TRANSPARENT);
@@ -3304,11 +3350,16 @@ void _gdialog_barter_destroy_win()
         frmId = 111;
     }
 
+    unsigned char* backgroundData = nullptr;
+    int backgroundWidth = 0;
+    int backgroundHeight = 0;
     FrmImage backgroundFrmImage;
-    int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, frmId, 0, 0, 0);
-    if (backgroundFrmImage.lock(backgroundFid)) {
+    if (getInterfaceBackgroundIndexed(frmId, &backgroundData, &backgroundWidth, &backgroundHeight, &backgroundFrmImage)) {
         unsigned char* windowBuffer = windowGetBuffer(gGameDialogWindow);
-        _gdialog_scroll_subwin(gGameDialogWindow, false, backgroundFrmImage.getData(), windowBuffer, backgroundWindowBuffer, _dialogue_subwin_len);
+        _gdialog_scroll_subwin(gGameDialogWindow, false, backgroundData, windowBuffer, backgroundWindowBuffer, _dialogue_subwin_len);
+        if (backgroundFrmImage.isLocked()) {
+            backgroundFrmImage.unlock();
+        }
     }
 
     windowDestroy(gGameDialogWindow);
@@ -3353,19 +3404,16 @@ void _gdialog_barter_cleanup_tables()
 // 0x448740
 int partyMemberControlWindowInit()
 {
+    // PNG-first background (FRM fallback)
+    unsigned char* backgroundData = nullptr;
+    int backgroundWidth = 0;
+    int backgroundHeight = 0;
     FrmImage backgroundFrmImage;
-    int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 390, 0, 0, 0);
-    if (!backgroundFrmImage.lock(backgroundFid)) {
+    if (!getInterfaceBackgroundIndexed(390, &backgroundData, &backgroundWidth, &backgroundHeight, &backgroundFrmImage)) {
         return -1;
     }
 
-    unsigned char* backgroundData = backgroundFrmImage.getData();
-    if (backgroundData == nullptr) {
-        partyMemberControlWindowFree();
-        return -1;
-    }
-
-    _dialogue_subwin_len = backgroundFrmImage.getHeight();
+    _dialogue_subwin_len = backgroundHeight;
     int controlWindowX = (screenGetWidth() - GAME_DIALOG_WINDOW_WIDTH) / 2;
     int controlWindowY = (screenGetHeight() - GAME_DIALOG_WINDOW_HEIGHT) / 2 + GAME_DIALOG_WINDOW_HEIGHT - _dialogue_subwin_len;
     gGameDialogWindow = windowCreate(controlWindowX,
@@ -3383,7 +3431,9 @@ int partyMemberControlWindowInit()
     unsigned char* src = windowGetBuffer(gGameDialogBackgroundWindow);
     blitBufferToBuffer(src + (GAME_DIALOG_WINDOW_WIDTH) * (GAME_DIALOG_WINDOW_HEIGHT - _dialogue_subwin_len), GAME_DIALOG_WINDOW_WIDTH, _dialogue_subwin_len, GAME_DIALOG_WINDOW_WIDTH, windowBuffer, GAME_DIALOG_WINDOW_WIDTH);
     _gdialog_scroll_subwin(gGameDialogWindow, true, backgroundData, windowBuffer, nullptr, _dialogue_subwin_len);
-    backgroundFrmImage.unlock();
+    if (backgroundFrmImage.isLocked()) {
+        backgroundFrmImage.unlock();
+    }
 
     // TALK
     _gdialog_buttons[0] = buttonCreate(gGameDialogWindow, 593, 41, 14, 14, -1, -1, -1, KEY_ESCAPE, _redButtonNormalFrmImage.getData(), _redButtonPressedFrmImage.getData(), nullptr, BUTTON_FLAG_TRANSPARENT);
@@ -3527,11 +3577,16 @@ void partyMemberControlWindowFree()
         }
     }
 
-    // control.frm - party member control interface
+    // control.frm - party member control interface (PNG-first)
+    unsigned char* backgroundData = nullptr;
+    int backgroundWidth = 0;
+    int backgroundHeight = 0;
     FrmImage backgroundFrmImage;
-    int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 390, 0, 0, 0);
-    if (backgroundFrmImage.lock(backgroundFid)) {
-        _gdialog_scroll_subwin(gGameDialogWindow, false, backgroundFrmImage.getData(), windowGetBuffer(gGameDialogWindow), windowGetBuffer(gGameDialogBackgroundWindow) + (GAME_DIALOG_WINDOW_WIDTH) * (480 - _dialogue_subwin_len), _dialogue_subwin_len);
+    if (getInterfaceBackgroundIndexed(390, &backgroundData, &backgroundWidth, &backgroundHeight, &backgroundFrmImage)) {
+        _gdialog_scroll_subwin(gGameDialogWindow, false, backgroundData, windowGetBuffer(gGameDialogWindow), windowGetBuffer(gGameDialogBackgroundWindow) + (GAME_DIALOG_WINDOW_WIDTH) * (480 - _dialogue_subwin_len), _dialogue_subwin_len);
+        if (backgroundFrmImage.isLocked()) {
+            backgroundFrmImage.unlock();
+        }
     }
 
     windowDestroy(gGameDialogWindow);
@@ -3547,12 +3602,11 @@ void partyMemberControlWindowUpdate()
     unsigned char* windowBuffer = windowGetBuffer(gGameDialogWindow);
     int windowWidth = windowGetWidth(gGameDialogWindow);
 
+    unsigned char* buffer = nullptr;
+    int width = 0;
+    int height = 0;
     FrmImage backgroundFrmImage;
-    int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 390, 0, 0, 0);
-    if (backgroundFrmImage.lock(backgroundFid)) {
-        int width = backgroundFrmImage.getWidth();
-        unsigned char* buffer = backgroundFrmImage.getData();
-
+    if (getInterfaceBackgroundIndexed(390, &buffer, &width, &height, &backgroundFrmImage)) {
         // Clear "Weapon Used:".
         blitBufferToBuffer(buffer + width * 20 + 112, 110, fontGetLineHeight(), width, windowBuffer + windowWidth * 20 + 112, windowWidth);
 
@@ -3565,7 +3619,9 @@ void partyMemberControlWindowUpdate()
         // Clear ?
         blitBufferToBuffer(buffer + width * 80 + 232, 132, 106, width, windowBuffer + windowWidth * 80 + 232, windowWidth);
 
-        backgroundFrmImage.unlock();
+        if (backgroundFrmImage.isLocked()) {
+            backgroundFrmImage.unlock();
+        }
     }
 
     MessageListItem messageListItem;
@@ -3791,20 +3847,22 @@ int partyMemberCustomizationWindowInit()
         return -1;
     }
 
+    // PNG-first background (FRM fallback)
+    unsigned char* backgroundFrmData = nullptr;
+    int backgroundWidth = 0;
+    int backgroundHeight = 0;
     FrmImage backgroundFrmImage;
-    int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 391, 0, 0, 0);
-    if (!backgroundFrmImage.lock(backgroundFid)) {
+    if (!getInterfaceBackgroundIndexed(391, &backgroundFrmData, &backgroundWidth, &backgroundHeight, &backgroundFrmImage)) {
         return -1;
     }
 
-    unsigned char* backgroundFrmData = backgroundFrmImage.getData();
     if (backgroundFrmData == nullptr) {
         // FIXME: Leaking background.
         partyMemberCustomizationWindowFree();
         return -1;
     }
 
-    _dialogue_subwin_len = backgroundFrmImage.getHeight();
+    _dialogue_subwin_len = backgroundHeight;
 
     int customizationWindowX = (screenGetWidth() - GAME_DIALOG_WINDOW_WIDTH) / 2;
     int customizationWindowY = (screenGetHeight() - GAME_DIALOG_WINDOW_HEIGHT) / 2 + GAME_DIALOG_WINDOW_HEIGHT - _dialogue_subwin_len;
@@ -3829,7 +3887,9 @@ int partyMemberCustomizationWindowInit()
         GAME_DIALOG_WINDOW_WIDTH);
 
     _gdialog_scroll_subwin(gGameDialogWindow, true, backgroundFrmData, windowBuffer, nullptr, _dialogue_subwin_len);
-    backgroundFrmImage.unlock();
+    if (backgroundFrmImage.isLocked()) {
+        backgroundFrmImage.unlock();
+    }
 
     _gdialog_buttons[0] = buttonCreate(gGameDialogWindow, 593, 101, 14, 14, -1, -1, -1, 13, _redButtonNormalFrmImage.getData(), _redButtonPressedFrmImage.getData(), nullptr, BUTTON_FLAG_TRANSPARENT);
     if (_gdialog_buttons[0] == -1) {
@@ -3932,11 +3992,16 @@ void partyMemberCustomizationWindowFree()
         }
     }
 
+    // custom.frm - party member control interface (PNG-first)
+    unsigned char* backgroundData = nullptr;
+    int backgroundWidth = 0;
+    int backgroundHeight = 0;
     FrmImage backgroundFrmImage;
-    // custom.frm - party member control interface
-    int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 391, 0, 0, 0);
-    if (backgroundFrmImage.lock(backgroundFid)) {
-        _gdialog_scroll_subwin(gGameDialogWindow, false, backgroundFrmImage.getData(), windowGetBuffer(gGameDialogWindow), windowGetBuffer(gGameDialogBackgroundWindow) + (GAME_DIALOG_WINDOW_WIDTH) * (480 - _dialogue_subwin_len), _dialogue_subwin_len);
+    if (getInterfaceBackgroundIndexed(391, &backgroundData, &backgroundWidth, &backgroundHeight, &backgroundFrmImage)) {
+        _gdialog_scroll_subwin(gGameDialogWindow, false, backgroundData, windowGetBuffer(gGameDialogWindow), windowGetBuffer(gGameDialogBackgroundWindow) + (GAME_DIALOG_WINDOW_WIDTH) * (480 - _dialogue_subwin_len), _dialogue_subwin_len);
+        if (backgroundFrmImage.isLocked()) {
+            backgroundFrmImage.unlock();
+        }
     }
 
     windowDestroy(gGameDialogWindow);
@@ -4093,14 +4158,14 @@ int _gdCustomSelect(int a1)
 {
     int oldFont = fontGetCurrent();
 
+    // PNG-first background (FRM fallback)
+    unsigned char* backgroundData = nullptr;
+    int backgroundFrmWidth = 0;
+    int backgroundFrmHeight = 0;
     FrmImage backgroundFrmImage;
-    int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 419, 0, 0, 0);
-    if (!backgroundFrmImage.lock(backgroundFid)) {
+    if (!getInterfaceBackgroundIndexed(419, &backgroundData, &backgroundFrmWidth, &backgroundFrmHeight, &backgroundFrmImage)) {
         return -1;
     }
-
-    int backgroundFrmWidth = backgroundFrmImage.getWidth();
-    int backgroundFrmHeight = backgroundFrmImage.getHeight();
 
     int selectWindowX = (screenGetWidth() - backgroundFrmWidth) / 2;
     int selectWindowY = (screenGetHeight() - backgroundFrmHeight) / 2;
@@ -4110,14 +4175,16 @@ int _gdCustomSelect(int a1)
     }
 
     unsigned char* windowBuffer = windowGetBuffer(win);
-    blitBufferToBuffer(backgroundFrmImage.getData(),
+    blitBufferToBuffer(backgroundData,
         backgroundFrmWidth,
         backgroundFrmHeight,
         backgroundFrmWidth,
         windowBuffer,
         backgroundFrmWidth);
 
-    backgroundFrmImage.unlock();
+    if (backgroundFrmImage.isLocked()) {
+        backgroundFrmImage.unlock();
+    }
 
     int btn1 = buttonCreate(win, 70, 164, 14, 14, -1, -1, -1, KEY_RETURN, _redButtonNormalFrmImage.getData(), _redButtonPressedFrmImage.getData(), nullptr, BUTTON_FLAG_TRANSPARENT);
     if (btn1 == -1) {
@@ -4324,17 +4391,20 @@ int _gdialog_window_create()
         _gdialog_buttons[index] = -1;
     }
 
+    // 389 - di_talkp.frm (party members)
+    // 99  - di_talk.frm (NPCs)
+    unsigned char* backgroundFrmData = nullptr;
+    int backgroundWidth = 0;
+    int backgroundHeight = 0;
     FrmImage backgroundFrmImage;
-    // 389 - di_talkp.frm - dialog screen subwindow (party members)
-    // 99 - di_talk.frm - dialog screen subwindow (NPC's)
-    int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, gGameDialogSpeakerIsPartyMember ? 389 : 99, 0, 0, 0);
-    if (!backgroundFrmImage.lock(backgroundFid)) {
-        return -1;
+    {
+        int frmId = gGameDialogSpeakerIsPartyMember ? 389 : 99;
+        if (!getInterfaceBackgroundIndexed(frmId, &backgroundFrmData, &backgroundWidth, &backgroundHeight, &backgroundFrmImage)) {
+            return -1;
+        }
     }
-
-    unsigned char* backgroundFrmData = backgroundFrmImage.getData();
     if (backgroundFrmData != nullptr) {
-        _dialogue_subwin_len = backgroundFrmImage.getHeight();
+    _dialogue_subwin_len = backgroundHeight;
 
         int dialogSubwindowX = (screenGetWidth() - GAME_DIALOG_WINDOW_WIDTH) / 2;
         int dialogSubwindowY = (screenGetHeight() - GAME_DIALOG_WINDOW_HEIGHT) / 2 + GAME_DIALOG_WINDOW_HEIGHT - _dialogue_subwin_len;
@@ -4401,6 +4471,9 @@ int _gdialog_window_create()
                 _gdialog_buttons[0] = -1;
             }
 
+            if (backgroundFrmImage.isLocked()) {
+                backgroundFrmImage.unlock();
+            }
             windowDestroy(gGameDialogWindow);
             gGameDialogWindow = -1;
         }
@@ -4436,11 +4509,16 @@ void _gdialog_window_destroy()
         frmId = 99;
     }
 
+    unsigned char* backgroundData = nullptr;
+    int backgroundWidth = 0;
+    int backgroundHeight = 0;
     FrmImage backgroundFrmImage;
-    int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, frmId, 0, 0, 0);
-    if (backgroundFrmImage.lock(backgroundFid)) {
+    if (getInterfaceBackgroundIndexed(frmId, &backgroundData, &backgroundWidth, &backgroundHeight, &backgroundFrmImage)) {
         unsigned char* windowBuffer = windowGetBuffer(gGameDialogWindow);
-        _gdialog_scroll_subwin(gGameDialogWindow, false, backgroundFrmImage.getData(), windowBuffer, backgroundWindowBuffer, _dialogue_subwin_len);
+        _gdialog_scroll_subwin(gGameDialogWindow, false, backgroundData, windowBuffer, backgroundWindowBuffer, _dialogue_subwin_len);
+        if (backgroundFrmImage.isLocked()) {
+            backgroundFrmImage.unlock();
+        }
         windowDestroy(gGameDialogWindow);
         _gdialog_window_created = 0;
         gGameDialogWindow = -1;
@@ -4471,16 +4549,22 @@ static int talk_to_create_background_window()
 // 0x44AB18
 int gameDialogWindowRenderBackground()
 {
+    // alltlk.frm - dialog screen background (PNG-first)
+    unsigned char* backgroundData = nullptr;
+    int backgroundWidth = 0;
+    int backgroundHeight = 0;
     FrmImage backgroundFrmImage;
-    // alltlk.frm - dialog screen background
-    int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 103, 0, 0, 0);
-    if (!backgroundFrmImage.lock(backgroundFid)) {
+    if (!getInterfaceBackgroundIndexed(103, &backgroundData, &backgroundWidth, &backgroundHeight, &backgroundFrmImage)) {
         return -1;
     }
 
     int windowWidth = GAME_DIALOG_WINDOW_WIDTH;
     unsigned char* windowBuffer = windowGetBuffer(gGameDialogBackgroundWindow);
-    blitBufferToBuffer(backgroundFrmImage.getData(), windowWidth, 480, windowWidth, windowBuffer, windowWidth);
+    blitBufferToBuffer(backgroundData, windowWidth, 480, backgroundWidth, windowBuffer, windowWidth);
+
+    if (backgroundFrmImage.isLocked()) {
+        backgroundFrmImage.unlock();
+    }
 
     if (!_dialogue_just_started) {
         windowRefresh(gGameDialogBackgroundWindow);
@@ -4501,21 +4585,27 @@ int _talkToRefreshDialogWindowRect(Rect* rect)
         frmId = 99;
     }
 
+    unsigned char* backgroundData = nullptr;
+    int backgroundWidth = 0;
+    int backgroundHeight = 0;
     FrmImage backgroundFrmImage;
-    int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, frmId, 0, 0, 0);
-    if (!backgroundFrmImage.lock(backgroundFid)) {
+    if (!getInterfaceBackgroundIndexed(frmId, &backgroundData, &backgroundWidth, &backgroundHeight, &backgroundFrmImage)) {
         return -1;
     }
 
-    int offset = 640 * rect->top + rect->left;
+    int offset = GAME_DIALOG_WINDOW_WIDTH * rect->top + rect->left;
 
     unsigned char* windowBuffer = windowGetBuffer(gGameDialogWindow);
-    blitBufferToBuffer(backgroundFrmImage.getData() + offset,
+    blitBufferToBuffer(backgroundData + backgroundWidth * rect->top + rect->left,
         rect->right - rect->left,
         rect->bottom - rect->top,
-        GAME_DIALOG_WINDOW_WIDTH,
+        backgroundWidth,
         windowBuffer + offset,
         GAME_DIALOG_WINDOW_WIDTH);
+
+    if (backgroundFrmImage.isLocked()) {
+        backgroundFrmImage.unlock();
+    }
 
     windowRefreshRect(gGameDialogWindow, rect);
 

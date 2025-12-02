@@ -23,6 +23,7 @@
 #include "proto_instance.h"
 #include "scripts.h"
 #include "settings.h"
+#include "art_png_loader.h"
 #include "svga.h"
 #include "text_object.h"
 #include "tile.h"
@@ -2900,6 +2901,20 @@ int _obj_intersects_with(Object* object, int x, int y)
             int height;
             artGetSize(art, object->frame, object->rotation, &width, &height);
 
+            // PNG-first for static single-frame objects (items, scenery, walls):
+            // if a PNG override exists, use its logical dimensions and data for hit testing.
+            unsigned char* pngData = nullptr;
+            int pngW = 0, pngH = 0;
+            int objTypeForPng = FID_TYPE(object->fid);
+            int frameCount = artGetFrameCount(art);
+            if ((objTypeForPng == OBJ_TYPE_ITEM || objTypeForPng == OBJ_TYPE_SCENERY || objTypeForPng == OBJ_TYPE_WALL)
+                && frameCount == 1) {
+                if (artPngGetIndexedCached(object->fid, &pngData, &pngW, &pngH) && pngData != nullptr) {
+                    width = pngW;
+                    height = pngH;
+                }
+            }
+
             int minX;
             int minY;
             int maxX;
@@ -2930,7 +2945,7 @@ int _obj_intersects_with(Object* object, int x, int y)
             }
 
             if (x >= minX && x <= maxX && y >= minY && y <= maxY) {
-                unsigned char* data = artGetFrameData(art, object->frame, object->rotation);
+                unsigned char* data = pngData ? pngData : artGetFrameData(art, object->frame, object->rotation);
                 if (data != nullptr) {
                     if (data[width * (y - minY) + x - minX] != 0) {
                         flags |= 0x01;
@@ -4931,7 +4946,22 @@ static void _obj_render_object(Object* object, Rect* rect, int light)
     unsigned char* src2 = src;
     int v50 = objectRect.left - object->sx;
     int v49 = objectRect.top - object->sy;
-    src += frameWidth * v49 + v50;
+    // PNG-first for static world objects: scenery, items, and walls (single-frame FRMs only).
+    // If a PNG override exists for this fid and the FRM has a single frame, use the cached
+    // indexed PNG buffer at logical size.
+    if (type == OBJ_TYPE_SCENERY || type == OBJ_TYPE_ITEM || type == OBJ_TYPE_WALL) {
+        int fc = artGetFrameCount(art);
+        if (fc == 1) {
+            unsigned char* pngData = nullptr;
+            int pngW = 0, pngH = 0;
+            if (artPngGetIndexedCached(object->fid, &pngData, &pngW, &pngH) && pngData != nullptr) {
+                src2 = pngData;
+                frameWidth = pngW;
+                frameHeight = pngH;
+            }
+        }
+    }
+    src = src2 + frameWidth * v49 + v50;
     int objectWidth = objectRect.right - objectRect.left + 1;
     int objectHeight = objectRect.bottom - objectRect.top + 1;
 

@@ -1,4 +1,7 @@
 #include "tile.h"
+#include "art_texture.h"
+#include "debug.h"
+#include <unordered_set>
 
 #include <assert.h>
 #include <math.h>
@@ -19,6 +22,7 @@
 #include "platform_compat.h"
 #include "settings.h"
 #include "svga.h"
+#include "art_png_loader.h"
 
 namespace fallout {
 
@@ -1327,6 +1331,8 @@ void tile_fill_roof(int x, int y, int elevation, bool on)
 // 0x4B24E0
 static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light)
 {
+    // Log PNG tile usage once per fid for troubleshooting scale expectations.
+    static std::unordered_set<int> s_loggedTilePngRoof;
     CacheEntry* tileFrmHandle;
     Art* tileFrm = artLock(fid, &tileFrmHandle);
     if (tileFrm == nullptr) {
@@ -1336,6 +1342,24 @@ static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light)
     int tileWidth = artGetWidth(tileFrm, 0, 0);
     int tileHeight = artGetHeight(tileFrm, 0, 0);
 
+    // Try PNG override for tile; use cached indexed buffer if available.
+    unsigned char* tileData = nullptr;
+    int pngW = 0, pngH = 0;
+    if (artPngGetIndexedCached(fid, &tileData, &pngW, &pngH) && tileData != nullptr) {
+        // Adopt PNG logical dimensions (should match FRM logical size for tiles).
+        tileWidth = pngW;
+        tileHeight = pngH;
+        if (s_loggedTilePngRoof.find(fid) == s_loggedTilePngRoof.end()) {
+            const ArtTextureMeta* meta = artTextureGetMeta(fid);
+            if (meta && meta->exists) {
+                debugPrint("TileRoof: fid=%d PNG=%dx%d logical=%dx%d inferredScale=%dx\n", fid, meta->pngWidth, meta->pngHeight, pngW, pngH, meta->sourceScale);
+            } else {
+                debugPrint("TileRoof: fid=%d PNG logical=%dx%d (meta unavailable)\n", fid, pngW, pngH);
+            }
+            s_loggedTilePngRoof.insert(fid);
+        }
+    }
+
     Rect tileRect;
     tileRect.left = x;
     tileRect.top = y;
@@ -1343,7 +1367,7 @@ static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light)
     tileRect.bottom = y + tileHeight - 1;
 
     if (rectIntersection(&tileRect, rect, &tileRect) == 0) {
-        unsigned char* tileFrmBuffer = artGetFrameData(tileFrm, 0, 0);
+        unsigned char* tileFrmBuffer = tileData ? tileData : artGetFrameData(tileFrm, 0, 0);
         tileFrmBuffer += tileWidth * (tileRect.top - y) + (tileRect.left - x);
 
         CacheEntry* eggFrmHandle;
@@ -1507,13 +1531,19 @@ bool _square_roof_intersect(int x, int y, int elevation)
             CacheEntry* handle;
             Art* art = artLock(fid, &handle);
             if (art != nullptr) {
-                unsigned char* data = artGetFrameData(art, 0, 0);
+                // Prefer PNG override mask if available for accurate hit-testing
+                // when roof tiles are replaced by PNGs.
+                unsigned char* data = nullptr;
+                int pngW = 0, pngH = 0;
+                if (!artPngGetIndexedCached(fid, &data, &pngW, &pngH) || data == nullptr) {
+                    data = artGetFrameData(art, 0, 0);
+                }
                 if (data != nullptr) {
                     int v18;
                     int v17;
                     squareTileToRoofScreenXY(idx, &v18, &v17, elevation);
 
-                    int width = artGetWidth(art, 0, 0);
+                    int width = (pngW > 0 ? pngW : artGetWidth(art, 0, 0));
                     if (data[width * (y - v17) + x - v18] != 0) {
                         result = true;
                     }
@@ -1597,6 +1627,8 @@ static void _draw_grid(int tile, int elevation, Rect* rect)
 // 0x4B30C4
 static void tileRenderFloor(int fid, int x, int y, Rect* rect)
 {
+    // Log PNG tile usage once per fid for troubleshooting scale expectations.
+    static std::unordered_set<int> s_loggedTilePngFloor;
     if (artIsObjectTypeHidden(FID_TYPE(fid)) != 0) {
         return;
     }
@@ -1643,6 +1675,23 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
 
     frameWidth = artGetWidth(art, 0, 0);
     frameHeight = artGetHeight(art, 0, 0);
+
+    // PNG-first for tiles: use cached indexed PNG data if available.
+    unsigned char* tileBuf = nullptr;
+    int pngW = 0, pngH = 0;
+    if (artPngGetIndexedCached(fid, &tileBuf, &pngW, &pngH) && tileBuf != nullptr) {
+        frameWidth = pngW;
+        frameHeight = pngH;
+        if (s_loggedTilePngFloor.find(fid) == s_loggedTilePngFloor.end()) {
+            const ArtTextureMeta* meta = artTextureGetMeta(fid);
+            if (meta && meta->exists) {
+                debugPrint("TileFloor: fid=%d PNG=%dx%d logical=%dx%d inferredScale=%dx\n", fid, meta->pngWidth, meta->pngHeight, pngW, pngH, meta->sourceScale);
+            } else {
+                debugPrint("TileFloor: fid=%d PNG logical=%dx%d (meta unavailable)\n", fid, pngW, pngH);
+            }
+            s_loggedTilePngFloor.insert(fid);
+        }
+    }
 
     if (left < x) {
         v79 = 0;
@@ -1691,7 +1740,7 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
         }
 
         if (v23 == 9) {
-            unsigned char* buf = artGetFrameData(art, 0, 0);
+            unsigned char* buf = tileBuf ? tileBuf : artGetFrameData(art, 0, 0);
             _dark_trans_buf_to_buf(buf + frameWidth * v78 + v79, v77, v76, frameWidth, gTileWindowBuffer, x, y, gTileWindowPitch, _verticies[0].intensity);
             goto out;
         }
@@ -1804,8 +1853,8 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
             }
         }
 
-        unsigned char* v66 = gTileWindowBuffer + gTileWindowPitch * y + x;
-        unsigned char* v67 = artGetFrameData(art, 0, 0) + frameWidth * v78 + v79;
+    unsigned char* v66 = gTileWindowBuffer + gTileWindowPitch * y + x;
+    unsigned char* v67 = (tileBuf ? tileBuf : artGetFrameData(art, 0, 0)) + frameWidth * v78 + v79;
         int* v68 = &(_intensity_map[160 + 80 * v78]) + v79;
         int v86 = frameWidth - v77;
         int v85 = gTileWindowPitch - v77;

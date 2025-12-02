@@ -339,4 +339,13 @@ void transSrcCopy(unsigned char* dest, int destPitch, unsigned char* src, int sr
     }
 }
 
+// Blit to the screen at logical coordinates using the existing screen blitter.
+// This hides the legacy a3 parameter and keeps call sites in logical space.
+void scrBlitLogical(unsigned char* src, int srcPitch, int srcX, int srcY, int srcWidth, int srcHeight, int destLogicalX, int destLogicalY)
+{
+    // _scr_blit signature: (src, srcPitch, a3, srcX, srcY, srcWidth, srcHeight, destX, destY)
+    // The legacy 'a3' parameter is unused by the implementation, pass 0.
+    _scr_blit(src, srcPitch, 0, srcX, srcY, srcWidth, srcHeight, destLogicalX, destLogicalY);
+}
+
 } // namespace fallout

@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "art.h"
+#include "art_png_loader.h"
 #include "color.h"
 #include "cycle.h"
 #include "db.h"
@@ -93,15 +94,28 @@ void creditsOpen(const char* filePath, int backgroundFid, bool useReversedStyle)
                         memset(backgroundBuffer, _colorTable[0], windowWidth * windowHeight);
 
                         if (backgroundFid != -1) {
-                            FrmImage backgroundFrmImage;
-                            if (backgroundFrmImage.lock(backgroundFid)) {
-                                blitBufferToBuffer(backgroundFrmImage.getData(),
-                                    backgroundFrmImage.getWidth(),
-                                    backgroundFrmImage.getHeight(),
-                                    backgroundFrmImage.getWidth(),
-                                    backgroundBuffer + windowWidth * ((windowHeight - backgroundFrmImage.getHeight()) / 2) + (windowWidth - backgroundFrmImage.getWidth()) / 2,
+                            unsigned char* bgPng;
+                            int bgW, bgH;
+                            if (artPngGetIndexedCached(backgroundFid, &bgPng, &bgW, &bgH)) {
+                                int dstX = (windowWidth - bgW) / 2;
+                                int dstY = (windowHeight - bgH) / 2;
+                                blitBufferToBuffer(bgPng,
+                                    bgW,
+                                    bgH,
+                                    bgW,
+                                    backgroundBuffer + windowWidth * dstY + dstX,
                                     windowWidth);
-                                backgroundFrmImage.unlock();
+                            } else {
+                                FrmImage backgroundFrmImage;
+                                if (backgroundFrmImage.lock(backgroundFid)) {
+                                    blitBufferToBuffer(backgroundFrmImage.getData(),
+                                        backgroundFrmImage.getWidth(),
+                                        backgroundFrmImage.getHeight(),
+                                        backgroundFrmImage.getWidth(),
+                                        backgroundBuffer + windowWidth * ((windowHeight - backgroundFrmImage.getHeight()) / 2) + (windowWidth - backgroundFrmImage.getWidth()) / 2,
+                                        windowWidth);
+                                    backgroundFrmImage.unlock();
+                                }
                             }
                         }
 

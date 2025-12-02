@@ -6,6 +6,7 @@
 #include <SDL.h>
 
 #include "config.h"
+#include "debug.h"
 #include "draw.h"
 #include "interface.h"
 #include "memory.h"
@@ -13,6 +14,7 @@
 #include "win32.h"
 #include "window_manager.h"
 #include "window_manager_private.h"
+#include "display_scale.h"
 
 namespace fallout {
 
@@ -21,6 +23,10 @@ static void destroyRenderer();
 
 // screen rect
 Rect _scr_size;
+
+// When non-zero, overrides the created SDL window size independent of logical size.
+static int gRequestedWindowW = 0;
+static int gRequestedWindowH = 0;
 
 // 0x6ACA18
 void (*_scr_blit)(unsigned char* src, int src_pitch, int a3, int src_x, int src_y, int src_width, int src_height, int dest_x, int dest_y) = _GNW95_ShowRect;
@@ -36,6 +42,13 @@ SDL_Surface* gSdlTextureSurface = nullptr;
 
 // TODO: Remove once migration to update-render cycle is completed.
 FpsLimiter sharedFpsLimiter;
+
+// High-res composition mode globals
+bool gHiResEnabled = false;
+int gHiResScale = 1; // 1 = off
+bool gHiResOverlayTransparent = true;
+bool gHiResDebugOverlayMarker = false;
+static SDL_Surface* gHiResBackground = nullptr; // owned
 
 // 0x4CAD08
 int _init_mode_320_200()
@@ -103,6 +116,10 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
 {
     bool fullscreen = true;
     int scale = 1;
+    bool fitToWindow = false; // Preserve 640x480 logical size and scale to window
+    // Reset hires defaults each init
+    gHiResEnabled = false;
+    gHiResScale = 1;
 
     Config resolutionConfig;
     if (configInit(&resolutionConfig)) {
@@ -117,9 +134,49 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
                 height = screenHeight;
             }
 
+            // Cache original requested window size from config before any scaling logic.
+            int cfgWindowW = width;
+            int cfgWindowH = height;
+
             bool windowed;
             if (configGetBool(&resolutionConfig, "MAIN", "WINDOWED", &windowed)) {
                 fullscreen = !windowed;
+            }
+
+            // New option: When enabled, force logical 640x480 and scale to fit window (preserve aspect).
+            configGetBool(&resolutionConfig, "MAIN", "FIT_TO_WINDOW", &fitToWindow);
+
+            // Broader high-res mode: render to a higher resolution truecolor backbuffer
+            bool hiresMode = false;
+            if (configGetBool(&resolutionConfig, "MAIN", "HIRES_MODE", &hiresMode)) {
+                gHiResEnabled = hiresMode;
+            }
+            int hiresScale = 0;
+            if (configGetInt(&resolutionConfig, "MAIN", "HIRES_SCALE", &hiresScale)) {
+                gHiResScale = hiresScale;
+            }
+            if (!gHiResEnabled) {
+                gHiResScale = 1;
+            }
+            if (gHiResScale < 1) gHiResScale = 1;
+            if (gHiResScale > 4) gHiResScale = 4;
+
+            // Control whether 8-bit overlay uses palette index 0 as transparent over hi-res background.
+            // Default: true (preserve background through cleared regions). Set to false for debugging if
+            // legacy assets appear invisible due to index 0 usage.
+            bool overlayTransparent = true;
+            if (configGetBool(&resolutionConfig, "MAIN", "HIRES_OVERLAY_TRANSPARENT", &overlayTransparent)) {
+                gHiResOverlayTransparent = overlayTransparent;
+            } else {
+                gHiResOverlayTransparent = true;
+            }
+
+            // Debug aid: draw a small marker into the 8-bit overlay to confirm it is being composed.
+            bool debugOverlayMarker = false;
+            if (configGetBool(&resolutionConfig, "MAIN", "DEBUG_OVERLAY_MARKER", &debugOverlayMarker)) {
+                gHiResDebugOverlayMarker = debugOverlayMarker;
+            } else {
+                gHiResDebugOverlayMarker = false;
             }
 
             int scaleValue;
@@ -140,6 +197,29 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
             configGetBool(&resolutionConfig, "IFACE", "IFACE_BAR_SIDES_ORI", &gInterfaceSidePanelsExtendFromScreenEdge);
         }
         configFree(&resolutionConfig);
+    }
+
+    // Apply FIT_TO_WINDOW by keeping logical size at 640x480 and requesting
+    // the window size from SCR_WIDTH/SCR_HEIGHT (via gRequestedWindowW/H).
+    if (fitToWindow) {
+        // Remember requested window size from config (pre-scaling values).
+        // If config wasn't read, these remain 0 and fallback path will be used.
+        // Note: If SCALE_2X was set, FIT_TO_WINDOW takes precedence.
+        // Re-read from resolutionConfig is not possible here, so rely on cached cfgWindowW/H.
+        // If not available, default to current width/height * scale (best-effort).
+        if (gRequestedWindowW == 0 || gRequestedWindowH == 0) {
+            // We cannot directly access cfgWindowW/H here; recompute best-effort.
+            // Since width/height may have been divided by scale above, multiply back.
+            gRequestedWindowW = width * scale;
+            gRequestedWindowH = height * scale;
+        }
+        // Use base logical size.
+        width = 640;
+        height = 480;
+        scale = 1;
+    } else {
+        gRequestedWindowW = 0;
+        gRequestedWindowH = 0;
     }
 
     if (_GNW95_init_window(width, height, fullscreen, scale) == -1) {
@@ -181,7 +261,9 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
             windowFlags |= SDL_WINDOW_FULLSCREEN;
         }
 
-        gSdlWindow = SDL_CreateWindow(gProgramWindowTitle, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, width * scale, height * scale, windowFlags);
+        int windowW = (gRequestedWindowW > 0 ? gRequestedWindowW : (width * scale));
+        int windowH = (gRequestedWindowH > 0 ? gRequestedWindowH : (height * scale));
+        gSdlWindow = SDL_CreateWindow(gProgramWindowTitle, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, windowW, windowH, windowFlags);
         if (gSdlWindow == nullptr) {
             return -1;
         }
@@ -194,6 +276,11 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
 
             return -1;
         }
+
+        // Initialize logical/physical scale mapping for rendering and input.
+        int winW = 0, winH = 0;
+        SDL_GetWindowSize(gSdlWindow, &winW, &winH);
+        displayScaleInit(width, height, winW, winH);
     }
 
     return 0;
@@ -255,7 +342,9 @@ void directDrawSetPaletteInRange(unsigned char* palette, int start, int count)
         }
 
         SDL_SetPaletteColors(gSdlSurface->format->palette, colors, start, count);
-        SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+        if (!gHiResEnabled) {
+            SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+        }
     }
 }
 
@@ -273,7 +362,9 @@ void directDrawSetPalette(unsigned char* palette)
         }
 
         SDL_SetPaletteColors(gSdlSurface->format->palette, colors, 0, 256);
-        SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+        if (!gHiResEnabled) {
+            SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+        }
     }
 }
 
@@ -311,7 +402,9 @@ void _GNW95_ShowRect(unsigned char* src, int srcPitch, int a3, int srcX, int src
     SDL_Rect destRect;
     destRect.x = destX;
     destRect.y = destY;
-    SDL_BlitSurface(gSdlSurface, &srcRect, gSdlTextureSurface, &destRect);
+    if (!gHiResEnabled) {
+        SDL_BlitSurface(gSdlSurface, &srcRect, gSdlTextureSurface, &destRect);
+    }
 }
 
 // Clears drawing surface.
@@ -329,7 +422,9 @@ void _GNW95_zero_vid_mem()
         surface += gSdlSurface->pitch;
     }
 
-    SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+    if (!gHiResEnabled) {
+        SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+    }
 }
 
 int screenGetWidth()
@@ -361,11 +456,14 @@ static bool createRenderer(int width, int height)
         return false;
     }
 
-    if (SDL_RenderSetLogicalSize(gSdlRenderer, width, height) != 0) {
+    int outW = width * (gHiResEnabled ? gHiResScale : 1);
+    int outH = height * (gHiResEnabled ? gHiResScale : 1);
+
+    if (SDL_RenderSetLogicalSize(gSdlRenderer, outW, outH) != 0) {
         return false;
     }
 
-    gSdlTexture = SDL_CreateTexture(gSdlRenderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, width, height);
+    gSdlTexture = SDL_CreateTexture(gSdlRenderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, outW, outH);
     if (gSdlTexture == nullptr) {
         return false;
     }
@@ -375,7 +473,7 @@ static bool createRenderer(int width, int height)
         return false;
     }
 
-    gSdlTextureSurface = SDL_CreateRGBSurfaceWithFormat(0, width, height, SDL_BITSPERPIXEL(format), format);
+    gSdlTextureSurface = SDL_CreateRGBSurfaceWithFormat(0, outW, outH, SDL_BITSPERPIXEL(format), format);
     if (gSdlTextureSurface == nullptr) {
         return false;
     }
@@ -405,14 +503,107 @@ void handleWindowSizeChanged()
 {
     destroyRenderer();
     createRenderer(screenGetWidth(), screenGetHeight());
+
+    // Recompute scale mapping on resize.
+    if (gSdlWindow != nullptr) {
+        int winW = 0, winH = 0;
+        SDL_GetWindowSize(gSdlWindow, &winW, &winH);
+        displayScaleInit(screenGetWidth(), screenGetHeight(), winW, winH);
+    }
 }
 
 void renderPresent()
 {
+    if (gHiResEnabled) {
+        // Compose: background (if any) + scaled 8-bit screen
+        // Clear to black first
+        SDL_FillRect(gSdlTextureSurface, nullptr, SDL_MapRGB(gSdlTextureSurface->format, 0, 0, 0));
+
+        if (gHiResBackground != nullptr) {
+            // Fit background to texture surface, preserving aspect, centered
+            SDL_Rect dst;
+            int tw = gSdlTextureSurface->w, th = gSdlTextureSurface->h;
+            int bw = gHiResBackground->w, bh = gHiResBackground->h;
+            // Compute scale to fit inside
+            double sx = (double)tw / (double)bw;
+            double sy = (double)th / (double)bh;
+            double s = sx < sy ? sx : sy;
+            int dw = (int)(bw * s);
+            int dh = (int)(bh * s);
+            dst.x = (tw - dw) / 2;
+            dst.y = (th - dh) / 2;
+            dst.w = dw;
+            dst.h = dh;
+            SDL_BlitScaled(gHiResBackground, nullptr, gSdlTextureSurface, &dst);
+        }
+
+        // Scale 8-bit logical surface to the output surface; when a background is set and
+        // overlay transparency is enabled, treat palette index 0 as transparent to let it show.
+        if (gHiResBackground != nullptr && gHiResOverlayTransparent) {
+            SDL_SetColorKey(gSdlSurface, SDL_TRUE, 0);
+        } else {
+            SDL_SetColorKey(gSdlSurface, SDL_FALSE, 0);
+        }
+
+        // Optional debug marker: draw a small square into the 8-bit overlay so we can verify it appears.
+        if (gHiResDebugOverlayMarker && gSdlSurface && gSdlSurface->format && gSdlSurface->pixels) {
+            // Draw a 40x40 block in the top-left corner with a bright index (250) to stand out.
+            int w = gSdlSurface->w;
+            int h = gSdlSurface->h;
+            int bw = (w >= 40 ? 40 : w);
+            int bh = (h >= 40 ? 40 : h);
+            for (int y = 0; y < bh; ++y) {
+                unsigned char* row = (unsigned char*)gSdlSurface->pixels + y * gSdlSurface->pitch;
+                memset(row, 250, bw);
+            }
+        }
+        SDL_Rect out = { 0, 0, gSdlTextureSurface->w, gSdlTextureSurface->h };
+
+        // More robust path: convert overlay to the destination pixel format before scaling/blitting.
+        // This avoids potential issues with palettized->truecolor scaling on some SDL builds.
+        SDL_Surface* srcConv = SDL_ConvertSurfaceFormat(gSdlSurface, gSdlTextureSurface->format->format, 0);
+        if (srcConv != nullptr) {
+            // If we want transparency, set a colorkey matching index-0 color in converted space.
+            if (gHiResBackground != nullptr && gHiResOverlayTransparent) {
+                // Map the first palette color (index 0) from gSdlSurface into converted format.
+                SDL_Color keyCol = {0, 0, 0, 255};
+                if (gSdlSurface->format && gSdlSurface->format->palette) {
+                    keyCol = gSdlSurface->format->palette->colors[0];
+                }
+                Uint32 mappedKey = SDL_MapRGB(srcConv->format, keyCol.r, keyCol.g, keyCol.b);
+                SDL_SetColorKey(srcConv, SDL_TRUE, mappedKey);
+            } else {
+                SDL_SetColorKey(srcConv, SDL_FALSE, 0);
+            }
+            if (SDL_BlitScaled(srcConv, nullptr, gSdlTextureSurface, &out) != 0) {
+                debugPrint("HiRes: SDL_BlitScaled overlay(conv) failed: %s\n", SDL_GetError());
+            }
+            SDL_FreeSurface(srcConv);
+        } else {
+            if (SDL_BlitScaled(gSdlSurface, nullptr, gSdlTextureSurface, &out) != 0) {
+                debugPrint("HiRes: SDL_BlitScaled overlay failed: %s\n", SDL_GetError());
+            }
+        }
+    }
+
     SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch);
     SDL_RenderClear(gSdlRenderer);
     SDL_RenderCopy(gSdlRenderer, gSdlTexture, nullptr, nullptr);
     SDL_RenderPresent(gSdlRenderer);
+}
+
+void hiResClearBackground()
+{
+    if (gHiResBackground != nullptr) {
+        SDL_FreeSurface(gHiResBackground);
+        gHiResBackground = nullptr;
+    }
+}
+
+void hiResSetBackground(SDL_Surface* surface)
+{
+    hiResClearBackground();
+    gHiResBackground = surface; // take ownership
 }
 
 } // namespace fallout

@@ -132,10 +132,10 @@ void draw_rect(Rect* rect, unsigned char color)
     unsigned char* buffer = (unsigned char*)internal_malloc(max_dimension);
     if (buffer != NULL) {
         memset(buffer, color, max_dimension);
-        _scr_blit(buffer, width, 1, 0, 0, width, 1, rect->left, rect->top);
-        _scr_blit(buffer, 1, height, 0, 0, 1, height, rect->left, rect->top);
-        _scr_blit(buffer, width, 1, 0, 0, width, 1, rect->left, rect->bottom);
-        _scr_blit(buffer, 1, height, 0, 0, 1, height, rect->right, rect->top);
+    scrBlitLogical(buffer, width, 0, 0, width, 1, rect->left, rect->top);
+    scrBlitLogical(buffer, 1, 0, 0, 1, height, rect->left, rect->top);
+    scrBlitLogical(buffer, width, 0, 0, width, 1, rect->left, rect->bottom);
+    scrBlitLogical(buffer, 1, 0, 0, 1, height, rect->right, rect->top);
         internal_free(buffer);
     }
 }

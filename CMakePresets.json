@@ -40,6 +40,18 @@
             "architecture": "x64"
         },
         {
+            "name": "windows-x64-png",
+            "inherits": [
+                "windows-base"
+            ],
+            "generator": "Visual Studio 16 2019",
+            "architecture": "x64",
+            "cacheVariables": {
+                "FALLOUT_VENDORED": "ON",
+                "FALLOUT_SDL2_IMAGE": "ON"
+            }
+        },
+        {
             "name": "linux-base",
             "hidden": true,
             "inherits": [
@@ -154,6 +166,16 @@
         {
             "name": "windows-x64-release",
             "configurePreset": "windows-x64",
+            "configuration": "Release"
+        },
+        {
+            "name": "windows-x64-png-debug",
+            "configurePreset": "windows-x64-png",
+            "configuration": "Debug"
+        },
+        {
+            "name": "windows-x64-png-release",
+            "configurePreset": "windows-x64-png",
             "configuration": "Release"
         },
         {

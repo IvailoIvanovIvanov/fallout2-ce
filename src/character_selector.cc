@@ -13,6 +13,7 @@
 #include "db.h"
 #include "debug.h"
 #include "draw.h"
+#include "art_png_loader.h"
 #include "game.h"
 #include "game_sound.h"
 #include "input.h"
@@ -33,6 +34,8 @@
 #include "text_font.h"
 #include "trait.h"
 #include "window_manager.h"
+
+#include <SDL.h>
 
 namespace fallout {
 
@@ -273,31 +276,121 @@ static bool characterSelectorWindowInit()
         return characterSelectorWindowFatalError(false);
     }
 
-    FrmImage backgroundFrmImage;
     int backgroundFid = buildFid(OBJ_TYPE_INTERFACE, 174, 0, 0, 0);
-    if (!backgroundFrmImage.lock(backgroundFid)) {
-        return characterSelectorWindowFatalError(false);
+    bool usedHiResBackground = false;
+
+    // Prefer hi-res truecolor PNG for the character selector background; fall back to
+    // an upscaled FRM as truecolor if PNG is absent. Otherwise draw original FRM.
+    if (gHiResEnabled) {
+        SDL_Surface* bgSurface = artPngLoadSurface(backgroundFid);
+        if (bgSurface != nullptr) {
+            hiResSetBackground(bgSurface);
+            usedHiResBackground = true;
+            // Clear logical buffer so background shows through
+            memset(gCharacterSelectorWindowBuffer, 0, CS_WINDOW_WIDTH * CS_WINDOW_HEIGHT);
+
+            const char* frmPath = artBuildFilePath(backgroundFid);
+            if (frmPath && *frmPath) {
+                char pngPath[COMPAT_MAX_PATH];
+                strncpy(pngPath, frmPath, sizeof(pngPath) - 1);
+                pngPath[sizeof(pngPath) - 1] = '\0';
+                char* dot = strrchr(pngPath, '.');
+                if (dot) strcpy(dot, ".png"); else if (strlen(pngPath) + 4 < sizeof(pngPath)) strcat(pngPath, ".png");
+                debugPrint("CS: hi-res background set FRM=\"%s\" PNG=\"%s\" surface=%dx%d scale=%dx\n", frmPath, pngPath, bgSurface->w, bgSurface->h, gHiResScale);
+            }
+        }
     }
 
-    blitBufferToBuffer(backgroundFrmImage.getData(),
-        CS_WINDOW_WIDTH,
-        CS_WINDOW_HEIGHT,
-        CS_WINDOW_WIDTH,
-        gCharacterSelectorWindowBuffer,
-        CS_WINDOW_WIDTH);
+    if (!usedHiResBackground) {
+        FrmImage backgroundFrmImage;
+        if (!backgroundFrmImage.lock(backgroundFid)) {
+            return characterSelectorWindowFatalError(false);
+        }
 
-    gCharacterSelectorBackground = (unsigned char*)internal_malloc(CS_WINDOW_BACKGROUND_WIDTH * CS_WINDOW_BACKGROUND_HEIGHT);
-    if (gCharacterSelectorBackground == nullptr)
-        return characterSelectorWindowFatalError(false);
+        if (gHiResEnabled && !usedHiResBackground) {
+            // If hi-res mode is enabled but no PNG is available, build a truecolor background by
+            // upscaling the FRM by HIRES_SCALE using nearest-neighbor and set it.
+            int scale = gHiResScale > 1 ? gHiResScale : 2;
+            int srcW = CS_WINDOW_WIDTH, srcH = CS_WINDOW_HEIGHT;
+            const unsigned char* srcIdx = backgroundFrmImage.getData();
 
-    blitBufferToBuffer(backgroundFrmImage.getData() + CS_WINDOW_WIDTH * CS_WINDOW_BACKGROUND_Y + CS_WINDOW_BACKGROUND_X,
-        CS_WINDOW_BACKGROUND_WIDTH,
-        CS_WINDOW_BACKGROUND_HEIGHT,
-        CS_WINDOW_WIDTH,
-        gCharacterSelectorBackground,
-        CS_WINDOW_BACKGROUND_WIDTH);
+            SDL_Surface* dst = SDL_CreateRGBSurfaceWithFormat(0, srcW * scale, srcH * scale, 32, SDL_PIXELFORMAT_RGBA32);
+            if (dst) {
+                SDL_Palette* pal = (gSdlSurface && gSdlSurface->format) ? gSdlSurface->format->palette : nullptr;
+                const SDL_Color* colors = pal ? pal->colors : nullptr;
+                SDL_Color fallback[256];
+                if (colors == nullptr) {
+                    for (int i = 0; i < 256; ++i) { fallback[i].r = fallback[i].g = fallback[i].b = (Uint8)i; fallback[i].a = 255; }
+                    colors = fallback;
+                }
 
-    backgroundFrmImage.unlock();
+                Uint32* dp = (Uint32*)dst->pixels;
+                int dpitch = dst->pitch / 4;
+                for (int y = 0; y < srcH; ++y) {
+                    const unsigned char* srow = srcIdx + y * srcW;
+                    for (int x = 0; x < srcW; ++x) {
+                        const SDL_Color c = colors[srow[x]];
+                        Uint32 rgba = (Uint32)c.a << 24 | (Uint32)c.r << 16 | (Uint32)c.g << 8 | (Uint32)c.b;
+                        int dx0 = x * scale;
+                        int dy0 = y * scale;
+                        for (int yy = 0; yy < scale; ++yy) {
+                            Uint32* drow = dp + (dy0 + yy) * dpitch + dx0;
+                            for (int xx = 0; xx < scale; ++xx) {
+                                drow[xx] = rgba;
+                            }
+                        }
+                    }
+                }
+                hiResSetBackground(dst);
+                usedHiResBackground = true;
+                memset(gCharacterSelectorWindowBuffer, 0, CS_WINDOW_WIDTH * CS_WINDOW_HEIGHT);
+
+                const char* frmPath = artBuildFilePath(backgroundFid);
+                if (frmPath && *frmPath) {
+                    char pngPath[COMPAT_MAX_PATH];
+                    strncpy(pngPath, frmPath, sizeof(pngPath) - 1);
+                    pngPath[sizeof(pngPath) - 1] = '\0';
+                    char* dot = strrchr(pngPath, '.');
+                    if (dot) strcpy(dot, ".png"); else if (strlen(pngPath) + 4 < sizeof(pngPath)) strcat(pngPath, ".png");
+                    debugPrint("CS: no PNG, using upscaled FRM as hi-res background FRM=\"%s\" PNG=\"%s\" scale=%dx\n", frmPath, pngPath, scale);
+                }
+            }
+        }
+
+        if (!usedHiResBackground) {
+            // Non-hires path: draw original FRM and cache the inner background region.
+            blitBufferToBuffer(backgroundFrmImage.getData(),
+                CS_WINDOW_WIDTH,
+                CS_WINDOW_HEIGHT,
+                CS_WINDOW_WIDTH,
+                gCharacterSelectorWindowBuffer,
+                CS_WINDOW_WIDTH);
+
+            gCharacterSelectorBackground = (unsigned char*)internal_malloc(CS_WINDOW_BACKGROUND_WIDTH * CS_WINDOW_BACKGROUND_HEIGHT);
+            if (gCharacterSelectorBackground == nullptr) {
+                backgroundFrmImage.unlock();
+                return characterSelectorWindowFatalError(false);
+            }
+
+            blitBufferToBuffer(backgroundFrmImage.getData() + CS_WINDOW_WIDTH * CS_WINDOW_BACKGROUND_Y + CS_WINDOW_BACKGROUND_X,
+                CS_WINDOW_BACKGROUND_WIDTH,
+                CS_WINDOW_BACKGROUND_HEIGHT,
+                CS_WINDOW_WIDTH,
+                gCharacterSelectorBackground,
+                CS_WINDOW_BACKGROUND_WIDTH);
+        }
+
+        backgroundFrmImage.unlock();
+    }
+
+    // In hi-res background mode, allocate a transparent inner background so the truecolor
+    // background shows through during refresh.
+    if (usedHiResBackground) {
+        gCharacterSelectorBackground = (unsigned char*)internal_malloc(CS_WINDOW_BACKGROUND_WIDTH * CS_WINDOW_BACKGROUND_HEIGHT);
+        if (gCharacterSelectorBackground == nullptr)
+            return characterSelectorWindowFatalError(false);
+        memset(gCharacterSelectorBackground, 0, CS_WINDOW_BACKGROUND_WIDTH * CS_WINDOW_BACKGROUND_HEIGHT);
+    }
 
     int fid;
 
@@ -591,17 +684,50 @@ static bool characterSelectorWindowRenderFace()
 {
     bool success = false;
 
-    FrmImage faceFrmImage;
     int faceFid = buildFid(OBJ_TYPE_INTERFACE, gCustomPremadeCharacterDescriptions[gCurrentPremadeCharacter].face, 0, 0, 0);
-    if (faceFrmImage.lock(faceFid)) {
-        unsigned char* data = faceFrmImage.getData();
-        if (data != nullptr) {
-            int width = faceFrmImage.getWidth();
-            int height = faceFrmImage.getHeight();
-            blitBufferToBufferTrans(data, width, height, width, (gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * 23 + 27), CS_WINDOW_WIDTH);
-            success = true;
+
+    // Tiny debug: log the FRM path and the PNG path we will try.
+    const char* frmPath = artBuildFilePath(faceFid);
+    if (frmPath != nullptr && frmPath[0] != '\0') {
+        char pngPath[COMPAT_MAX_PATH];
+        // Copy and replace extension with .png
+        strncpy(pngPath, frmPath, sizeof(pngPath) - 1);
+        pngPath[sizeof(pngPath) - 1] = '\0';
+        char* dot = strrchr(pngPath, '.');
+        if (dot != nullptr) {
+            strcpy(dot, ".png");
+        } else {
+            size_t len = strlen(pngPath);
+            if (len + 4 < sizeof(pngPath)) {
+                strcat(pngPath, ".png");
+            }
         }
-        faceFrmImage.unlock();
+        debugPrint("CS: face fid=%d -> FRM=\"%s\" PNG=\"%s\"\n", faceFid, frmPath, pngPath);
+    }
+
+    // Prefer PNG override if available and SDL2_image is enabled; otherwise fall back to FRM.
+    unsigned char* pngData = nullptr;
+    int pngW = 0, pngH = 0;
+    if (artPngLoadIndexed(faceFid, &pngData, &pngW, &pngH)) {
+        blitBufferToBufferTrans(pngData, pngW, pngH, pngW, (gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * 23 + 27), CS_WINDOW_WIDTH);
+        internal_free(pngData);
+        success = true;
+        debugPrint("CS: loaded PNG face %dx%d\n", pngW, pngH);
+    } else {
+        FrmImage faceFrmImage;
+        if (faceFrmImage.lock(faceFid)) {
+            unsigned char* data = faceFrmImage.getData();
+            if (data != nullptr) {
+                int width = faceFrmImage.getWidth();
+                int height = faceFrmImage.getHeight();
+                blitBufferToBufferTrans(data, width, height, width, (gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * 23 + 27), CS_WINDOW_WIDTH);
+                success = true;
+            }
+            faceFrmImage.unlock();
+        }
+        if (success) {
+            debugPrint("CS: using FRM face (no PNG override)\n");
+        }
     }
 
     return success;
