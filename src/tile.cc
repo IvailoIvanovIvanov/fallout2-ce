@@ -489,10 +489,17 @@ struct TileIntensitySource {
     int stride = 0;
     int defaultIntensityIndex = 0;
     bool hasPerPixel = false;
+    // Bounds for safe access
+    int maxRows = 0;
+    int maxColumns = 0;
 
     int sample(int row, int column) const
     {
         if (hasPerPixel && data != nullptr && stride > 0) {
+            // Bounds check to prevent reading garbage memory
+            if (row < 0 || row >= maxRows || column < 0 || column >= maxColumns) {
+                return std::clamp(defaultIntensityIndex, 0, 255);
+            }
             const int value = data[row * stride + column] >> 9;
             return std::clamp(value, 0, 255);
         }
@@ -561,6 +568,11 @@ static void tileBlitTrueColorOverlayPhysical(const TilePhysicalOverlayView& phys
         return;
     }
 
+    // Validate HD texture dimensions
+    if (view.pixels == nullptr || view.width <= 0 || view.height <= 0) {
+        return;
+    }
+
     const DisplayScalerScaleTable& scaleTable = displayScalerGetScaleTable();
     const Rect& viewport = physicalView.viewport;
     const int horizontalLimit = static_cast<int>(scaleTable.horizontal.starts.size());
@@ -569,7 +581,23 @@ static void tileBlitTrueColorOverlayPhysical(const TilePhysicalOverlayView& phys
     const int hdScaleX = std::max(1, view.scaleX);
     const int hdScaleY = std::max(1, view.scaleY);
     const int hdStride = view.width;
-    const uint32_t* hdBase = view.pixels + offsetY * hdStride * hdScaleY + offsetX * hdScaleX;
+    const int hdWidth = view.width;
+    const int hdHeight = view.height;
+    
+    // Calculate the base offset into the HD texture
+    const int hdBaseOffsetY = offsetY * hdScaleY;
+    const int hdBaseOffsetX = offsetX * hdScaleX;
+    
+    // Calculate the maximum safe indices accounting for the base offset
+    const int hdMaxRowIndex = hdHeight - hdBaseOffsetY;
+    const int hdMaxColumnIndex = hdWidth - hdBaseOffsetX;
+    
+    // Validate that there's any valid region to render
+    if (hdMaxRowIndex <= 0 || hdMaxColumnIndex <= 0) {
+        return;
+    }
+    
+    const uint32_t* hdBase = view.pixels + hdBaseOffsetY * hdStride + hdBaseOffsetX;
 
     for (int logicalRowIndex = 0; logicalRowIndex < objectHeight; logicalRowIndex++) {
         int logicalY = logicalRect.top + logicalRowIndex;
@@ -591,7 +619,14 @@ static void tileBlitTrueColorOverlayPhysical(const TilePhysicalOverlayView& phys
         for (int spanRow = 0; spanRow < rowSpanHeight; spanRow++) {
             const int physicalRow = physicalRowStart + spanRow;
             const int hdRowOffset = tileSelectSampleIndex(spanRow, rowSpanHeight, hdScaleY);
-            const uint32_t* hdRow = hdBase + (logicalRowIndex * hdScaleY + hdRowOffset) * hdStride;
+            const int hdRowIndex = logicalRowIndex * hdScaleY + hdRowOffset;
+            
+            // Bounds check for HD row access (relative to hdBase, so check against max available)
+            if (hdRowIndex < 0 || hdRowIndex >= hdMaxRowIndex) {
+                continue;
+            }
+            
+            const uint32_t* hdRow = hdBase + hdRowIndex * hdStride;
             uint32_t* destRow = physicalView.pixels + physicalRow * physicalView.pitch;
             unsigned char* maskRow = physicalView.mask + physicalRow * physicalView.pitch;
 
@@ -624,7 +659,12 @@ static void tileBlitTrueColorOverlayPhysical(const TilePhysicalOverlayView& phys
                 const int intensityIndex = intensitySource.sample(logicalRowIndex, logicalColumnIndex);
                 for (int spanColumn = 0; spanColumn < columnSpanWidth; spanColumn++) {
                     const int hdColumnOffset = tileSelectSampleIndex(spanColumn, columnSpanWidth, hdScaleX);
-                    const uint32_t hdPixel = hdRow[logicalColumnIndex * hdScaleX + hdColumnOffset];
+                    // Bounds check for HD texture column access (relative to hdBase row)
+                    const int hdX = logicalColumnIndex * hdScaleX + hdColumnOffset;
+                    if (hdX < 0 || hdX >= hdMaxColumnIndex) {
+                        continue; // Skip out-of-bounds pixels
+                    }
+                    const uint32_t hdPixel = hdRow[hdX];
                     // Force alpha to 255 for opaque tiles to prevent blending artifacts at tile edges.
                     // HD textures may have semi-transparent edge pixels from anti-aliasing which would
                     // blend with the indexed render and create visible grid lines.
@@ -2223,6 +2263,8 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
             if (hasTrueColor) {
                 int intensityIndex = _verticies[0].intensity >> 9;
                 const int srcStride = trueColorView.width;
+                const int hdWidth = trueColorView.width;
+                const int hdHeight = trueColorView.height;
                 const int stepX = std::max(1, trueColorView.scaleX);
                 const int stepY = std::max(1, trueColorView.scaleY);
                 const int rowAdvance = srcStride * stepY;
@@ -2231,18 +2273,28 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
                 const int sampleOffsetX = (stepX > 1) ? (stepX / 2) : 0;
                 const int sampleOffsetY = (stepY > 1) ? (stepY / 2) : 0;
 
+                // Calculate safe iteration bounds to prevent reading outside HD texture
+                const int hdStartRow = v78 * stepY + sampleOffsetY;
+                const int hdStartCol = v79 * stepX + sampleOffsetX;
+                const int safeRows = std::min(v76, (hdHeight - hdStartRow - 1) / stepY + 1);
+                const int safeCols = std::min(v77, (hdWidth - hdStartCol - 1) / stepX + 1);
+                
+                if (safeRows <= 0 || safeCols <= 0) {
+                    goto skip_logical_truecolor;
+                }
+
                 const uint32_t* trueColorBaseRow = trueColorView.pixels + v78 * rowAdvance + v79 * stepX + sampleOffsetY * srcStride;
                 uint32_t* trueColorDestRow = gTileWindowTrueColorOverlay + gTileWindowWidth * y + x;
                 unsigned char* trueColorMaskRow = gTileWindowTrueColorMask + gTileWindowWidth * y + x;
                 unsigned char* indexedRow = buf + frameWidth * v78 + v79;
 
-                for (int row = 0; row < v76; row++) {
+                for (int row = 0; row < safeRows; row++) {
                     const uint32_t* trueColorPixel = trueColorBaseRow + sampleOffsetX;
                     uint32_t* trueColorDestPixel = trueColorDestRow;
                     unsigned char* trueColorMaskPixel = trueColorMaskRow;
                     unsigned char* indexedPixel = indexedRow;
 
-                    for (int col = 0; col < v77; col++) {
+                    for (int col = 0; col < safeCols; col++) {
                         if (*indexedPixel != 0) {
                             // Force alpha to 255 for opaque tiles to prevent blending artifacts.
                             const uint32_t opaquePixel = *trueColorPixel | 0xFF000000u;
@@ -2264,6 +2316,7 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
                     trueColorBaseRow += rowAdvance;
                 }
 
+skip_logical_truecolor:
                 if (const TilePhysicalOverlayView* physicalView = tileGetPhysicalOverlayView()) {
                     TileIntensitySource intensitySource;
                     intensitySource.defaultIntensityIndex = intensityIndex;
@@ -2301,6 +2354,13 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
             frameData,
             static_cast<uint16_t>(std::clamp(frameWidth, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))),
             static_cast<uint16_t>(std::clamp(frameHeight, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))));
+
+        // Initialize intensity map region to ambient intensity to prevent reading stale/garbage values
+        // The triangle interpolation fills specific cells but may leave gaps that could be read
+        int ambientForInit = ambientIntensity;
+        for (int i = 0; i < 3280; i++) {
+            _intensity_map[i] = ambientForInit;
+        }
 
         for (int i = 0; i < 5; i++) {
             RightsideUpTriangle* triangle = &(_rightside_up_triangles[i]);
@@ -2418,6 +2478,8 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
         int v87 = 80 - v77;
 
         const int srcStride = trueColorView.width;
+        const int hdWidth = trueColorView.width;
+        const int hdHeight = trueColorView.height;
         const int stepX = hasTrueColor ? std::max(1, trueColorView.scaleX) : 1;
         const int stepY = hasTrueColor ? std::max(1, trueColorView.scaleY) : 1;
         const int rowAdvance = srcStride * stepY;
@@ -2425,6 +2487,18 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
         // This matches the physical overlay sampling for consistent rendering
         const int sampleOffsetX = (stepX > 1) ? (stepX / 2) : 0;
         const int sampleOffsetY = (stepY > 1) ? (stepY / 2) : 0;
+
+        // Calculate safe iteration bounds to prevent reading outside HD texture
+        int safeV76 = v76;
+        int safeV77 = v77;
+        if (hasTrueColor && hdWidth > 0 && hdHeight > 0) {
+            const int hdStartRow = v78 * stepY + sampleOffsetY;
+            const int hdStartCol = v79 * stepX + sampleOffsetX;
+            safeV76 = std::min(v76, (hdHeight - hdStartRow - 1) / stepY + 1);
+            safeV77 = std::min(v77, (hdWidth - hdStartCol - 1) / stepX + 1);
+            safeV76 = std::max(0, safeV76);
+            safeV77 = std::max(0, safeV77);
+        }
 
         const uint32_t* trueColorBaseRow = nullptr;
         uint32_t* trueColorDestRow = nullptr;
@@ -2435,11 +2509,13 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
             trueColorMaskRow = gTileWindowTrueColorMask + gTileWindowWidth * y + x;
         }
 
+        int currentRow = 0;
         while (--v76 != -1) {
             const uint32_t* trueColorSrcPixel = nullptr;
             uint32_t* trueColorDestPixel = nullptr;
             unsigned char* trueColorMaskPixel = nullptr;
-            if (hasTrueColor) {
+            const bool rowInBounds = currentRow < safeV76;
+            if (hasTrueColor && rowInBounds) {
                 trueColorSrcPixel = trueColorBaseRow + sampleOffsetX;
                 trueColorDestPixel = trueColorDestRow;
                 trueColorMaskPixel = trueColorMaskRow;
@@ -2450,18 +2526,18 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
                 if (paletteIndex != 0) {
                     int intensityIndex = *v68 >> 9;
                     *v66 = intensityColorTable[paletteIndex][intensityIndex];
-                    if (hasTrueColor) {
+                    if (hasTrueColor && rowInBounds && kk < safeV77) {
                         // Force alpha to 255 for opaque tiles to prevent blending artifacts.
                         const uint32_t opaquePixel = *trueColorSrcPixel | 0xFF000000u;
                         *trueColorDestPixel = colorApplyLightingToArgb(opaquePixel, intensityIndex);
                         *trueColorMaskPixel = 1;
-                        trueColorSrcPixel += stepX;
-                        trueColorDestPixel++;
-                        trueColorMaskPixel++;
                     }
-                } else if (hasTrueColor) {
-                    // Skip transparent pixels - don't erase previously rendered tiles.
-                    // Tiles overlap at diamond edges; erasing would create visible grid lines.
+                }
+                // Skip transparent pixels - don't erase previously rendered tiles.
+                // Tiles overlap at diamond edges; erasing would create visible grid lines.
+                
+                // Only advance HD pointers within safe bounds
+                if (hasTrueColor && rowInBounds && kk < safeV77) {
                     trueColorSrcPixel += stepX;
                     trueColorDestPixel++;
                     trueColorMaskPixel++;
@@ -2475,6 +2551,7 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
             v66 += v85;
             v68 += v87;
             v67 += v86;
+            currentRow++;
 
             if (hasTrueColor) {
                 trueColorDestRow += gTileWindowWidth;
@@ -2489,6 +2566,11 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
                 intensitySource.hasPerPixel = true;
                 intensitySource.data = &_intensity_map[160 + 80 * v78] + v79;
                 intensitySource.stride = 80;
+                // Calculate safe bounds for intensity map access
+                // The intensity map is 80 columns wide, so maxColumns = 80 - v79
+                // The intensity map has 41 rows, starting offset is 160 + 80*v78, so maxRows = 41 - 2 - v78 = 39 - v78
+                intensitySource.maxColumns = std::max(0, 80 - v79);
+                intensitySource.maxRows = std::max(0, 39 - v78);
                 tileBlitTrueColorOverlayPhysical(*physicalView,
                     trueColorView,
                     frameData + frameWidth * v78 + v79,

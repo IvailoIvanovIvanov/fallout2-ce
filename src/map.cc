@@ -718,6 +718,52 @@ static void mapScrollPhysicalTrueColorOverlay(int screenDx, int screenDy)
 
     scrollPlane(buffer.pixels);
     scrollPlane(buffer.mask);
+
+    // Clear the newly revealed edge regions to prevent stale pixels from showing
+    // When we scroll, the memmove shifts existing content but the exposed edges
+    // contain old data that must be cleared before new tiles are rendered
+    auto clearEdge = [&](int left, int top, int clearWidth, int clearHeight) {
+        if (clearWidth <= 0 || clearHeight <= 0 || left < 0 || top < 0) {
+            return;
+        }
+        if (left + clearWidth > width) {
+            clearWidth = width - left;
+        }
+        if (top + clearHeight > height) {
+            clearHeight = height - top;
+        }
+        if (clearWidth <= 0 || clearHeight <= 0) {
+            return;
+        }
+        for (int row = 0; row < clearHeight; row++) {
+            if (buffer.pixels != nullptr) {
+                uint32_t* pixelRow = buffer.pixels + (top + row) * pitch + left;
+                memset(pixelRow, 0, clearWidth * sizeof(uint32_t));
+            }
+            if (buffer.mask != nullptr) {
+                unsigned char* maskRow = buffer.mask + (top + row) * pitch + left;
+                memset(maskRow, 0, clearWidth);
+            }
+        }
+    };
+
+    // Clear horizontal edge (top or bottom)
+    if (physicalDy > 0) {
+        // Scrolled down - clear top edge
+        clearEdge(0, 0, width, physicalDy);
+    } else if (physicalDy < 0) {
+        // Scrolled up - clear bottom edge
+        clearEdge(0, height + physicalDy, width, -physicalDy);
+    }
+
+    // Clear vertical edge (left or right)
+    if (physicalDx > 0) {
+        // Scrolled right - clear left edge
+        clearEdge(0, 0, physicalDx, height);
+    } else if (physicalDx < 0) {
+        // Scrolled left - clear right edge
+        clearEdge(width + physicalDx, 0, -physicalDx, height);
+    }
 }
 // 0x4826C0
 int mapScroll(int dx, int dy)
@@ -869,6 +915,46 @@ int mapScroll(int dx, int dy)
             overlaySrc += overlayStep;
             maskDest += overlayStep;
             maskSrc += overlayStep;
+        }
+
+        // Clear the newly revealed edge regions in the logical overlay
+        auto clearLogicalEdge = [&](int left, int top, int clearWidth, int clearHeight) {
+            if (clearWidth <= 0 || clearHeight <= 0 || left < 0 || top < 0) {
+                return;
+            }
+            if (left + clearWidth > overlayPitch) {
+                clearWidth = overlayPitch - left;
+            }
+            if (top + clearHeight > overlayHeight) {
+                clearHeight = overlayHeight - top;
+            }
+            if (clearWidth <= 0 || clearHeight <= 0) {
+                return;
+            }
+            for (int row = 0; row < clearHeight; row++) {
+                uint32_t* pixelRow = overlay + (top + row) * overlayPitch + left;
+                unsigned char* maskRow = mask + (top + row) * overlayPitch + left;
+                memset(pixelRow, 0, clearWidth * sizeof(uint32_t));
+                memset(maskRow, 0, clearWidth);
+            }
+        };
+
+        // Clear horizontal edge (top or bottom)
+        if (screenDy > 0) {
+            // Scrolled down - clear top edge
+            clearLogicalEdge(0, 0, overlayPitch, screenDy);
+        } else if (screenDy < 0) {
+            // Scrolled up - clear bottom edge
+            clearLogicalEdge(0, overlayHeight + screenDy, overlayPitch, -screenDy);
+        }
+
+        // Clear vertical edge (left or right)
+        if (screenDx > 0) {
+            // Scrolled right - clear left edge
+            clearLogicalEdge(0, 0, screenDx, overlayHeight);
+        } else if (screenDx < 0) {
+            // Scrolled left - clear right edge
+            clearLogicalEdge(overlayPitch + screenDx, 0, -screenDx, overlayHeight);
         }
 
         mapScrollPhysicalTrueColorOverlay(screenDx, screenDy);
