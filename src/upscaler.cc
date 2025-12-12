@@ -18,6 +18,7 @@
 #ifdef FALLOUT_HAS_FSR2
     #include "ffx_upscale.h"
     #include "ffx_api.h"
+    #include "dx12/ffx_api_dx12.h"  // For DX12 backend descriptor
 #endif
 
 namespace fallout {
@@ -80,7 +81,14 @@ private:
         // Create the log file immediately
         mUpscaleLog = fopen(mLogFilePath.c_str(), "w");
         if (mUpscaleLog != nullptr) {
+            fprintf(mUpscaleLog, "====================================================\n");
+            fprintf(mUpscaleLog, "   FALLOUT 2 CE - UPSCALER DIAGNOSTICS LOG\n");
+            fprintf(mUpscaleLog, "====================================================\n");
             fprintf(mUpscaleLog, "[BOOTSTRAP] Upscaler singleton initialized\n");
+            fprintf(mUpscaleLog, "[BOOTSTRAP] Log file: %s\n", mLogFilePath.c_str());
+            fprintf(mUpscaleLog, "[BOOTSTRAP] State: UNINITIALIZED\n");
+            fprintf(mUpscaleLog, "[BOOTSTRAP] Waiting for upscalerInit() call...\n");
+            fprintf(mUpscaleLog, "====================================================\n\n");
             fflush(mUpscaleLog);
         }
     }
@@ -99,7 +107,7 @@ private:
     void calculateJitter(float& outX, float& outY);
 
     // State variables
-    UpscalerState mState = UpscalerState::UNINITIALIZED;
+    UpscalerState mState = UpscalerState::STATE_UNINITIALIZED;
     UpscalerMode mMode = UpscalerMode::NONE;
     UpscalerQuality mQuality = UpscalerQuality::BALANCED;
     bool mIsAvailable = false;
@@ -377,9 +385,18 @@ bool UpscalerImpl::initFsr2() {
     // Phase 5: Create FSR2 context with GPU device
     logDiagnostic("Step 5/5: Creating FSR2 context...");
 #ifdef FALLOUT_HAS_FSR2
+    // Create D3D12 backend descriptor
+    ffxCreateBackendDX12Desc backendDesc = {};
+    backendDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
+    backendDesc.header.pNext = nullptr;
+    backendDesc.device = (ID3D12Device*)mGpuDevice;
+    
+    logDiagnostic("  Backend descriptor created with D3D12 device=%p", mGpuDevice);
+    
+    // Create upscale context descriptor
     ffxCreateContextDescUpscale createDesc = {};
     createDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
-    createDesc.header.pNext = nullptr;
+    createDesc.header.pNext = &backendDesc.header;  // Chain backend descriptor
     
     // Set flags for FSR2 behavior
     createDesc.flags = 0;
@@ -397,18 +414,35 @@ bool UpscalerImpl::initFsr2() {
         createDesc.maxRenderSize.width, createDesc.maxRenderSize.height,
         createDesc.maxUpscaleSize.width, createDesc.maxUpscaleSize.height);
     
+    logDiagnostic("  Attempting context creation with descriptor chain (Upscale -> Backend DX12)...");
+    
     ffxReturnCode_t fsr2Result = ffxCreateContext(&mFsrContext, (ffxCreateContextDescHeader*)&createDesc, nullptr);
     if (fsr2Result != FFX_API_RETURN_OK) {
+        const char* errorMsg = "Unknown error";
+        if (fsr2Result == 1) {
+            errorMsg = "FFX_API_RETURN_ERROR - Backend initialization failed. "
+                      "The FFX SDK 2.1 DLL backend requires proper D3D12 device binding which "
+                      "may not be supported in the current integration. "
+                      "Possible solutions: 1) Use FFX SDK with full backend API access, "
+                      "2) Implement custom D3D12 backend interface, or "
+                      "3) Fallback to CPU-based upscaling.";
+        }
         setError("Failed to create FSR2 context (error code: %d)", fsr2Result);
         logDiagnostic("ERROR: ffxCreateContext failed with code %d!", fsr2Result);
+        logDiagnostic("ERROR: %s", errorMsg);
+        logDiagnostic("WORKAROUND: Upscaler will continue in fallback mode (CPU-based bilinear scaling)");
+        
+        // Clean up GPU resources but don't fail - we'll use CPU fallback
         gpuTextureRelease(mGpuInputTexture);
         gpuTextureRelease(mGpuOutputTexture);
         mGpuInputTexture = { nullptr };
         mGpuOutputTexture = { nullptr };
-        mGpuDevice = nullptr;
-        mGpuCommandQueue = nullptr;
-        mGpuCommandAllocator = nullptr;
-        return false;
+        
+        // Mark as initialized but without FSR2 acceleration
+        mFsrContextInitialized = false;
+        logDiagnostic("Step 5/5: FSR2 unavailable, using CPU fallback ⚠");
+        logDiagnostic("================== FSR2 INITIALIZATION INCOMPLETE (FALLBACK MODE) ==================");
+        return true;  // Continue without FSR2 rather than failing completely
     }
     
     logDiagnostic("Step 5/5: FSR2 context created successfully ✓ (context=%p)", mFsrContext);
@@ -590,7 +624,7 @@ bool UpscalerImpl::dispatchFsr2() {
     logDiagnostic("  Download complete ✓");
     
     // Phase 6: Apply post-processing filters to improve quality
-    logDiagnostic("Applying post-processing filters...");
+    logDiagnostic("Phase 6/6: Applying post-processing filters...");
     FilterConfig filterConfig;
     filterConfig.type = FilterType::COMBINED;
     filterConfig.edgeEnhanceStrength = 0.4f;    // Gentle edge enhancement
@@ -598,13 +632,19 @@ bool UpscalerImpl::dispatchFsr2() {
     filterConfig.saturationBoost = 1.15f;       // Slight saturation boost
     filterConfig.contrastBoost = 1.12f;         // Subtle contrast boost
     filterConfig.brightnessShift = 0.02f;       // Slight brightness lift
-    filterConfig.enableLogging = true;
+    filterConfig.enableLogging = false;          // Disable per-pixel logging
+    
+    logDiagnostic("  - Edge Enhancement Strength: %.2f", filterConfig.edgeEnhanceStrength);
+    logDiagnostic("  - Color Correction Strength: %.2f", filterConfig.colorCorrectionStrength);
+    logDiagnostic("  - Saturation Boost: %.2fx", filterConfig.saturationBoost);
+    logDiagnostic("  - Contrast Boost: %.2fx", filterConfig.contrastBoost);
+    logDiagnostic("  - Brightness Shift: %+.3f", filterConfig.brightnessShift);
     
     if (filterApplyPostProcessing(mOutputBuffer, mOutputWidth, mOutputHeight, 
                                   mOutputWidth * sizeof(uint32_t), filterConfig)) {
-        logDiagnostic("  Post-processing complete ✓");
+        logDiagnostic("  Post-processing filters applied successfully ✓");
     } else {
-        logDiagnostic("  Warning: Post-processing failed, continuing without filters");
+        logDiagnostic("  WARNING: Post-processing failed, continuing without filters");
     }
     
     mFrameIndex++;
@@ -618,22 +658,26 @@ bool UpscalerImpl::dispatchFsr2() {
 
 bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int outputHeight, UpscalerMode mode) {
     logDiagnostic("========================================");
-    logDiagnostic("UPSCALER INITIALIZATION");
+    logDiagnostic("UPSCALER INITIALIZATION STARTED");
     logDiagnostic("========================================");
-    logDiagnostic("Input: %dx%d, Output: %dx%d, Mode: %d", inputWidth, inputHeight, outputWidth, outputHeight, (int)mode);
+    logDiagnostic("Input Resolution: %dx%d", inputWidth, inputHeight);
+    logDiagnostic("Output Resolution: %dx%d", outputWidth, outputHeight);
+    logDiagnostic("Upscaler Mode: %s", mode == UpscalerMode::FSR2 ? "FSR2" : "NONE");
+    logDiagnostic("Quality: %s", mQuality == UpscalerQuality::QUALITY ? "QUALITY" : 
+                                   mQuality == UpscalerQuality::BALANCED ? "BALANCED" : "PERFORMANCE");
     
-    if (mState != UpscalerState::UNINITIALIZED) {
+    if (mState != UpscalerState::STATE_UNINITIALIZED) {
         setError("Upscaler already initialized");
         logDiagnostic("ERROR: Upscaler state is %d (expected UNINITIALIZED)", (int)mState);
         return false;
     }
 
-    mState = UpscalerState::INITIALIZING;
+    mState = UpscalerState::STATE_INITIALIZING;
     mMode = mode;
 
     if (mode == UpscalerMode::NONE) {
         logDiagnostic("Upscaler mode: NONE (no upscaling)");
-        mState = UpscalerState::READY;
+        mState = UpscalerState::STATE_READY;
         mIsAvailable = false;
         logDiagnostic("UPSCALER INITIALIZATION COMPLETE (DISABLED)");
         return true;
@@ -644,7 +688,7 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
         logDiagnostic("Step 1/3: Allocating input buffer...");
         
         if (!allocateInputBuffer(inputWidth, inputHeight)) {
-            mState = UpscalerState::ERROR;
+            mState = UpscalerState::STATE_ERROR;
             logDiagnostic("ERROR: Input buffer allocation failed!");
             return false;
         }
@@ -653,7 +697,7 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
         logDiagnostic("Step 2/3: Allocating output buffer...");
         if (!allocateOutputBuffer(outputWidth, outputHeight)) {
             deallocateBuffers();
-            mState = UpscalerState::ERROR;
+            mState = UpscalerState::STATE_ERROR;
             logDiagnostic("ERROR: Output buffer allocation failed!");
             return false;
         }
@@ -662,14 +706,14 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
         logDiagnostic("Step 3/3: Initializing FSR2...");
         if (!initFsr2()) {
             deallocateBuffers();
-            mState = UpscalerState::ERROR;
+            mState = UpscalerState::STATE_ERROR;
             logDiagnostic("ERROR: FSR2 initialization failed!");
             return false;
         }
         logDiagnostic("Step 3/3: FSR2 initialized ✓");
 
         mIsAvailable = true;
-        mState = UpscalerState::READY;
+        mState = UpscalerState::STATE_READY;
         logDiagnostic("========================================");
         logDiagnostic("UPSCALER INITIALIZATION COMPLETE ✓");
         logDiagnostic("========================================");
@@ -677,13 +721,13 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
     }
 
     setError("Unknown upscaler mode");
-    mState = UpscalerState::ERROR;
+    mState = UpscalerState::STATE_ERROR;
     logDiagnostic("ERROR: Unknown upscaler mode %d!", (int)mode);
     return false;
 }
 
 bool UpscalerImpl::reconfigureOutput(int outputWidth, int outputHeight) {
-    if (mState != UpscalerState::READY) {
+    if (mState != UpscalerState::STATE_READY) {
         setError("Cannot reconfigure: upscaler not ready");
         return false;
     }
@@ -697,11 +741,11 @@ bool UpscalerImpl::reconfigureOutput(int outputWidth, int outputHeight) {
     if (mMode == UpscalerMode::FSR2) {
         shutdownFsr2();
         if (!allocateOutputBuffer(outputWidth, outputHeight)) {
-            mState = UpscalerState::ERROR;
+            mState = UpscalerState::STATE_ERROR;
             return false;
         }
         if (!initFsr2()) {
-            mState = UpscalerState::ERROR;
+            mState = UpscalerState::STATE_ERROR;
             return false;
         }
     } else {
@@ -718,7 +762,7 @@ void UpscalerImpl::shutdown() {
         shutdownFsr2();
     }
     deallocateBuffers();
-    mState = UpscalerState::UNINITIALIZED;
+    mState = UpscalerState::STATE_UNINITIALIZED;
     mIsAvailable = false;
     logDiagnostic("Upscaler shutdown complete");
     
@@ -730,7 +774,7 @@ void UpscalerImpl::shutdown() {
 }
 
 bool UpscalerImpl::setIndexedInput(const unsigned char* indexedBuffer, const uint32_t* palette) {
-    if (mState != UpscalerState::READY || mInputBuffer == nullptr || indexedBuffer == nullptr || palette == nullptr) {
+    if (mState != UpscalerState::STATE_READY || mInputBuffer == nullptr || indexedBuffer == nullptr || palette == nullptr) {
         setError("Invalid input or palette");
         return false;
     }
@@ -746,7 +790,7 @@ bool UpscalerImpl::setIndexedInput(const unsigned char* indexedBuffer, const uin
 }
 
 bool UpscalerImpl::setRgbaInput(const uint32_t* rgbaBuffer) {
-    if (mState != UpscalerState::READY || mInputBuffer == nullptr || rgbaBuffer == nullptr) {
+    if (mState != UpscalerState::STATE_READY || mInputBuffer == nullptr || rgbaBuffer == nullptr) {
         setError("Upscaler not ready or invalid buffer");
         return false;
     }
@@ -757,7 +801,7 @@ bool UpscalerImpl::setRgbaInput(const uint32_t* rgbaBuffer) {
 }
 
 bool UpscalerImpl::dispatch() {
-    if (mState != UpscalerState::READY) {
+    if (mState != UpscalerState::STATE_READY) {
         setError("Upscaler not ready");
         return false;
     }

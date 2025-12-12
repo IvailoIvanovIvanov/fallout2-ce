@@ -20,10 +20,10 @@ enum class UpscalerQuality {
 
 // Upscaler state enumeration
 enum class UpscalerState {
-    UNINITIALIZED,
-    INITIALIZING,
-    READY,
-    ERROR,
+    STATE_UNINITIALIZED,
+    STATE_INITIALIZING,
+    STATE_READY,
+    STATE_ERROR,
 };
 
 // Forward declaration for opaque implementation

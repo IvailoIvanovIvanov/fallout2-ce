@@ -22,6 +22,7 @@
 #include "render_commands.h"
 #include "render_display_orchestrator.h"
 #include "settings.h"
+#include "upscaler.h"
 #include "virtual_input.h"
 #include "win32.h"
 #include "window_manager.h"
@@ -848,6 +849,14 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
         }
 
         syncPhysicalSizeWithRenderer();
+        
+        // Initialize upscaler with game resolution
+        // Input: 640x480 (classic Fallout 2 resolution)
+        // Output: Physical window resolution
+        diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Initializing upscaler: 640x480 -> %dx%d", physicalWidth, physicalHeight);
+        if (upscalerInit(640, 480, physicalWidth, physicalHeight, UpscalerMode::FSR2) != 0) {
+            diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Upscaler initialization failed, continuing without upscaling");
+        }
     } else {
         int physicalWidth;
         int physicalHeight;
