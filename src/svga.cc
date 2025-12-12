@@ -14,6 +14,7 @@
 #include "display_scaler.h"
 #include "draw.h"
 #include "geometry.h"
+#include "gpu_device.h"
 #include "interface.h"
 #include "memory.h"
 #include "mouse.h"
@@ -819,10 +820,11 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
         // Phase 7c: VSync awareness - when VSync is on, FPS limiter skips throttling
         sharedFpsLimiter.setVSyncEnabled(settings.system.vsync);
         
-        SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+        // Phase 7d: Enable Direct3D 12 rendering on Windows for GPU compute access
+        SDL_SetHint(SDL_HINT_RENDER_DRIVER, "direct3d12");
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
 
-        Uint32 windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI;
+        Uint32 windowFlags = SDL_WINDOW_ALLOW_HIGHDPI;
 
         if (fullscreen) {
             windowFlags |= SDL_WINDOW_FULLSCREEN;
@@ -1759,11 +1761,25 @@ static bool createRenderer()
         gGpuOverlayEnabled = false;
     }
 
+    // Phase 8: Initialize GPU device for compute operations (e.g., AI upscaling)
+    if (settings.system.gpu_scaling || settings.system.virtual_adapter) {
+        if (!gpuDeviceInit()) {
+            diagnosticsLog(DiagnosticsLevel::Info, "RENDERER",
+                "GPU device initialization failed, GPU compute operations unavailable");
+        } else if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info, "RENDERER",
+                "GPU device initialized for compute operations");
+        }
+    }
+
     return true;
 }
 
 static void destroyRenderer()
 {
+    // Phase 8: Shutdown GPU device
+    gpuDeviceShutdown();
+
     // Phase 7: Destroy GPU overlay texture
     if (gSdlOverlayTexture != nullptr) {
         SDL_DestroyTexture(gSdlOverlayTexture);

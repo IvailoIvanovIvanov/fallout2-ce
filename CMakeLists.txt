@@ -121,6 +121,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/geometry.h"
     "src/graph_lib.cc"
     "src/graph_lib.h"
+    "src/gpu_device.cc"
+    "src/gpu_device.h"
     "src/heap.cc"
     "src/heap.h"
     "src/input.cc"
@@ -395,6 +397,15 @@ target_include_directories(${EXECUTABLE_NAME} PRIVATE ${ZLIB_INCLUDE_DIRS})
 target_link_libraries(${EXECUTABLE_NAME} ${SDL2_LIBRARIES})
 target_include_directories(${EXECUTABLE_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
 target_include_directories(${EXECUTABLE_NAME} PRIVATE "${CMAKE_SOURCE_DIR}/third_party/stb")
+
+# Windows D3D12 support for GPU operations
+if(WIN32)
+    target_link_libraries(${EXECUTABLE_NAME} 
+        d3d12.lib
+        dxgi.lib
+        dxguid.lib
+    )
+endif()
 
 # FidelityFX SDK integration
 if(WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/third_party/fidelityfx-sdk")
