@@ -1,0 +1,135 @@
+====================================================
+UPSCALER CONFIGURATION EXAMPLE FOR fallout2.cfg
+====================================================
+
+Add these settings to the [system] section of your fallout2.cfg file
+to configure the FSR2 upscaler and post-processing filters.
+
+[system]
+; Upscaler mode: 0=Disabled, 1=FSR2 (AMD FidelityFX Super Resolution 2)
+upscaler_mode=1
+
+; Upscaler quality preset: 0=Quality (best), 1=Balanced, 2=Performance (fastest)
+upscaler_quality=1
+
+; Sharpness level: 0.0 to 1.0 (0.0=no sharpening, 1.0=maximum sharpening)
+; Recommended: 0.3-0.7 for retro pixel art, 0.5 is balanced
+upscaler_sharpness=0.5
+
+; Edge enhancement strength: 0.0 to 1.0
+; Enhances edges after upscaling for sharper details
+; Recommended: 0.3-0.5 for pixel art
+upscaler_filter_edge=0.4
+
+; Color correction strength: 0.0 to 1.0
+; Applies subtle color adjustments to improve vibrancy
+; Recommended: 0.2-0.3
+upscaler_filter_color=0.25
+
+; Saturation multiplier: 0.5 to 2.0
+; Values >1.0 boost saturation, <1.0 reduce it
+; Recommended: 1.1-1.2 for slight boost
+upscaler_filter_saturation=1.15
+
+; Contrast multiplier: 0.5 to 2.0
+; Values >1.0 increase contrast, <1.0 reduce it
+; Recommended: 1.1-1.15 for subtle enhancement
+upscaler_filter_contrast=1.12
+
+; Verbose logging: 0=disabled, 1=enabled
+; When enabled, logs detailed frame-by-frame upscaling information to upscale.log
+; Useful for debugging or fine-tuning, but creates larger log files
+; Recommended: 0 (disabled) for normal gameplay
+upscaler_verbose_log=0
+
+
+====================================================
+CONFIGURATION TIPS
+====================================================
+
+1. START WITH DEFAULTS
+   The default values are optimized for Fallout 2's pixel art style.
+   Only adjust if you notice specific issues.
+
+2. SHARPNESS TUNING
+   - Too low (0.0-0.3): Softer/blurry image
+   - Balanced (0.4-0.6): Clear with good detail
+   - Too high (0.7-1.0): May introduce artifacts or oversharpening
+
+3. FILTER TUNING
+   - Edge enhancement affects detail sharpness
+   - Color correction affects overall vibrancy
+   - Saturation affects color intensity
+   - Contrast affects brightness separation
+
+4. PERFORMANCE
+   - Quality mode: Best visual quality, slightly slower
+   - Balanced mode: Good balance (recommended)
+   - Performance mode: Fastest, slight quality reduction
+
+5. VERBOSE LOGGING
+   - Enable temporarily to monitor upscaler behavior
+   - Disable during normal gameplay to reduce overhead
+   - Check upscale.log in game directory for diagnostic information
+
+6. LIVE RELOAD
+   - Changes to fallout2.cfg require game restart
+   - Or use upscalerReloadConfig() API function if exposed in console
+
+
+====================================================
+EXAMPLE CONFIGURATIONS
+====================================================
+
+CRISP PIXEL ART (Sharp edges, vivid colors):
+upscaler_sharpness=0.65
+upscaler_filter_edge=0.5
+upscaler_filter_saturation=1.2
+upscaler_filter_contrast=1.15
+
+SOFT RETRO LOOK (Smoothed, CRT-like):
+upscaler_sharpness=0.35
+upscaler_filter_edge=0.25
+upscaler_filter_saturation=1.05
+upscaler_filter_contrast=1.08
+
+MAXIMUM QUALITY (Best possible upscaling):
+upscaler_quality=0
+upscaler_sharpness=0.5
+upscaler_filter_edge=0.4
+upscaler_filter_saturation=1.12
+upscaler_filter_contrast=1.10
+
+MAXIMUM PERFORMANCE (Fastest):
+upscaler_quality=2
+upscaler_sharpness=0.4
+upscaler_filter_edge=0.3
+upscaler_filter_saturation=1.1
+upscaler_filter_contrast=1.05
+
+
+====================================================
+TROUBLESHOOTING
+====================================================
+
+Q: Upscaler not working?
+A: Check upscale.log for errors. Ensure upscaler_mode=1
+
+Q: Image too blurry?
+A: Increase upscaler_sharpness and upscaler_filter_edge
+
+Q: Image too sharp/artifacts?
+A: Decrease upscaler_sharpness and upscaler_filter_edge
+
+Q: Colors look washed out?
+A: Increase upscaler_filter_saturation and upscaler_filter_contrast
+
+Q: Colors too vibrant?
+A: Decrease upscaler_filter_saturation
+
+Q: Need to debug upscaler?
+A: Set upscaler_verbose_log=1 and check upscale.log
+
+Q: Configuration not loading?
+A: Ensure settings are in [system] section, check formatting
+

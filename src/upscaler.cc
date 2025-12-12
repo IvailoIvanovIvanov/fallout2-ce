@@ -13,6 +13,7 @@
 #include "gpu_texture.h"
 #include "memory.h"
 #include "upscaler_filters.h"
+#include "game_config.h"
 
 // FidelityFX SDK 2.1 headers (optional, only if FALLOUT_HAS_FSR2 is defined)
 #ifdef FALLOUT_HAS_FSR2
@@ -63,6 +64,23 @@ public:
     bool setQuality(UpscalerQuality quality);
     bool setSharpness(float sharpness);
     void setMotionVectorsEnabled(bool enabled) { mMotionVectorsEnabled = enabled; }
+    
+    void setFilterParams(float edge, float color, float sat, float con) {
+        mFilterEdgeStrength = edge;
+        mFilterColorStrength = color;
+        mFilterSaturation = sat;
+        mFilterContrast = con;
+        saveConfiguration();
+    }
+    
+    void setVerboseLogging(bool enabled) {
+        mVerboseLogging = enabled;
+        saveConfiguration();
+    }
+    
+    void reloadConfig() {
+        loadConfiguration();
+    }
 
     bool isAvailable() const { return mIsAvailable; }
     const char* getLastError() const { return mLastError; }
@@ -95,6 +113,9 @@ private:
 
     void logDiagnostic(const char* format, ...);
     void setError(const char* format, ...);
+    
+    void loadConfiguration();
+    void saveConfiguration();
     
     bool initFsr2();
     bool shutdownFsr2();
@@ -142,6 +163,13 @@ private:
     bool mMotionVectorsEnabled = false;
     float mSharpness = 0.5f;
     uint32_t mFrameIndex = 0;
+    
+    // Filter configuration (loaded from config file)
+    float mFilterEdgeStrength = 0.4f;
+    float mFilterColorStrength = 0.25f;
+    float mFilterSaturation = 1.15f;
+    float mFilterContrast = 1.12f;
+    bool mVerboseLogging = false;
 
     // Error tracking
     char mLastError[ERROR_MSG_SIZE] = {};
@@ -209,6 +237,118 @@ void UpscalerImpl::setError(const char* format, ...) {
     va_end(args);
     // Log as warning without using enum class qualifier
     diagnosticsLog(static_cast<DiagnosticsLevel>(1), "UPSCALER", "%s", mLastError);
+}
+
+// ============================================================================
+// Configuration Management
+// ============================================================================
+
+void UpscalerImpl::loadConfiguration() {
+    if (!gGameConfigInitialized) {
+        logDiagnostic("Config: Game config not initialized yet, using defaults");
+        return;
+    }
+    
+    logDiagnostic("========================================");
+    logDiagnostic("LOADING UPSCALER CONFIGURATION");
+    logDiagnostic("========================================");
+    
+    // Load upscaler mode (0=NONE, 1=FSR2)
+    int modeValue = 1; // Default to FSR2
+    if (configGetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_MODE_KEY, &modeValue)) {
+        logDiagnostic("Config: upscaler_mode = %d (0=NONE, 1=FSR2)", modeValue);
+    } else {
+        logDiagnostic("Config: upscaler_mode not found, using default FSR2");
+    }
+    
+    // Load upscaler quality (0=QUALITY, 1=BALANCED, 2=PERFORMANCE)
+    int qualityValue = 1; // Default to BALANCED
+    if (configGetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_QUALITY_KEY, &qualityValue)) {
+        mQuality = static_cast<UpscalerQuality>(qualityValue);
+        logDiagnostic("Config: upscaler_quality = %d (0=QUALITY, 1=BALANCED, 2=PERFORMANCE)", qualityValue);
+    } else {
+        logDiagnostic("Config: upscaler_quality not found, using default BALANCED");
+    }
+    
+    // Load sharpness (0.0-1.0)
+    double sharpnessValue = 0.5;
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_SHARPNESS_KEY, &sharpnessValue)) {
+        mSharpness = static_cast<float>(sharpnessValue);
+        logDiagnostic("Config: upscaler_sharpness = %.2f", mSharpness);
+    } else {
+        logDiagnostic("Config: upscaler_sharpness not found, using default 0.5");
+    }
+    
+    // Load filter parameters
+    double edgeValue = 0.4;
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_EDGE_KEY, &edgeValue)) {
+        mFilterEdgeStrength = static_cast<float>(edgeValue);
+        logDiagnostic("Config: upscaler_filter_edge = %.2f", mFilterEdgeStrength);
+    } else {
+        logDiagnostic("Config: upscaler_filter_edge not found, using default 0.4");
+    }
+    
+    double colorValue = 0.25;
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_COLOR_KEY, &colorValue)) {
+        mFilterColorStrength = static_cast<float>(colorValue);
+        logDiagnostic("Config: upscaler_filter_color = %.2f", mFilterColorStrength);
+    } else {
+        logDiagnostic("Config: upscaler_filter_color not found, using default 0.25");
+    }
+    
+    double saturationValue = 1.15;
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_SATURATION_KEY, &saturationValue)) {
+        mFilterSaturation = static_cast<float>(saturationValue);
+        logDiagnostic("Config: upscaler_filter_saturation = %.2f", mFilterSaturation);
+    } else {
+        logDiagnostic("Config: upscaler_filter_saturation not found, using default 1.15");
+    }
+    
+    double contrastValue = 1.12;
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_CONTRAST_KEY, &contrastValue)) {
+        mFilterContrast = static_cast<float>(contrastValue);
+        logDiagnostic("Config: upscaler_filter_contrast = %.2f", mFilterContrast);
+    } else {
+        logDiagnostic("Config: upscaler_filter_contrast not found, using default 1.12");
+    }
+    
+    // Load verbose logging flag
+    bool verboseValue = false;
+    if (configGetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_VERBOSE_LOG_KEY, &verboseValue)) {
+        mVerboseLogging = verboseValue;
+        logDiagnostic("Config: upscaler_verbose_log = %s", mVerboseLogging ? "true" : "false");
+    } else {
+        logDiagnostic("Config: upscaler_verbose_log not found, using default false");
+    }
+    
+    logDiagnostic("========================================");
+    logDiagnostic("CONFIGURATION LOADED");
+    logDiagnostic("========================================\n");
+}
+
+void UpscalerImpl::saveConfiguration() {
+    if (!gGameConfigInitialized) {
+        logDiagnostic("Config: Cannot save - game config not initialized");
+        return;
+    }
+    
+    logDiagnostic("Saving upscaler configuration to fallout2.cfg...");
+    
+    // Save current settings
+    configSetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_MODE_KEY, static_cast<int>(mMode));
+    configSetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_QUALITY_KEY, static_cast<int>(mQuality));
+    configSetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_SHARPNESS_KEY, mSharpness);
+    configSetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_EDGE_KEY, mFilterEdgeStrength);
+    configSetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_COLOR_KEY, mFilterColorStrength);
+    configSetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_SATURATION_KEY, mFilterSaturation);
+    configSetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_CONTRAST_KEY, mFilterContrast);
+    configSetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_VERBOSE_LOG_KEY, mVerboseLogging);
+    
+    if (gameConfigSave()) {
+        logDiagnostic("Configuration saved successfully");
+    } else {
+        logDiagnostic("WARNING: Failed to save configuration");
+    }
 }
 
 // ============================================================================
@@ -539,7 +679,9 @@ bool UpscalerImpl::dispatchFsr2() {
         dispatchDesc.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
         dispatchDesc.commandList = nullptr;  // Managed by FFX internally via GPU device
         
-        logDiagnostic("  Setting up input texture binding...");
+        if (mVerboseLogging) {
+            logDiagnostic("  Setting up input texture binding...");
+        }
         // Bind input texture (color) - prepare FfxApiResource
         ID3D12Resource* inputResource = gpuTextureGetResource(mGpuInputTexture);
         if (inputResource == nullptr) {
@@ -549,9 +691,13 @@ bool UpscalerImpl::dispatchFsr2() {
         }
         dispatchDesc.color.resource = inputResource;
         dispatchDesc.color.state = FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ;
-        logDiagnostic("    Input resource: %p ✓", inputResource);
+        if (mVerboseLogging) {
+            logDiagnostic("    Input resource: %p ✓", inputResource);
+        }
         
-        logDiagnostic("  Setting up output texture binding...");
+        if (mVerboseLogging) {
+            logDiagnostic("  Setting up output texture binding...");
+        }
         // Bind output texture - prepare FfxApiResource
         ID3D12Resource* outputResource = gpuTextureGetResource(mGpuOutputTexture);
         if (outputResource == nullptr) {
@@ -561,10 +707,14 @@ bool UpscalerImpl::dispatchFsr2() {
         }
         dispatchDesc.output.resource = outputResource;
         dispatchDesc.output.state = FFX_API_RESOURCE_STATE_UNORDERED_ACCESS;
-        logDiagnostic("    Output resource: %p ✓", outputResource);
+        if (mVerboseLogging) {
+            logDiagnostic("    Output resource: %p ✓", outputResource);
+        }
         
         // Set FSR2 parameters
-        logDiagnostic("  Configuring FSR2 parameters...");
+        if (mVerboseLogging) {
+            logDiagnostic("  Configuring FSR2 parameters...");
+        }
         float jitterX = 0.0f, jitterY = 0.0f;
         calculateJitter(jitterX, jitterY);
         dispatchDesc.jitterOffset.x = jitterX;
@@ -574,8 +724,10 @@ bool UpscalerImpl::dispatchFsr2() {
         dispatchDesc.preExposure = 1.0f;          // Default pre-exposure
         dispatchDesc.sharpness = mSharpness;      // Quality-based sharpness
         dispatchDesc.enableSharpening = (mSharpness > 0.0f);
-        logDiagnostic("    Jitter offset: (%.4f, %.4f)", jitterX, jitterY);
-        logDiagnostic("    Sharpness: %.2f, Enabled: %s", mSharpness, dispatchDesc.enableSharpening ? "yes" : "no");
+        if (mVerboseLogging) {
+            logDiagnostic("    Jitter offset: (%.4f, %.4f)", jitterX, jitterY);
+            logDiagnostic("    Sharpness: %.2f, Enabled: %s", mSharpness, dispatchDesc.enableSharpening ? "yes" : "no");
+        }
         
         // Set render and target size
         dispatchDesc.renderSize.width = mInputWidth;
@@ -624,31 +776,41 @@ bool UpscalerImpl::dispatchFsr2() {
     logDiagnostic("  Download complete ✓");
     
     // Phase 6: Apply post-processing filters to improve quality
-    logDiagnostic("Phase 6/6: Applying post-processing filters...");
+    if (mVerboseLogging) {
+        logDiagnostic("Phase 6/6: Applying post-processing filters...");
+    }
+    
     FilterConfig filterConfig;
     filterConfig.type = FilterType::COMBINED;
-    filterConfig.edgeEnhanceStrength = 0.4f;    // Gentle edge enhancement
-    filterConfig.colorCorrectionStrength = 0.25f; // Subtle color correction
-    filterConfig.saturationBoost = 1.15f;       // Slight saturation boost
-    filterConfig.contrastBoost = 1.12f;         // Subtle contrast boost
+    filterConfig.edgeEnhanceStrength = mFilterEdgeStrength;
+    filterConfig.colorCorrectionStrength = mFilterColorStrength;
+    filterConfig.saturationBoost = mFilterSaturation;
+    filterConfig.contrastBoost = mFilterContrast;
     filterConfig.brightnessShift = 0.02f;       // Slight brightness lift
-    filterConfig.enableLogging = false;          // Disable per-pixel logging
+    filterConfig.enableLogging = mVerboseLogging;
     
-    logDiagnostic("  - Edge Enhancement Strength: %.2f", filterConfig.edgeEnhanceStrength);
-    logDiagnostic("  - Color Correction Strength: %.2f", filterConfig.colorCorrectionStrength);
-    logDiagnostic("  - Saturation Boost: %.2fx", filterConfig.saturationBoost);
-    logDiagnostic("  - Contrast Boost: %.2fx", filterConfig.contrastBoost);
-    logDiagnostic("  - Brightness Shift: %+.3f", filterConfig.brightnessShift);
+    if (mVerboseLogging) {
+        logDiagnostic("  Filter Configuration (from config file):");
+        logDiagnostic("  - Edge Enhancement Strength: %.2f", filterConfig.edgeEnhanceStrength);
+        logDiagnostic("  - Color Correction Strength: %.2f", filterConfig.colorCorrectionStrength);
+        logDiagnostic("  - Saturation Boost: %.2fx", filterConfig.saturationBoost);
+        logDiagnostic("  - Contrast Boost: %.2fx", filterConfig.contrastBoost);
+        logDiagnostic("  - Brightness Shift: %+.3f", filterConfig.brightnessShift);
+    }
     
     if (filterApplyPostProcessing(mOutputBuffer, mOutputWidth, mOutputHeight, 
                                   mOutputWidth * sizeof(uint32_t), filterConfig)) {
-        logDiagnostic("  Post-processing filters applied successfully ✓");
+        if (mVerboseLogging) {
+            logDiagnostic("  Post-processing filters applied successfully ✓");
+        }
     } else {
         logDiagnostic("  WARNING: Post-processing failed, continuing without filters");
     }
     
     mFrameIndex++;
-    logDiagnostic("================== FSR2 DISPATCH COMPLETE ✓ (Frame %d) ==================", mFrameIndex - 1);
+    if (mVerboseLogging) {
+        logDiagnostic("================== FSR2 DISPATCH COMPLETE ✓ (Frame %d) ==================", mFrameIndex - 1);
+    }
     return true;
 }
 
@@ -660,11 +822,19 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
     logDiagnostic("========================================");
     logDiagnostic("UPSCALER INITIALIZATION STARTED");
     logDiagnostic("========================================");
+    
+    // Load configuration from fallout2.cfg
+    loadConfiguration();
+    
     logDiagnostic("Input Resolution: %dx%d", inputWidth, inputHeight);
     logDiagnostic("Output Resolution: %dx%d", outputWidth, outputHeight);
     logDiagnostic("Upscaler Mode: %s", mode == UpscalerMode::FSR2 ? "FSR2" : "NONE");
     logDiagnostic("Quality: %s", mQuality == UpscalerQuality::QUALITY ? "QUALITY" : 
                                    mQuality == UpscalerQuality::BALANCED ? "BALANCED" : "PERFORMANCE");
+    logDiagnostic("Sharpness: %.2f", mSharpness);
+    logDiagnostic("Filter Settings: Edge=%.2f, Color=%.2f, Saturation=%.2f, Contrast=%.2f",
+                  mFilterEdgeStrength, mFilterColorStrength, mFilterSaturation, mFilterContrast);
+    logDiagnostic("Verbose Logging: %s", mVerboseLogging ? "ENABLED" : "DISABLED");
     
     if (mState != UpscalerState::STATE_UNINITIALIZED) {
         setError("Upscaler already initialized");
@@ -881,6 +1051,19 @@ int upscalerSetSharpness(float sharpness) {
 
 void upscalerSetMotionVectorsEnabled(bool enabled) {
     upscalerGetImpl()->setMotionVectorsEnabled(enabled);
+}
+
+int upscalerSetFilterParams(float edgeStrength, float colorStrength, float saturation, float contrast) {
+    upscalerGetImpl()->setFilterParams(edgeStrength, colorStrength, saturation, contrast);
+    return 0;
+}
+
+void upscalerSetVerboseLogging(bool enabled) {
+    upscalerGetImpl()->setVerboseLogging(enabled);
+}
+
+void upscalerReloadConfig() {
+    upscalerGetImpl()->reloadConfig();
 }
 
 bool upscalerIsAvailable() {

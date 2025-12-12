@@ -149,6 +149,32 @@ int upscalerSetSharpness(float sharpness);
 void upscalerSetMotionVectorsEnabled(bool enabled);
 
 /**
+ * Set filter parameters for post-processing
+ * Values will be saved to config file
+ * 
+ * @param edgeStrength Edge enhancement [0.0-1.0]
+ * @param colorStrength Color correction [0.0-1.0]
+ * @param saturation Saturation multiplier [0.5-2.0]
+ * @param contrast Contrast multiplier [0.5-2.0]
+ * @return 0 on success, non-zero on failure
+ */
+int upscalerSetFilterParams(float edgeStrength, float colorStrength, float saturation, float contrast);
+
+/**
+ * Enable/disable verbose logging for upscaler operations
+ * When enabled, logs detailed frame-by-frame information
+ * 
+ * @param enabled true to enable verbose logging
+ */
+void upscalerSetVerboseLogging(bool enabled);
+
+/**
+ * Reload configuration from fallout2.cfg
+ * Useful for runtime configuration changes
+ */
+void upscalerReloadConfig();
+
+/**
  * Check if upscaler is available (FSR SDK properly initialized)
  * 
  * @return true if upscaler can be used, false if FSR unavailable/disabled
