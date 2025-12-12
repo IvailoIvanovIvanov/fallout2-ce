@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <ctime>
 #include <memory>
 #include <string>
 
@@ -9,6 +10,7 @@
 #include "gpu_device.h"
 #include "gpu_texture.h"
 #include "memory.h"
+#include "upscaler_filters.h"
 
 // FidelityFX SDK 2.1 headers (optional, only if FALLOUT_HAS_FSR2 is defined)
 #ifdef FALLOUT_HAS_FSR2
@@ -117,6 +119,9 @@ private:
 
     // Error tracking
     char mLastError[ERROR_MSG_SIZE] = {};
+    
+    // Upscaler logging
+    FILE* mUpscaleLog = nullptr;
 };
 
 // Global singleton accessor
@@ -135,6 +140,26 @@ void UpscalerImpl::logDiagnostic(const char* format, ...) {
     vsnprintf(buffer, sizeof(buffer), format, args);
     va_end(args);
     diagnosticsLog(DiagnosticsLevel::Info, "UPSCALER", "%s", buffer);
+    
+    // Also write to dedicated upscale.log file
+    if (mUpscaleLog == nullptr) {
+        mUpscaleLog = fopen("upscale.log", "w");
+    }
+    if (mUpscaleLog != nullptr) {
+        // Get current time for timestamp
+        time_t now = time(nullptr);
+        struct tm timeinfo;
+#if _WIN32
+        localtime_s(&timeinfo, &now);
+#else
+        localtime_r(&now, &timeinfo);
+#endif
+        char timestamp[32];
+        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &timeinfo);
+        
+        fprintf(mUpscaleLog, "[%s] [UPSCALER] %s\n", timestamp, buffer);
+        fflush(mUpscaleLog);
+    }
 }
 
 void UpscalerImpl::setError(const char* format, ...) {
@@ -532,6 +557,24 @@ bool UpscalerImpl::dispatchFsr2() {
     }
     logDiagnostic("  Download complete ✓");
     
+    // Phase 6: Apply post-processing filters to improve quality
+    logDiagnostic("Applying post-processing filters...");
+    FilterConfig filterConfig;
+    filterConfig.type = FilterType::COMBINED;
+    filterConfig.edgeEnhanceStrength = 0.4f;    // Gentle edge enhancement
+    filterConfig.colorCorrectionStrength = 0.25f; // Subtle color correction
+    filterConfig.saturationBoost = 1.15f;       // Slight saturation boost
+    filterConfig.contrastBoost = 1.12f;         // Subtle contrast boost
+    filterConfig.brightnessShift = 0.02f;       // Slight brightness lift
+    filterConfig.enableLogging = true;
+    
+    if (filterApplyPostProcessing(mOutputBuffer, mOutputWidth, mOutputHeight, 
+                                  mOutputWidth * sizeof(uint32_t), filterConfig)) {
+        logDiagnostic("  Post-processing complete ✓");
+    } else {
+        logDiagnostic("  Warning: Post-processing failed, continuing without filters");
+    }
+    
     mFrameIndex++;
     logDiagnostic("================== FSR2 DISPATCH COMPLETE ✓ (Frame %d) ==================", mFrameIndex - 1);
     return true;
@@ -646,6 +689,12 @@ void UpscalerImpl::shutdown() {
     mState = UpscalerState::UNINITIALIZED;
     mIsAvailable = false;
     logDiagnostic("Upscaler shutdown complete");
+    
+    // Close upscale.log file
+    if (mUpscaleLog != nullptr) {
+        fclose(mUpscaleLog);
+        mUpscaleLog = nullptr;
+    }
 }
 
 bool UpscalerImpl::setIndexedInput(const unsigned char* indexedBuffer, const uint32_t* palette) {

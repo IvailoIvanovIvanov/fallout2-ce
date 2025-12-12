@@ -32,17 +32,6 @@ int main(int argc, char* argv[])
     int rc;
 
 #if _WIN32
-    // Early logging to file for debugging startup issues
-    FILE* startupLog = fopen("fallout2ce_startup.log", "w");
-    if (startupLog != nullptr) {
-        fprintf(startupLog, "=== Fallout 2 CE Startup ===\n");
-        fprintf(startupLog, "argc=%d\n", argc);
-        for (int i = 0; i < argc; i++) {
-            fprintf(startupLog, "argv[%d]=%s\n", i, argv[i]);
-        }
-        fflush(startupLog);
-    }
-
     // Enable Per-Monitor DPI awareness so SDL gets the true native resolution
     // This must be done before any window creation (including SDL_Init)
     // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ((DPI_AWARENESS_CONTEXT)-4)
@@ -59,14 +48,12 @@ int main(int argc, char* argv[])
             if (setDpiContext != nullptr) {
                 // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
                 setDpiContext((void*)-4);
-                if (startupLog) fprintf(startupLog, "DPI awareness context set (v2)\n");
             } else {
                 // Fallback for older Windows versions
                 SetProcessDPIAwareProc setDpiAware = 
                     (SetProcessDPIAwareProc)GetProcAddress(user32, "SetProcessDPIAware");
                 if (setDpiAware != nullptr) {
                     setDpiAware();
-                    if (startupLog) fprintf(startupLog, "DPI awareness set (v1)\n");
                 }
             }
         }
@@ -74,15 +61,7 @@ int main(int argc, char* argv[])
 
     GNW95_mutex = CreateMutexA(0, TRUE, "GNW95MUTEX");
     DWORD mutexError = GetLastError();
-    if (startupLog) {
-        fprintf(startupLog, "Mutex creation: error=%lu\n", mutexError);
-        fflush(startupLog);
-    }
     if (mutexError != ERROR_SUCCESS) {
-        if (startupLog) {
-            fprintf(startupLog, "ERROR: Another instance is running (mutex exists). Exiting.\n");
-            fclose(startupLog);
-        }
         // Show message box so user knows what happened
         MessageBoxA(NULL, 
             "Fallout 2 CE is already running, or a previous instance did not exit cleanly.\n\n"
@@ -90,10 +69,6 @@ int main(int argc, char* argv[])
             "Fallout 2 CE - Already Running", 
             MB_OK | MB_ICONWARNING);
         return 0;
-    }
-    if (startupLog) {
-        fprintf(startupLog, "Mutex acquired successfully. Continuing initialization...\n");
-        fclose(startupLog);
     }
 #endif
 

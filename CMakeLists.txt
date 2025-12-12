@@ -240,6 +240,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/svga.h"
     "src/upscaler.cc"
     "src/upscaler.h"
+    "src/upscaler_filters.cc"
+    "src/upscaler_filters.h"
     "src/text_font.cc"
     "src/text_font.h"
     "src/text_object.cc"
