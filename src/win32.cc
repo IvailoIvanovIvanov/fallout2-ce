@@ -29,6 +29,16 @@ HANDLE GNW95_mutex = nullptr;
 
 int main(int argc, char* argv[])
 {
+    // Write immediate startup marker
+    {
+        FILE* f = fopen("game_startup.log", "w");
+        if (f) {
+            fprintf(f, "Game exe started\n");
+            fflush(f);
+            fclose(f);
+        }
+    }
+
     int rc;
 
 #if _WIN32

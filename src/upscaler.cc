@@ -67,7 +67,23 @@ public:
     const char* getLastError() const { return mLastError; }
 
 private:
-    UpscalerImpl() = default;
+    UpscalerImpl() {
+        // Initialize log file on singleton creation
+        char* basePath = SDL_GetBasePath();
+        if (basePath != nullptr) {
+            mLogFilePath = std::string(basePath) + "upscale.log";
+            SDL_free(basePath);
+        } else {
+            mLogFilePath = "upscale.log";
+        }
+        
+        // Create the log file immediately
+        mUpscaleLog = fopen(mLogFilePath.c_str(), "w");
+        if (mUpscaleLog != nullptr) {
+            fprintf(mUpscaleLog, "[BOOTSTRAP] Upscaler singleton initialized\n");
+            fflush(mUpscaleLog);
+        }
+    }
 
     void logDiagnostic(const char* format, ...);
     void setError(const char* format, ...);

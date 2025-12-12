@@ -3,6 +3,7 @@
 #include <limits.h>
 #include <string.h>
 
+#include "upscaler.h"
 #include "art.h"
 #include "autorun.h"
 #include "character_selector.h"
@@ -230,6 +231,9 @@ int falloutMain(int argc, char** argv)
 // 0x480CC0
 static bool falloutInit(int argc, char** argv)
 {
+    // Initialize upscaler singleton (creates upscale.log file)
+    upscalerGetImpl();
+    
     if (gameInitWithOptions("FALLOUT II", false, 0, 0, argc, argv) == -1) {
         return false;
     }
