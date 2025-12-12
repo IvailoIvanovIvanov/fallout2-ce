@@ -169,6 +169,10 @@ private:
     float mFilterColorStrength = 0.25f;
     float mFilterSaturation = 1.15f;
     float mFilterContrast = 1.12f;
+    bool mEnableDebanding = true;
+    float mDebandingStrength = 0.5f;
+    bool mEnableEdgeSmoothing = true;
+    float mSmoothingStrength = 0.6f;
     bool mVerboseLogging = false;
 
     // Error tracking
@@ -312,6 +316,40 @@ void UpscalerImpl::loadConfiguration() {
         logDiagnostic("Config: upscaler_filter_contrast not found, using default 1.12");
     }
     
+    // Load debanding settings
+    bool debandingEnabled = true;
+    if (configGetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_DEBANDING_KEY, &debandingEnabled)) {
+        mEnableDebanding = debandingEnabled;
+        logDiagnostic("Config: upscaler_debanding = %s", mEnableDebanding ? "true" : "false");
+    } else {
+        logDiagnostic("Config: upscaler_debanding not found, using default true");
+    }
+    
+    double debandingStrValue = 0.5;
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_DEBANDING_STRENGTH_KEY, &debandingStrValue)) {
+        mDebandingStrength = static_cast<float>(debandingStrValue);
+        logDiagnostic("Config: upscaler_debanding_strength = %.2f", mDebandingStrength);
+    } else {
+        logDiagnostic("Config: upscaler_debanding_strength not found, using default 0.5");
+    }
+    
+    // Load edge smoothing settings
+    bool smoothingEnabled = true;
+    if (configGetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_EDGE_SMOOTHING_KEY, &smoothingEnabled)) {
+        mEnableEdgeSmoothing = smoothingEnabled;
+        logDiagnostic("Config: upscaler_edge_smoothing = %s", mEnableEdgeSmoothing ? "true" : "false");
+    } else {
+        logDiagnostic("Config: upscaler_edge_smoothing not found, using default true");
+    }
+    
+    double smoothingStrValue = 0.6;
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_SMOOTHING_STRENGTH_KEY, &smoothingStrValue)) {
+        mSmoothingStrength = static_cast<float>(smoothingStrValue);
+        logDiagnostic("Config: upscaler_smoothing_strength = %.2f", mSmoothingStrength);
+    } else {
+        logDiagnostic("Config: upscaler_smoothing_strength not found, using default 0.6");
+    }
+    
     // Load verbose logging flag
     bool verboseValue = false;
     if (configGetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_VERBOSE_LOG_KEY, &verboseValue)) {
@@ -342,6 +380,10 @@ void UpscalerImpl::saveConfiguration() {
     configSetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_COLOR_KEY, mFilterColorStrength);
     configSetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_SATURATION_KEY, mFilterSaturation);
     configSetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_CONTRAST_KEY, mFilterContrast);
+    configSetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_DEBANDING_KEY, mEnableDebanding);
+    configSetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_DEBANDING_STRENGTH_KEY, mDebandingStrength);
+    configSetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_EDGE_SMOOTHING_KEY, mEnableEdgeSmoothing);
+    configSetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_SMOOTHING_STRENGTH_KEY, mSmoothingStrength);
     configSetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_VERBOSE_LOG_KEY, mVerboseLogging);
     
     if (gameConfigSave()) {
@@ -781,12 +823,18 @@ bool UpscalerImpl::dispatchFsr2() {
     }
     
     FilterConfig filterConfig;
-    filterConfig.type = FilterType::COMBINED;
+    filterConfig.type = FilterType::ADVANCED;
     filterConfig.edgeEnhanceStrength = mFilterEdgeStrength;
     filterConfig.colorCorrectionStrength = mFilterColorStrength;
     filterConfig.saturationBoost = mFilterSaturation;
     filterConfig.contrastBoost = mFilterContrast;
     filterConfig.brightnessShift = 0.02f;       // Slight brightness lift
+    filterConfig.enableDebanding = mEnableDebanding;
+    filterConfig.debandingStrength = mDebandingStrength;
+    filterConfig.frameIndex = mFrameIndex;
+    filterConfig.enableEdgeSmoothing = mEnableEdgeSmoothing;
+    filterConfig.smoothingStrength = mSmoothingStrength;
+    filterConfig.edgeDetectThreshold = 0.15f;   // Good default for pixel art edges
     filterConfig.enableLogging = mVerboseLogging;
     
     if (mVerboseLogging) {
@@ -796,6 +844,8 @@ bool UpscalerImpl::dispatchFsr2() {
         logDiagnostic("  - Saturation Boost: %.2fx", filterConfig.saturationBoost);
         logDiagnostic("  - Contrast Boost: %.2fx", filterConfig.contrastBoost);
         logDiagnostic("  - Brightness Shift: %+.3f", filterConfig.brightnessShift);
+        logDiagnostic("  - Debanding: %s (strength: %.2f)", filterConfig.enableDebanding ? "enabled" : "disabled", filterConfig.debandingStrength);
+        logDiagnostic("  - Edge Smoothing: %s (strength: %.2f)", filterConfig.enableEdgeSmoothing ? "enabled" : "disabled", filterConfig.smoothingStrength);
     }
     
     if (filterApplyPostProcessing(mOutputBuffer, mOutputWidth, mOutputHeight, 
