@@ -6,6 +6,8 @@
 #include <memory>
 #include <string>
 
+#include <SDL.h>
+
 #include "diagnostics.h"
 #include "gpu_device.h"
 #include "gpu_texture.h"
@@ -122,6 +124,7 @@ private:
     
     // Upscaler logging
     FILE* mUpscaleLog = nullptr;
+    std::string mLogFilePath;
 };
 
 // Global singleton accessor
@@ -142,9 +145,22 @@ void UpscalerImpl::logDiagnostic(const char* format, ...) {
     diagnosticsLog(DiagnosticsLevel::Info, "UPSCALER", "%s", buffer);
     
     // Also write to dedicated upscale.log file
-    if (mUpscaleLog == nullptr) {
-        mUpscaleLog = fopen("upscale.log", "w");
+    if (mUpscaleLog == nullptr && mLogFilePath.empty()) {
+        // Initialize log file path on first use
+        char* basePath = SDL_GetBasePath();
+        if (basePath != nullptr) {
+            mLogFilePath = std::string(basePath) + "upscale.log";
+            SDL_free(basePath);
+        } else {
+            // Fallback to current directory if SDL_GetBasePath fails
+            mLogFilePath = "upscale.log";
+        }
     }
+    
+    if (mUpscaleLog == nullptr && !mLogFilePath.empty()) {
+        mUpscaleLog = fopen(mLogFilePath.c_str(), "w");
+    }
+    
     if (mUpscaleLog != nullptr) {
         // Get current time for timestamp
         time_t now = time(nullptr);
