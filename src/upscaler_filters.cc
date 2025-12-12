@@ -465,60 +465,15 @@ bool filterApplyPostProcessing(
     
     bool success = true;
     
-    // Apply filters in optimal order
+    // Apply lightweight filters that complement FSR2's RCAS
+    // FSR2 already handles edge enhancement, color correction, and contrast
     switch (config.type) {
         case FilterType::NONE:
-            break;
-            
-        case FilterType::EDGE_ENHANCE:
-            if (config.enableLogging) {
-                diagnosticsLog(DiagnosticsLevel::Info, "FILTERS", 
-                    "Applying edge enhancement (strength=%.2f)", config.edgeEnhanceStrength);
-            }
-            success = filterApplyEdgeEnhancement(buffer, width, height, pitch, config.edgeEnhanceStrength);
-            break;
-            
-        case FilterType::COLOR_CORRECT:
-            if (config.enableLogging) {
-                diagnosticsLog(DiagnosticsLevel::Info, "FILTERS",
-                    "Applying color correction (strength=%.2f, saturation=%.2f)",
-                    config.colorCorrectionStrength, config.saturationBoost);
-            }
-            success = filterApplyColorCorrection(buffer, width, height, pitch,
-                config.colorCorrectionStrength, config.saturationBoost);
-            break;
-            
-        case FilterType::CONTRAST_BOOST:
-            if (config.enableLogging) {
-                diagnosticsLog(DiagnosticsLevel::Info, "FILTERS",
-                    "Applying contrast boost (contrast=%.2f, brightness=%.2f)",
-                    config.contrastBoost, config.brightnessShift);
-            }
-            success = filterApplyContrastBoost(buffer, width, height, pitch,
-                config.contrastBoost, config.brightnessShift);
-            break;
-            
-        case FilterType::COMBINED:
-            // Apply in optimal order: contrast -> color correction -> edge enhancement
-            if (config.enableLogging) {
-                diagnosticsLog(DiagnosticsLevel::Info, "FILTERS", "Applying combined filters");
-            }
-            
-            success = filterApplyContrastBoost(buffer, width, height, pitch,
-                config.contrastBoost, config.brightnessShift);
-            
-            if (success) {
-                success = filterApplyColorCorrection(buffer, width, height, pitch,
-                    config.colorCorrectionStrength, config.saturationBoost);
-            }
-            
-            if (success) {
-                success = filterApplyEdgeEnhancement(buffer, width, height, pitch,
-                    config.edgeEnhanceStrength);
-            }
+            // No additional filtering - FSR2 RCAS only
             break;
             
         case FilterType::DEBANDING:
+            // Only debanding (8-bit palette artifact reduction)
             if (config.enableLogging) {
                 diagnosticsLog(DiagnosticsLevel::Info, "FILTERS",
                     "Applying debanding (strength=%.2f, frame=%d)",
@@ -529,6 +484,7 @@ bool filterApplyPostProcessing(
             break;
             
         case FilterType::SMOOTH_EDGES:
+            // Only edge smoothing (pixel art anti-aliasing)
             if (config.enableLogging) {
                 diagnosticsLog(DiagnosticsLevel::Info, "FILTERS",
                     "Applying edge smoothing (strength=%.2f, threshold=%.2f)",
@@ -538,40 +494,29 @@ bool filterApplyPostProcessing(
                 config.smoothingStrength, config.edgeDetectThreshold);
             break;
             
-        case FilterType::ADVANCED:
-            // Apply all filters in optimal order
+        case FilterType::MINIMAL:
+            // Recommended: Debanding + edge smoothing for pixel art
             if (config.enableLogging) {
-                diagnosticsLog(DiagnosticsLevel::Info, "FILTERS", "Applying advanced filter pipeline");
+                diagnosticsLog(DiagnosticsLevel::Info, "FILTERS", 
+                    "Applying minimal filter pipeline (debanding + edge smoothing)");
             }
             
-            // 1. Debanding first (reduces color banding)
+            // 1. Debanding first (smooth color gradients from 8-bit palette)
             if (config.enableDebanding) {
                 success = filterApplyDebanding(buffer, width, height, pitch,
                     config.debandingStrength, config.frameIndex);
+                if (!success && config.enableLogging) {
+                    diagnosticsLog(DiagnosticsLevel::Info, "FILTERS", "WARNING: Debanding failed");
+                }
             }
             
-            // 2. Edge smoothing (reduces jagged edges)
+            // 2. Edge smoothing (anti-alias jagged pixel art edges)
             if (success && config.enableEdgeSmoothing) {
                 success = filterApplyEdgeSmoothing(buffer, width, height, pitch,
                     config.smoothingStrength, config.edgeDetectThreshold);
-            }
-            
-            // 3. Contrast adjustment
-            if (success) {
-                success = filterApplyContrastBoost(buffer, width, height, pitch,
-                    config.contrastBoost, config.brightnessShift);
-            }
-            
-            // 4. Color correction
-            if (success) {
-                success = filterApplyColorCorrection(buffer, width, height, pitch,
-                    config.colorCorrectionStrength, config.saturationBoost);
-            }
-            
-            // 5. Final edge enhancement
-            if (success) {
-                success = filterApplyEdgeEnhancement(buffer, width, height, pitch,
-                    config.edgeEnhanceStrength);
+                if (!success && config.enableLogging) {
+                    diagnosticsLog(DiagnosticsLevel::Info, "FILTERS", "WARNING: Edge smoothing failed");
+                }
             }
             break;
     }

@@ -17,94 +17,43 @@ namespace fallout {
 /**
  * @enum FilterType
  * @brief Available post-processing filters
+ * 
+ * NOTE: Edge enhancement, color correction, and contrast are now handled by
+ * FSR2's built-in RCAS (Robust Contrast Adaptive Sharpening) which is more
+ * sophisticated and GPU-optimized. These custom filters only address issues
+ * that FSR2 doesn't handle natively.
  */
 enum class FilterType {
-    NONE = 0,           // No filtering
-    EDGE_ENHANCE = 1,   // Enhance edges to improve sharpness
-    COLOR_CORRECT = 2,  // Correct color shift from upscaling
-    CONTRAST_BOOST = 3, // Increase contrast subtly
-    COMBINED = 4,       // Apply edge enhancement + color correction
-    DEBANDING = 5,      // Reduce color banding from 8-bit palette
-    SMOOTH_EDGES = 6,   // Anti-alias jagged edges
-    ADVANCED = 7        // All filters including debanding and smoothing
+    NONE = 0,           // No filtering (FSR2 RCAS only)
+    DEBANDING = 1,      // Reduce color banding from 8-bit palette (temporal dithering)
+    SMOOTH_EDGES = 2,   // Anti-alias jagged pixel art edges (Sobel + Gaussian)
+    MINIMAL = 3         // Debanding + edge smoothing (recommended for pixel art)
 };
 
 /**
  * @struct FilterConfig
  * @brief Configuration for post-processing filters
+ * 
+ * Simplified configuration focused on pixel art quality issues that
+ * FSR2's RCAS doesn't address. FSR2 handles edge enhancement, color
+ * correction, and contrast via its built-in RCAS sharpening.
  */
 struct FilterConfig {
-    FilterType type = FilterType::COMBINED;
-    
-    // Edge enhancement parameters
-    float edgeEnhanceStrength = 0.5f;  // 0.0-1.0, strength of edge enhancement
-    float edgeThreshold = 0.1f;        // 0.0-1.0, minimum gradient to enhance
-    
-    // Color correction parameters
-    float colorCorrectionStrength = 0.3f;  // 0.0-1.0, how much to correct color shift
-    float saturationBoost = 1.1f;          // 0.5-2.0, saturation multiplier
-    
-    // Contrast parameters
-    float contrastBoost = 1.15f;       // 0.5-2.0, contrast multiplier
-    float brightnessShift = 0.0f;      // -0.2 to 0.2, brightness adjustment
+    FilterType type = FilterType::MINIMAL;
     
     // Debanding parameters (reduce color banding from 8-bit palette)
     bool enableDebanding = true;       // Apply temporal dithering for smooth gradients
     float debandingStrength = 0.5f;    // 0.0-1.0, dithering intensity
-    int frameIndex = 0;                // Frame counter for temporal dithering
+    int frameIndex = 0;                // Frame counter for temporal dithering animation
     
-    // Edge smoothing parameters (reduce jagged edges)
+    // Edge smoothing parameters (reduce jagged pixel art edges)
     bool enableEdgeSmoothing = true;   // Apply selective anti-aliasing
     float smoothingStrength = 0.6f;    // 0.0-1.0, smoothing intensity
-    float edgeDetectThreshold = 0.15f; // 0.0-1.0, edge detection sensitivity
+    float edgeDetectThreshold = 0.15f; // 0.0-1.0, edge detection sensitivity (optimized for pixel art)
     
     // General
-    bool enableLogging = true;         // Log filter statistics
+    bool enableLogging = false;        // Log filter application (verbose mode only)
 };
-
-/**
- * @brief Apply edge enhancement filter to improve sharpness
- * 
- * Uses Unsharp Masking technique to enhance edges and details
- * without creating halos or artifacts.
- * 
- * @param buffer Input/output ARGB8888 buffer
- * @param width  Buffer width in pixels
- * @param height Buffer height in pixels
- * @param pitch  Buffer pitch in bytes (width * 4 for ARGB8888)
- * @param strength Edge enhancement strength (0.0-1.0)
- * @return true if successful
- */
-bool filterApplyEdgeEnhancement(
-    uint32_t* buffer, 
-    int width, 
-    int height, 
-    int pitch,
-    float strength
-);
-
-/**
- * @brief Apply color correction to remove upscaling color shift
- * 
- * Corrects color space shift that often occurs during AI upscaling,
- * improving color accuracy and vibrancy.
- * 
- * @param buffer Input/output ARGB8888 buffer
- * @param width  Buffer width in pixels
- * @param height Buffer height in pixels
- * @param pitch  Buffer pitch in bytes
- * @param strength Color correction strength (0.0-1.0)
- * @param saturation Saturation boost factor (0.5-2.0)
- * @return true if successful
- */
-bool filterApplyColorCorrection(
-    uint32_t* buffer,
-    int width,
-    int height,
-    int pitch,
-    float strength,
-    float saturation
-);
 
 /**
  * @brief Apply debanding filter to reduce color banding
@@ -153,31 +102,12 @@ bool filterApplyEdgeSmoothing(
 );
 
 /**
- * @brief Apply contrast and brightness adjustment
+ * @brief Apply post-processing filters for pixel art upscaling
  * 
- * Improves visual punch and clarity of the upscaled image.
- * 
- * @param buffer Input/output ARGB8888 buffer
- * @param width  Buffer width in pixels
- * @param height Buffer height in pixels
- * @param pitch  Buffer pitch in bytes
- * @param contrastBoost Contrast multiplier (0.5-2.0)
- * @param brightnessShift Brightness adjustment (-0.2 to 0.2)
- * @return true if successful
- */
-bool filterApplyContrastBoost(
-    uint32_t* buffer,
-    int width,
-    int height,
-    int pitch,
-    float contrastBoost,
-    float brightnessShift
-);
-
-/**
- * @brief Apply combined post-processing filters
- * 
- * Applies all enabled filters in optimal order for best quality.
+ * Lightweight filter pipeline that complements FSR2's built-in RCAS.
+ * Only applies filters for issues that FSR2 doesn't handle natively:
+ * - Debanding: Reduces 8-bit palette quantization artifacts
+ * - Edge smoothing: Optional anti-aliasing for softer pixel art look
  * 
  * @param buffer Input/output ARGB8888 buffer
  * @param width  Buffer width in pixels

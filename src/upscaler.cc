@@ -65,12 +65,11 @@ public:
     bool setSharpness(float sharpness);
     void setMotionVectorsEnabled(bool enabled) { mMotionVectorsEnabled = enabled; }
     
+    // Deprecated: Edge/color/saturation/contrast now handled by FSR2 RCAS
     void setFilterParams(float edge, float color, float sat, float con) {
-        mFilterEdgeStrength = edge;
-        mFilterColorStrength = color;
-        mFilterSaturation = sat;
-        mFilterContrast = con;
-        saveConfiguration();
+        // No-op: These parameters are deprecated
+        // Adjust FSR2 sharpness instead for edge/contrast control
+        logDiagnostic("WARNING: setFilterParams() deprecated - use setSharpness() for FSR2 RCAS control");
     }
     
     void setVerboseLogging(bool enabled) {
@@ -164,16 +163,13 @@ private:
     float mSharpness = 0.5f;
     uint32_t mFrameIndex = 0;
     
-    // Filter configuration (loaded from config file)
-    float mFilterEdgeStrength = 0.4f;
-    float mFilterColorStrength = 0.25f;
-    float mFilterSaturation = 1.15f;
-    float mFilterContrast = 1.12f;
-    bool mEnableDebanding = true;
-    float mDebandingStrength = 0.5f;
-    bool mEnableEdgeSmoothing = true;
-    float mSmoothingStrength = 0.6f;
-    bool mVerboseLogging = false;
+    // Simplified filter configuration (complements FSR2 RCAS)
+    // Note: Edge enhancement, color, contrast now handled by FSR2's built-in RCAS
+    bool mEnableDebanding = true;      // Reduce 8-bit palette color banding
+    float mDebandingStrength = 0.5f;   // Temporal dithering strength
+    bool mEnableEdgeSmoothing = true;  // Optional pixel art anti-aliasing
+    float mSmoothingStrength = 0.6f;   // Selective edge smoothing strength
+    bool mVerboseLogging = false;      // Detailed diagnostic logging
 
     // Error tracking
     char mLastError[ERROR_MSG_SIZE] = {};
@@ -283,40 +279,7 @@ void UpscalerImpl::loadConfiguration() {
         logDiagnostic("Config: upscaler_sharpness not found, using default 0.5");
     }
     
-    // Load filter parameters
-    double edgeValue = 0.4;
-    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_EDGE_KEY, &edgeValue)) {
-        mFilterEdgeStrength = static_cast<float>(edgeValue);
-        logDiagnostic("Config: upscaler_filter_edge = %.2f", mFilterEdgeStrength);
-    } else {
-        logDiagnostic("Config: upscaler_filter_edge not found, using default 0.4");
-    }
-    
-    double colorValue = 0.25;
-    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_COLOR_KEY, &colorValue)) {
-        mFilterColorStrength = static_cast<float>(colorValue);
-        logDiagnostic("Config: upscaler_filter_color = %.2f", mFilterColorStrength);
-    } else {
-        logDiagnostic("Config: upscaler_filter_color not found, using default 0.25");
-    }
-    
-    double saturationValue = 1.15;
-    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_SATURATION_KEY, &saturationValue)) {
-        mFilterSaturation = static_cast<float>(saturationValue);
-        logDiagnostic("Config: upscaler_filter_saturation = %.2f", mFilterSaturation);
-    } else {
-        logDiagnostic("Config: upscaler_filter_saturation not found, using default 1.15");
-    }
-    
-    double contrastValue = 1.12;
-    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_CONTRAST_KEY, &contrastValue)) {
-        mFilterContrast = static_cast<float>(contrastValue);
-        logDiagnostic("Config: upscaler_filter_contrast = %.2f", mFilterContrast);
-    } else {
-        logDiagnostic("Config: upscaler_filter_contrast not found, using default 1.12");
-    }
-    
-    // Load debanding settings
+    // Load debanding settings (8-bit palette artifact reduction)
     bool debandingEnabled = true;
     if (configGetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_DEBANDING_KEY, &debandingEnabled)) {
         mEnableDebanding = debandingEnabled;
@@ -333,7 +296,7 @@ void UpscalerImpl::loadConfiguration() {
         logDiagnostic("Config: upscaler_debanding_strength not found, using default 0.5");
     }
     
-    // Load edge smoothing settings
+    // Load edge smoothing settings (optional pixel art anti-aliasing)
     bool smoothingEnabled = true;
     if (configGetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_EDGE_SMOOTHING_KEY, &smoothingEnabled)) {
         mEnableEdgeSmoothing = smoothingEnabled;
@@ -372,14 +335,10 @@ void UpscalerImpl::saveConfiguration() {
     
     logDiagnostic("Saving upscaler configuration to fallout2.cfg...");
     
-    // Save current settings
+    // Save current settings (simplified - only FSR2 RCAS sharpness + lightweight filters)
     configSetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_MODE_KEY, static_cast<int>(mMode));
     configSetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_QUALITY_KEY, static_cast<int>(mQuality));
     configSetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_SHARPNESS_KEY, mSharpness);
-    configSetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_EDGE_KEY, mFilterEdgeStrength);
-    configSetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_COLOR_KEY, mFilterColorStrength);
-    configSetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_SATURATION_KEY, mFilterSaturation);
-    configSetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_FILTER_CONTRAST_KEY, mFilterContrast);
     configSetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_DEBANDING_KEY, mEnableDebanding);
     configSetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_DEBANDING_STRENGTH_KEY, mDebandingStrength);
     configSetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_EDGE_SMOOTHING_KEY, mEnableEdgeSmoothing);
@@ -582,8 +541,9 @@ bool UpscalerImpl::initFsr2() {
     
     // Set flags for FSR2 behavior
     createDesc.flags = 0;
-    // createDesc.flags |= FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE;  // Enable if needed
-    // createDesc.flags |= FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;       // Enable if needed
+    createDesc.flags |= FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE;  // Fallout 2 outputs sRGB (gamma-corrected) colors
+    // createDesc.flags |= FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE;  // Not needed for 8-bit palette
+    // createDesc.flags |= FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;       // Not needed for fixed palette
     
     // Set maximum render and upscale sizes
     createDesc.maxRenderSize.width = mInputWidth;
@@ -785,6 +745,7 @@ bool UpscalerImpl::dispatchFsr2() {
         dispatchDesc.cameraFovAngleVertical = 1.5708f;  // 90 degrees in radians
         dispatchDesc.viewSpaceToMetersFactor = 1.0f;
         dispatchDesc.reset = false;              // No reset for this frame
+        dispatchDesc.flags = FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_SRGB;  // Input is sRGB (gamma-corrected)
         
         // Dispatch FSR2 upscaling (cast to base header for API compatibility)
         logDiagnostic("  Invoking ffxDispatch()...");
@@ -817,35 +778,32 @@ bool UpscalerImpl::dispatchFsr2() {
     }
     logDiagnostic("  Download complete ✓");
     
-    // Phase 6: Apply post-processing filters to improve quality
+    // Phase 6: Apply lightweight post-processing filters
+    // Note: FSR2's built-in RCAS already handles edge enhancement, color correction,
+    // and contrast. We only apply filters for issues FSR2 doesn't address natively.
     if (mVerboseLogging) {
-        logDiagnostic("Phase 6/6: Applying post-processing filters...");
+        logDiagnostic("Phase 6/6: Applying post-processing filters (complement to FSR2 RCAS)...");
     }
     
     FilterConfig filterConfig;
-    filterConfig.type = FilterType::ADVANCED;
-    filterConfig.edgeEnhanceStrength = mFilterEdgeStrength;
-    filterConfig.colorCorrectionStrength = mFilterColorStrength;
-    filterConfig.saturationBoost = mFilterSaturation;
-    filterConfig.contrastBoost = mFilterContrast;
-    filterConfig.brightnessShift = 0.02f;       // Slight brightness lift
+    filterConfig.type = FilterType::MINIMAL;  // Lightweight: debanding + optional edge smoothing
     filterConfig.enableDebanding = mEnableDebanding;
     filterConfig.debandingStrength = mDebandingStrength;
     filterConfig.frameIndex = mFrameIndex;
     filterConfig.enableEdgeSmoothing = mEnableEdgeSmoothing;
     filterConfig.smoothingStrength = mSmoothingStrength;
-    filterConfig.edgeDetectThreshold = 0.15f;   // Good default for pixel art edges
+    filterConfig.edgeDetectThreshold = 0.15f;   // Optimized for pixel art edges
     filterConfig.enableLogging = mVerboseLogging;
     
     if (mVerboseLogging) {
-        logDiagnostic("  Filter Configuration (from config file):");
-        logDiagnostic("  - Edge Enhancement Strength: %.2f", filterConfig.edgeEnhanceStrength);
-        logDiagnostic("  - Color Correction Strength: %.2f", filterConfig.colorCorrectionStrength);
-        logDiagnostic("  - Saturation Boost: %.2fx", filterConfig.saturationBoost);
-        logDiagnostic("  - Contrast Boost: %.2fx", filterConfig.contrastBoost);
-        logDiagnostic("  - Brightness Shift: %+.3f", filterConfig.brightnessShift);
-        logDiagnostic("  - Debanding: %s (strength: %.2f)", filterConfig.enableDebanding ? "enabled" : "disabled", filterConfig.debandingStrength);
-        logDiagnostic("  - Edge Smoothing: %s (strength: %.2f)", filterConfig.enableEdgeSmoothing ? "enabled" : "disabled", filterConfig.smoothingStrength);
+        logDiagnostic("  Lightweight Filter Pipeline (FSR2 sRGB mode + RCAS sharpening: %.2f):", mSharpness);
+        logDiagnostic("  - Debanding: %s (strength: %.2f, frame: %d)", 
+            filterConfig.enableDebanding ? "enabled" : "disabled", 
+            filterConfig.debandingStrength, filterConfig.frameIndex);
+        logDiagnostic("  - Edge Smoothing: %s (strength: %.2f, threshold: %.2f)", 
+            filterConfig.enableEdgeSmoothing ? "enabled" : "disabled", 
+            filterConfig.smoothingStrength, filterConfig.edgeDetectThreshold);
+        logDiagnostic("  Note: Edge enhancement, color, contrast handled by FSR2 RCAS (GPU-optimized)");
     }
     
     if (filterApplyPostProcessing(mOutputBuffer, mOutputWidth, mOutputHeight, 
@@ -881,9 +839,11 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
     logDiagnostic("Upscaler Mode: %s", mode == UpscalerMode::FSR2 ? "FSR2" : "NONE");
     logDiagnostic("Quality: %s", mQuality == UpscalerQuality::QUALITY ? "QUALITY" : 
                                    mQuality == UpscalerQuality::BALANCED ? "BALANCED" : "PERFORMANCE");
-    logDiagnostic("Sharpness: %.2f", mSharpness);
-    logDiagnostic("Filter Settings: Edge=%.2f, Color=%.2f, Saturation=%.2f, Contrast=%.2f",
-                  mFilterEdgeStrength, mFilterColorStrength, mFilterSaturation, mFilterContrast);
+    logDiagnostic("Sharpness: %.2f (FSR2 RCAS)", mSharpness);
+    logDiagnostic("Lightweight Filters: Debanding=%s (%.2f), EdgeSmoothing=%s (%.2f)",
+                  mEnableDebanding ? "ON" : "OFF", mDebandingStrength,
+                  mEnableEdgeSmoothing ? "ON" : "OFF", mSmoothingStrength);
+    logDiagnostic("sRGB Colorspace: ENABLED (for proper 8-bit palette handling)");
     logDiagnostic("Verbose Logging: %s", mVerboseLogging ? "ENABLED" : "DISABLED");
     
     if (mState != UpscalerState::STATE_UNINITIALIZED) {
