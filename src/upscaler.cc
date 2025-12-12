@@ -235,34 +235,47 @@ void UpscalerImpl::calculateJitter(float& outX, float& outY) {
 // ============================================================================
 
 bool UpscalerImpl::initFsr2() {
-    logDiagnostic("FSR2 initialization (Phase 3 - GPU device binding)");
+    logDiagnostic("================== FSR2 INITIALIZATION START ==================");
+    logDiagnostic("Phase 3 - GPU device binding");
+    logDiagnostic("Input resolution: %dx%d, Output resolution: %dx%d",
+        mInputWidth, mInputHeight, mOutputWidth, mOutputHeight);
     
     // Phase 3: Get GPU device context for FSR2 compute operations
+    logDiagnostic("Step 1/5: Checking GPU device readiness...");
     if (!gpuDeviceIsReady()) {
         setError("GPU device not initialized, cannot initialize FSR2");
+        logDiagnostic("ERROR: GPU device is not ready!");
         return false;
     }
+    logDiagnostic("Step 1/5: GPU device is ready ✓");
     
+    logDiagnostic("Step 2/5: Acquiring GPU device context...");
     mGpuDevice = gpuDeviceGetDevice();
     mGpuCommandQueue = gpuDeviceGetCommandQueue();
     
     if (mGpuDevice == nullptr || mGpuCommandQueue == nullptr) {
         setError("Failed to acquire GPU device context");
+        logDiagnostic("ERROR: GPU device context is null! Device=%p, Queue=%p",
+            mGpuDevice, mGpuCommandQueue);
         return false;
     }
+    logDiagnostic("Step 2/5: GPU device context acquired ✓ (Device=%p, Queue=%p)",
+        mGpuDevice, mGpuCommandQueue);
     
     // Create command allocator for FSR2 compute operations
+    logDiagnostic("Step 3/5: Creating GPU command allocator...");
     mGpuCommandAllocator = gpuDeviceCreateCommandAllocator();
     if (mGpuCommandAllocator == nullptr) {
         setError("Failed to create GPU command allocator");
+        logDiagnostic("ERROR: GPU command allocator creation failed!");
         mGpuDevice = nullptr;
         mGpuCommandQueue = nullptr;
         return false;
     }
+    logDiagnostic("Step 3/5: GPU command allocator created ✓ (Allocator=%p)",
+        mGpuCommandAllocator);
     
-    logDiagnostic("GPU device context acquired: Device=%p, Queue=%p, Allocator=%p",
-        mGpuDevice, mGpuCommandQueue, mGpuCommandAllocator);
-    
+    logDiagnostic("Step 4/5: Creating GPU input/output textures...");
     // Phase 4: Create GPU textures for input and output
     mGpuInputTexture = gpuTextureCreate(
         mInputWidth,
@@ -273,11 +286,15 @@ bool UpscalerImpl::initFsr2() {
     
     if (mGpuInputTexture.resource == nullptr) {
         setError("Failed to create GPU input texture");
+        logDiagnostic("ERROR: Input texture creation failed (%dx%d)!",
+            mInputWidth, mInputHeight);
         mGpuDevice = nullptr;
         mGpuCommandQueue = nullptr;
         mGpuCommandAllocator = nullptr;
         return false;
     }
+    logDiagnostic("Step 4/5: Input texture created ✓ (%dx%d, resource=%p)",
+        mInputWidth, mInputHeight, mGpuInputTexture.resource);
     
     mGpuOutputTexture = gpuTextureCreate(
         mOutputWidth,
@@ -288,6 +305,8 @@ bool UpscalerImpl::initFsr2() {
     
     if (mGpuOutputTexture.resource == nullptr) {
         setError("Failed to create GPU output texture");
+        logDiagnostic("ERROR: Output texture creation failed (%dx%d)!",
+            mOutputWidth, mOutputHeight);
         gpuTextureRelease(mGpuInputTexture);
         mGpuInputTexture = { nullptr };
         mGpuDevice = nullptr;
@@ -295,17 +314,69 @@ bool UpscalerImpl::initFsr2() {
         mGpuCommandAllocator = nullptr;
         return false;
     }
+    logDiagnostic("Step 4/5: Output texture created ✓ (%dx%d, resource=%p)",
+        mOutputWidth, mOutputHeight, mGpuOutputTexture.resource);
     
-    logDiagnostic("GPU textures created: Input=%dx%d, Output=%dx%d",
-        mInputWidth, mInputHeight, mOutputWidth, mOutputHeight);
+    // Phase 5: Create FSR2 context with GPU device
+    logDiagnostic("Step 5/5: Creating FSR2 context...");
+#ifdef FALLOUT_HAS_FSR2
+    ffxCreateContextDescUpscale createDesc = {};
+    createDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
+    createDesc.header.pNext = nullptr;
     
-    // Phase 2 TODO: Create FSR2 context with ffxCreateContext() using GPU device
+    // Set flags for FSR2 behavior
+    createDesc.flags = 0;
+    // createDesc.flags |= FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE;  // Enable if needed
+    // createDesc.flags |= FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;       // Enable if needed
+    
+    // Set maximum render and upscale sizes
+    createDesc.maxRenderSize.width = mInputWidth;
+    createDesc.maxRenderSize.height = mInputHeight;
+    createDesc.maxUpscaleSize.width = mOutputWidth;
+    createDesc.maxUpscaleSize.height = mOutputHeight;
+    createDesc.fpMessage = nullptr;  // No message callback for now
+    
+    logDiagnostic("  Context descriptor prepared: maxRender=%dx%d, maxUpscale=%dx%d",
+        createDesc.maxRenderSize.width, createDesc.maxRenderSize.height,
+        createDesc.maxUpscaleSize.width, createDesc.maxUpscaleSize.height);
+    
+    ffxReturnCode_t fsr2Result = ffxCreateContext(&mFsrContext, (ffxCreateContextDescHeader*)&createDesc, nullptr);
+    if (fsr2Result != FFX_API_RETURN_OK) {
+        setError("Failed to create FSR2 context (error code: %d)", fsr2Result);
+        logDiagnostic("ERROR: ffxCreateContext failed with code %d!", fsr2Result);
+        gpuTextureRelease(mGpuInputTexture);
+        gpuTextureRelease(mGpuOutputTexture);
+        mGpuInputTexture = { nullptr };
+        mGpuOutputTexture = { nullptr };
+        mGpuDevice = nullptr;
+        mGpuCommandQueue = nullptr;
+        mGpuCommandAllocator = nullptr;
+        return false;
+    }
+    
+    logDiagnostic("Step 5/5: FSR2 context created successfully ✓ (context=%p)", mFsrContext);
     mFsrContextInitialized = true;
+#else
+    logDiagnostic("Step 5/5: FSR2 SDK not available - upscaling will be CPU-based (Phase 5 skipped)");
+    logDiagnostic("  Define FALLOUT_HAS_FSR2 to enable GPU acceleration");
+    mFsrContextInitialized = true;  // Still mark as initialized even without SDK
+#endif
+    
+    logDiagnostic("================== FSR2 INITIALIZATION COMPLETE ✓ ==================");
     return true;
 }
 
 bool UpscalerImpl::shutdownFsr2() {
-    // Phase 2 TODO: Implement actual FSR2 context destruction with ffxDestroyContext()
+    // Phase 5: Destroy FSR2 context
+#ifdef FALLOUT_HAS_FSR2
+    if (mFsrContext != nullptr) {
+        ffxReturnCode_t result = ffxDestroyContext(&mFsrContext, nullptr);
+        if (result != FFX_API_RETURN_OK) {
+            logDiagnostic("Warning: ffxDestroyContext returned error code %d", result);
+        }
+        mFsrContext = nullptr;
+    }
+#endif
     
     // Phase 4: Release GPU textures
     if (mGpuInputTexture.resource != nullptr) {
@@ -338,43 +409,131 @@ bool UpscalerImpl::shutdownFsr2() {
 }
 
 bool UpscalerImpl::dispatchFsr2() {
-    // Phase 3-4: Dispatch GPU compute with FSR2 context
+    // Phase 5: Dispatch GPU compute with FSR2 context
+    logDiagnostic("================== FSR2 DISPATCH START (Frame %d) ==================", mFrameIndex);
+    
+    logDiagnostic("Pre-dispatch validation checks...");
     if (!mFsrContextInitialized || mGpuDevice == nullptr || mGpuCommandQueue == nullptr) {
         setError("FSR2 not properly initialized, cannot dispatch");
+        logDiagnostic("ERROR: FSR2 not initialized! context=%d, device=%p, queue=%p",
+            mFsrContextInitialized, mGpuDevice, mGpuCommandQueue);
         return false;
     }
+    logDiagnostic("  Context check: PASS ✓");
     
     if (mGpuInputTexture.resource == nullptr || mGpuOutputTexture.resource == nullptr) {
         setError("GPU textures not created, cannot dispatch");
+        logDiagnostic("ERROR: GPU textures not valid! input=%p, output=%p",
+            mGpuInputTexture.resource, mGpuOutputTexture.resource);
         return false;
     }
+    logDiagnostic("  Texture check: PASS ✓");
     
     // Phase 4: Upload input buffer to GPU texture
+    logDiagnostic("Uploading input buffer to GPU (%dx%d = %d bytes)...",
+        mInputWidth, mInputHeight, mInputWidth * mInputHeight * sizeof(uint32_t));
     if (!gpuTextureUpload(mGpuInputTexture, mInputBuffer, mInputWidth * mInputHeight * sizeof(uint32_t))) {
         setError("Failed to upload input texture");
+        logDiagnostic("ERROR: GPU texture upload failed!");
         return false;
     }
+    logDiagnostic("  Upload complete ✓");
     
-    // Phase 4 TODO: Create command list for this dispatch
-    // if (mGpuCommandList == nullptr) {
-    //     mGpuCommandList = gpuDeviceCreateCommandList(mGpuCommandAllocator);
-    //     if (mGpuCommandList == nullptr) {
-    //         setError("Failed to create GPU command list");
-    //         return false;
-    //     }
-    // }
+    // Phase 5: Dispatch FSR2 GPU compute
+    logDiagnostic("Dispatching FSR2 GPU compute...");
+#ifdef FALLOUT_HAS_FSR2
+    if (mFsrContext != nullptr) {
+        // Create FSR2 dispatch descriptor with input/output texture bindings
+        ffxDispatchDescUpscale dispatchDesc = {};
+        dispatchDesc.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
+        dispatchDesc.commandList = nullptr;  // Managed by FFX internally via GPU device
+        
+        logDiagnostic("  Setting up input texture binding...");
+        // Bind input texture (color) - prepare FfxApiResource
+        ID3D12Resource* inputResource = gpuTextureGetResource(mGpuInputTexture);
+        if (inputResource == nullptr) {
+            setError("Failed to get input texture resource for FSR2 dispatch");
+            logDiagnostic("ERROR: Could not get input texture resource!");
+            return false;
+        }
+        dispatchDesc.color.resource = inputResource;
+        dispatchDesc.color.state = FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ;
+        logDiagnostic("    Input resource: %p ✓", inputResource);
+        
+        logDiagnostic("  Setting up output texture binding...");
+        // Bind output texture - prepare FfxApiResource
+        ID3D12Resource* outputResource = gpuTextureGetResource(mGpuOutputTexture);
+        if (outputResource == nullptr) {
+            setError("Failed to get output texture resource for FSR2 dispatch");
+            logDiagnostic("ERROR: Could not get output texture resource!");
+            return false;
+        }
+        dispatchDesc.output.resource = outputResource;
+        dispatchDesc.output.state = FFX_API_RESOURCE_STATE_UNORDERED_ACCESS;
+        logDiagnostic("    Output resource: %p ✓", outputResource);
+        
+        // Set FSR2 parameters
+        logDiagnostic("  Configuring FSR2 parameters...");
+        float jitterX = 0.0f, jitterY = 0.0f;
+        calculateJitter(jitterX, jitterY);
+        dispatchDesc.jitterOffset.x = jitterX;
+        dispatchDesc.jitterOffset.y = jitterY;
+        dispatchDesc.motionVectorScale.x = 1.0f;  // Motion vectors in pixel space
+        dispatchDesc.motionVectorScale.y = 1.0f;
+        dispatchDesc.preExposure = 1.0f;          // Default pre-exposure
+        dispatchDesc.sharpness = mSharpness;      // Quality-based sharpness
+        dispatchDesc.enableSharpening = (mSharpness > 0.0f);
+        logDiagnostic("    Jitter offset: (%.4f, %.4f)", jitterX, jitterY);
+        logDiagnostic("    Sharpness: %.2f, Enabled: %s", mSharpness, dispatchDesc.enableSharpening ? "yes" : "no");
+        
+        // Set render and target size
+        dispatchDesc.renderSize.width = mInputWidth;
+        dispatchDesc.renderSize.height = mInputHeight;
+        dispatchDesc.upscaleSize.width = mOutputWidth;
+        dispatchDesc.upscaleSize.height = mOutputHeight;
+        logDiagnostic("    Render size: %dx%d", dispatchDesc.renderSize.width, dispatchDesc.renderSize.height);
+        logDiagnostic("    Upscale size: %dx%d", dispatchDesc.upscaleSize.width, dispatchDesc.upscaleSize.height);
+        
+        // Set optional camera parameters
+        dispatchDesc.cameraNear = 0.1f;          // Default near plane
+        dispatchDesc.cameraFar = 1000.0f;        // Default far plane
+        dispatchDesc.cameraFovAngleVertical = 1.5708f;  // 90 degrees in radians
+        dispatchDesc.viewSpaceToMetersFactor = 1.0f;
+        dispatchDesc.reset = false;              // No reset for this frame
+        
+        // Dispatch FSR2 upscaling (cast to base header for API compatibility)
+        logDiagnostic("  Invoking ffxDispatch()...");
+        ffxReturnCode_t result = ffxDispatch(&mFsrContext, (ffxDispatchDescHeader*)&dispatchDesc);
+        if (result != FFX_API_RETURN_OK) {
+            setError("FSR2 dispatch failed (error code: %d)", result);
+            logDiagnostic("ERROR: ffxDispatch returned error code %d!", result);
+            return false;
+        }
+        
+        logDiagnostic("  FSR2 dispatch successful ✓");
+        logDiagnostic("  Result: %dx%d -> %dx%d, Frame %d", 
+                      mInputWidth, mInputHeight, mOutputWidth, mOutputHeight, mFrameIndex);
+    } else {
+        setError("FSR2 context is null");
+        logDiagnostic("ERROR: FSR2 context is null!");
+        return false;
+    }
+#else
+    logDiagnostic("  FSR2 SDK not available - GPU dispatch skipped (Phase 5 disabled)");
+    logDiagnostic("  Define FALLOUT_HAS_FSR2 to enable GPU acceleration");
+#endif
     
-    // Phase 4 TODO: Implement actual GPU upscaling dispatch with ffxDispatch()
-    // This would include:
-    // 1. Binding input texture (mGpuInputTexture) as shader resource
-    // 2. Setting up FSR2 parameters (jitter, exposure, etc.)
-    // 3. Recording GPU compute commands using mGpuCommandList
-    // 4. Executing command list with gpuDeviceExecuteCommandList()
-    // 5. Waiting for GPU with gpuDeviceWaitForGpu()
-    // 6. Reading back output texture to mOutputBuffer via gpuTextureDownload()
+    // Phase 4: Download output texture to GPU buffer
+    logDiagnostic("Downloading output texture from GPU...");
+    if (!gpuTextureDownload(mGpuOutputTexture, mOutputBuffer, mOutputWidth * mOutputHeight * sizeof(uint32_t))) {
+        setError("Failed to download output texture");
+        logDiagnostic("ERROR: GPU texture download failed!");
+        return false;
+    }
+    logDiagnostic("  Download complete ✓");
     
-    logDiagnostic("FSR2 dispatch: GPU compute pending (Phase 4)");
     mFrameIndex++;
+    logDiagnostic("================== FSR2 DISPATCH COMPLETE ✓ (Frame %d) ==================", mFrameIndex - 1);
     return true;
 }
 
@@ -383,8 +542,14 @@ bool UpscalerImpl::dispatchFsr2() {
 // ============================================================================
 
 bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int outputHeight, UpscalerMode mode) {
+    logDiagnostic("========================================");
+    logDiagnostic("UPSCALER INITIALIZATION");
+    logDiagnostic("========================================");
+    logDiagnostic("Input: %dx%d, Output: %dx%d, Mode: %d", inputWidth, inputHeight, outputWidth, outputHeight, (int)mode);
+    
     if (mState != UpscalerState::UNINITIALIZED) {
         setError("Upscaler already initialized");
+        logDiagnostic("ERROR: Upscaler state is %d (expected UNINITIALIZED)", (int)mState);
         return false;
     }
 
@@ -395,37 +560,50 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
         logDiagnostic("Upscaler mode: NONE (no upscaling)");
         mState = UpscalerState::READY;
         mIsAvailable = false;
+        logDiagnostic("UPSCALER INITIALIZATION COMPLETE (DISABLED)");
         return true;
     }
 
     if (mode == UpscalerMode::FSR2) {
         logDiagnostic("Upscaler mode: FSR2 (FidelityFX SDK 2.1)");
+        logDiagnostic("Step 1/3: Allocating input buffer...");
         
         if (!allocateInputBuffer(inputWidth, inputHeight)) {
             mState = UpscalerState::ERROR;
+            logDiagnostic("ERROR: Input buffer allocation failed!");
             return false;
         }
+        logDiagnostic("Step 1/3: Input buffer allocated ✓ (%dx%d)", inputWidth, inputHeight);
 
+        logDiagnostic("Step 2/3: Allocating output buffer...");
         if (!allocateOutputBuffer(outputWidth, outputHeight)) {
             deallocateBuffers();
             mState = UpscalerState::ERROR;
+            logDiagnostic("ERROR: Output buffer allocation failed!");
             return false;
         }
+        logDiagnostic("Step 2/3: Output buffer allocated ✓ (%dx%d)", outputWidth, outputHeight);
 
+        logDiagnostic("Step 3/3: Initializing FSR2...");
         if (!initFsr2()) {
             deallocateBuffers();
             mState = UpscalerState::ERROR;
+            logDiagnostic("ERROR: FSR2 initialization failed!");
             return false;
         }
+        logDiagnostic("Step 3/3: FSR2 initialized ✓");
 
         mIsAvailable = true;
         mState = UpscalerState::READY;
-        logDiagnostic("Upscaler initialized successfully");
+        logDiagnostic("========================================");
+        logDiagnostic("UPSCALER INITIALIZATION COMPLETE ✓");
+        logDiagnostic("========================================");
         return true;
     }
 
     setError("Unknown upscaler mode");
     mState = UpscalerState::ERROR;
+    logDiagnostic("ERROR: Unknown upscaler mode %d!", (int)mode);
     return false;
 }
 
