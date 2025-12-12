@@ -123,6 +123,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/graph_lib.h"
     "src/gpu_device.cc"
     "src/gpu_device.h"
+    "src/gpu_texture.cc"
+    "src/gpu_texture.h"
     "src/heap.cc"
     "src/heap.h"
     "src/input.cc"

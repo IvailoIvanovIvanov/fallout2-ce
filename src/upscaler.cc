@@ -6,6 +6,8 @@
 #include <string>
 
 #include "diagnostics.h"
+#include "gpu_device.h"
+#include "gpu_texture.h"
 #include "memory.h"
 
 // FidelityFX SDK 2.1 headers (optional, only if FALLOUT_HAS_FSR2 is defined)
@@ -97,6 +99,16 @@ private:
     // FidelityFX context (Phase 2 will populate this)
     void* mFsrContext = nullptr;
     bool mFsrContextInitialized = false;
+
+    // Phase 3: GPU device context for FSR2 compute
+    ID3D12Device* mGpuDevice = nullptr;
+    ID3D12CommandQueue* mGpuCommandQueue = nullptr;
+    ID3D12CommandAllocator* mGpuCommandAllocator = nullptr;
+    ID3D12GraphicsCommandList* mGpuCommandList = nullptr;
+    
+    // Phase 4: GPU textures for FSR2 input/output
+    GpuTextureHandle mGpuInputTexture = { nullptr };
+    GpuTextureHandle mGpuOutputTexture = { nullptr };
 
     // Configuration
     bool mMotionVectorsEnabled = false;
@@ -223,18 +235,145 @@ void UpscalerImpl::calculateJitter(float& outX, float& outY) {
 // ============================================================================
 
 bool UpscalerImpl::initFsr2() {
-    logDiagnostic("FSR2 initialization (Phase 2 - GPU binding pending)");
-    // Phase 2 TODO: Implement actual FSR2 context creation with ffxCreateContext()
+    logDiagnostic("FSR2 initialization (Phase 3 - GPU device binding)");
+    
+    // Phase 3: Get GPU device context for FSR2 compute operations
+    if (!gpuDeviceIsReady()) {
+        setError("GPU device not initialized, cannot initialize FSR2");
+        return false;
+    }
+    
+    mGpuDevice = gpuDeviceGetDevice();
+    mGpuCommandQueue = gpuDeviceGetCommandQueue();
+    
+    if (mGpuDevice == nullptr || mGpuCommandQueue == nullptr) {
+        setError("Failed to acquire GPU device context");
+        return false;
+    }
+    
+    // Create command allocator for FSR2 compute operations
+    mGpuCommandAllocator = gpuDeviceCreateCommandAllocator();
+    if (mGpuCommandAllocator == nullptr) {
+        setError("Failed to create GPU command allocator");
+        mGpuDevice = nullptr;
+        mGpuCommandQueue = nullptr;
+        return false;
+    }
+    
+    logDiagnostic("GPU device context acquired: Device=%p, Queue=%p, Allocator=%p",
+        mGpuDevice, mGpuCommandQueue, mGpuCommandAllocator);
+    
+    // Phase 4: Create GPU textures for input and output
+    mGpuInputTexture = gpuTextureCreate(
+        mInputWidth,
+        mInputHeight,
+        GpuTextureFormat::ARGB8888,
+        static_cast<int>(GpuTextureUsage::SHADER_RESOURCE)
+    );
+    
+    if (mGpuInputTexture.resource == nullptr) {
+        setError("Failed to create GPU input texture");
+        mGpuDevice = nullptr;
+        mGpuCommandQueue = nullptr;
+        mGpuCommandAllocator = nullptr;
+        return false;
+    }
+    
+    mGpuOutputTexture = gpuTextureCreate(
+        mOutputWidth,
+        mOutputHeight,
+        GpuTextureFormat::ARGB8888,
+        static_cast<int>(GpuTextureUsage::UNORDERED_ACCESS)
+    );
+    
+    if (mGpuOutputTexture.resource == nullptr) {
+        setError("Failed to create GPU output texture");
+        gpuTextureRelease(mGpuInputTexture);
+        mGpuInputTexture = { nullptr };
+        mGpuDevice = nullptr;
+        mGpuCommandQueue = nullptr;
+        mGpuCommandAllocator = nullptr;
+        return false;
+    }
+    
+    logDiagnostic("GPU textures created: Input=%dx%d, Output=%dx%d",
+        mInputWidth, mInputHeight, mOutputWidth, mOutputHeight);
+    
+    // Phase 2 TODO: Create FSR2 context with ffxCreateContext() using GPU device
+    mFsrContextInitialized = true;
     return true;
 }
 
 bool UpscalerImpl::shutdownFsr2() {
     // Phase 2 TODO: Implement actual FSR2 context destruction with ffxDestroyContext()
+    
+    // Phase 4: Release GPU textures
+    if (mGpuInputTexture.resource != nullptr) {
+        gpuTextureRelease(mGpuInputTexture);
+        mGpuInputTexture = { nullptr };
+    }
+    
+    if (mGpuOutputTexture.resource != nullptr) {
+        gpuTextureRelease(mGpuOutputTexture);
+        mGpuOutputTexture = { nullptr };
+    }
+    
+    // Phase 3: Clean up GPU resources
+    if (mGpuCommandList != nullptr) {
+        // Command list is released by GPU device module
+        mGpuCommandList = nullptr;
+    }
+    
+    if (mGpuCommandAllocator != nullptr) {
+        // Command allocator is released by GPU device module
+        mGpuCommandAllocator = nullptr;
+    }
+    
+    // Device and queue pointers are owned by GPU device module, don't release
+    mGpuDevice = nullptr;
+    mGpuCommandQueue = nullptr;
+    mFsrContextInitialized = false;
+    
     return true;
 }
 
 bool UpscalerImpl::dispatchFsr2() {
-    // Phase 2 TODO: Implement actual GPU upscaling dispatch with ffxDispatch()
+    // Phase 3-4: Dispatch GPU compute with FSR2 context
+    if (!mFsrContextInitialized || mGpuDevice == nullptr || mGpuCommandQueue == nullptr) {
+        setError("FSR2 not properly initialized, cannot dispatch");
+        return false;
+    }
+    
+    if (mGpuInputTexture.resource == nullptr || mGpuOutputTexture.resource == nullptr) {
+        setError("GPU textures not created, cannot dispatch");
+        return false;
+    }
+    
+    // Phase 4: Upload input buffer to GPU texture
+    if (!gpuTextureUpload(mGpuInputTexture, mInputBuffer, mInputWidth * mInputHeight * sizeof(uint32_t))) {
+        setError("Failed to upload input texture");
+        return false;
+    }
+    
+    // Phase 4 TODO: Create command list for this dispatch
+    // if (mGpuCommandList == nullptr) {
+    //     mGpuCommandList = gpuDeviceCreateCommandList(mGpuCommandAllocator);
+    //     if (mGpuCommandList == nullptr) {
+    //         setError("Failed to create GPU command list");
+    //         return false;
+    //     }
+    // }
+    
+    // Phase 4 TODO: Implement actual GPU upscaling dispatch with ffxDispatch()
+    // This would include:
+    // 1. Binding input texture (mGpuInputTexture) as shader resource
+    // 2. Setting up FSR2 parameters (jitter, exposure, etc.)
+    // 3. Recording GPU compute commands using mGpuCommandList
+    // 4. Executing command list with gpuDeviceExecuteCommandList()
+    // 5. Waiting for GPU with gpuDeviceWaitForGpu()
+    // 6. Reading back output texture to mOutputBuffer via gpuTextureDownload()
+    
+    logDiagnostic("FSR2 dispatch: GPU compute pending (Phase 4)");
     mFrameIndex++;
     return true;
 }
