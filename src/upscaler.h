@@ -7,8 +7,11 @@ namespace fallout {
 
 // Upscaler mode selection
 enum class UpscalerMode {
-    NONE,      // No upscaling - use integer/bilinear scaling only
-    FSR2,      // AMD FidelityFX Super Resolution 2 (Redstone/SDK 2.1)
+    NONE,       // No upscaling - passthrough
+    FSR2,       // AMD FidelityFX Super Resolution 2 (temporal upscaling)
+    INTEGER_2X, // Integer 2x scaling (640x480 -> 1280x960) - Perfect for pixel art
+    INTEGER_3X, // Integer 3x scaling (640x480 -> 1920x1440) - Perfect for pixel art
+    INTEGER_4X, // Integer 4x scaling (640x480 -> 2560x1920) - Perfect for pixel art
 };
 
 // Upscaler quality/performance tiers
@@ -30,18 +33,30 @@ enum class UpscalerState {
 class UpscalerImpl;
 
 /**
- * GPU-based upscaling using AMD FSR Redstone (FSR SDK 2.1)
+ * Full-screen upscaling for Fallout 2 CE
  * 
- * Upscales a 640x480 source buffer to the physical display resolution using AI-based
- * supersampling. This is a full-screen approach that composites all game elements
- * before upscaling, eliminating seams and lighting issues present in per-asset upscaling.
+ * Supports multiple upscaling modes:
+ * - FSR2: AMD FidelityFX temporal upscaling (GPU-accelerated)
+ * - INTEGER_2X/3X/4X: Lossless pixel replication (perfect for pixel art)
+ * 
+ * Integer scaling is RECOMMENDED for pixel art:
+ *   - Zero artifacts, perfect sharpness
+ *   - Preserves original aesthetic
+ *   - Ultra-fast (simple pixel replication)
+ *   - Best for monitors that match output resolution
+ * 
+ * Configuration (fallout2.cfg):
+ *   upscaler_mode=1  # FSR2 (default, any resolution)
+ *   upscaler_mode=2  # Integer 2x (640x480 -> 1280x960)
+ *   upscaler_mode=3  # Integer 3x (640x480 -> 1920x1440)
+ *   upscaler_mode=4  # Integer 4x (640x480 -> 2560x1920)
  * 
  * Usage:
- *   1. Initialize once: upscalerInit(1920, 1080)
+ *   1. Initialize: upscalerInit(inputW, inputH, outputW, outputH, mode)
  *   2. Each frame:
- *      - Copy/convert source to RGBA: copyScreenBufferToUpscaler()
- *      - Dispatch upscaling: upscalerDispatch()
- *      - Copy result to display: upscalerGetOutputBuffer()
+ *      - Set input: upscalerSetIndexedInput() or upscalerSetRgbaInput()
+ *      - Dispatch: upscalerDispatch()
+ *      - Get result: upscalerGetOutputBuffer()
  *   3. Cleanup: upscalerShutdown()
  */
 

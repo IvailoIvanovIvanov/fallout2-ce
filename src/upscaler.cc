@@ -119,6 +119,7 @@ private:
     bool initFsr2();
     bool shutdownFsr2();
     bool dispatchFsr2();
+    bool dispatchIntegerScale(int scaleFactor);
 
     bool allocateInputBuffer(int width, int height);
     bool allocateOutputBuffer(int width, int height);
@@ -253,10 +254,10 @@ void UpscalerImpl::loadConfiguration() {
     logDiagnostic("LOADING UPSCALER CONFIGURATION");
     logDiagnostic("========================================");
     
-    // Load upscaler mode (0=NONE, 1=FSR2)
+    // Load upscaler mode (0=NONE, 1=FSR2, 2=INTEGER_2X, 3=INTEGER_3X, 4=INTEGER_4X)
     int modeValue = 1; // Default to FSR2
     if (configGetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_MODE_KEY, &modeValue)) {
-        logDiagnostic("Config: upscaler_mode = %d (0=NONE, 1=FSR2)", modeValue);
+        logDiagnostic("Config: upscaler_mode = %d (0=NONE, 1=FSR2, 2=INT2X, 3=INT3X, 4=INT4X)", modeValue);
     } else {
         logDiagnostic("Config: upscaler_mode not found, using default FSR2");
     }
@@ -822,6 +823,81 @@ bool UpscalerImpl::dispatchFsr2() {
     return true;
 }
 
+/**
+ * Integer scaling dispatch (lossless pixel replication)
+ * Optimal for pixel art - zero blur, zero artifacts, perfect sharpness
+ */
+bool UpscalerImpl::dispatchIntegerScale(int scaleFactor) {
+    logDiagnostic("================== INTEGER SCALE DISPATCH (Frame %d, Factor: %dx) ==================", mFrameIndex, scaleFactor);
+    
+    if (mInputBuffer == nullptr || mOutputBuffer == nullptr) {
+        setError("Input or output buffer is null");
+        logDiagnostic("ERROR: Buffers not allocated! input=%p, output=%p", mInputBuffer, mOutputBuffer);
+        return false;
+    }
+    
+    if (scaleFactor < 2 || scaleFactor > 4) {
+        setError("Scale factor must be 2, 3, or 4");
+        logDiagnostic("ERROR: Invalid scale factor %d", scaleFactor);
+        return false;
+    }
+    
+    logDiagnostic("Performing %dx integer scaling: %dx%d -> %dx%d",
+                  scaleFactor, mInputWidth, mInputHeight, mOutputWidth, mOutputHeight);
+    
+    // Simple pixel replication: each input pixel becomes an NxN block
+    // This is the FASTEST and MOST ARTIFACT-FREE upscaling method for pixel art
+    const uint32_t* input = mInputBuffer;
+    uint32_t* output = mOutputBuffer;
+    
+    for (int y = 0; y < mInputHeight; y++) {
+        for (int x = 0; x < mInputWidth; x++) {
+            uint32_t pixel = input[y * mInputWidth + x];
+            
+            // Replicate to NxN block in output
+            for (int dy = 0; dy < scaleFactor; dy++) {
+                int outY = y * scaleFactor + dy;
+                if (outY >= mOutputHeight) break;
+                
+                for (int dx = 0; dx < scaleFactor; dx++) {
+                    int outX = x * scaleFactor + dx;
+                    if (outX >= mOutputWidth) break;
+                    
+                    output[outY * mOutputWidth + outX] = pixel;
+                }
+            }
+        }
+    }
+    
+    // Apply lightweight post-processing filters (optional debanding/edge smoothing)
+    if (mVerboseLogging) {
+        logDiagnostic("Applying post-processing filters...");
+    }
+    
+    FilterConfig filterConfig;
+    filterConfig.type = FilterType::MINIMAL;
+    filterConfig.enableDebanding = mEnableDebanding;
+    filterConfig.debandingStrength = mDebandingStrength;
+    filterConfig.frameIndex = mFrameIndex;
+    filterConfig.enableEdgeSmoothing = mEnableEdgeSmoothing;
+    filterConfig.smoothingStrength = mSmoothingStrength;
+    filterConfig.edgeDetectThreshold = 0.15f;
+    filterConfig.enableLogging = mVerboseLogging;
+    
+    if (filterApplyPostProcessing(mOutputBuffer, mOutputWidth, mOutputHeight, 
+                                  mOutputWidth * sizeof(uint32_t), filterConfig)) {
+        if (mVerboseLogging) {
+            logDiagnostic("Post-processing filters applied ✓");
+        }
+    } else {
+        logDiagnostic("WARNING: Post-processing failed, continuing without filters");
+    }
+    
+    mFrameIndex++;
+    logDiagnostic("================== INTEGER SCALE COMPLETE ✓ (Frame %d) ==================", mFrameIndex - 1);
+    return true;
+}
+
 // ============================================================================
 // Public Implementation
 // ============================================================================
@@ -836,14 +912,26 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
     
     logDiagnostic("Input Resolution: %dx%d", inputWidth, inputHeight);
     logDiagnostic("Output Resolution: %dx%d", outputWidth, outputHeight);
-    logDiagnostic("Upscaler Mode: %s", mode == UpscalerMode::FSR2 ? "FSR2" : "NONE");
-    logDiagnostic("Quality: %s", mQuality == UpscalerQuality::QUALITY ? "QUALITY" : 
-                                   mQuality == UpscalerQuality::BALANCED ? "BALANCED" : "PERFORMANCE");
-    logDiagnostic("Sharpness: %.2f (FSR2 RCAS)", mSharpness);
+    
+    const char* modeStr = "UNKNOWN";
+    if (mode == UpscalerMode::NONE) modeStr = "NONE";
+    else if (mode == UpscalerMode::FSR2) modeStr = "FSR2";
+    else if (mode == UpscalerMode::INTEGER_2X) modeStr = "INTEGER_2X";
+    else if (mode == UpscalerMode::INTEGER_3X) modeStr = "INTEGER_3X";
+    else if (mode == UpscalerMode::INTEGER_4X) modeStr = "INTEGER_4X";
+    
+    logDiagnostic("Upscaler Mode: %s", modeStr);
+    
+    if (mode == UpscalerMode::FSR2) {
+        logDiagnostic("Quality: %s", mQuality == UpscalerQuality::QUALITY ? "QUALITY" : 
+                                       mQuality == UpscalerQuality::BALANCED ? "BALANCED" : "PERFORMANCE");
+        logDiagnostic("Sharpness: %.2f (FSR2 RCAS)", mSharpness);
+        logDiagnostic("sRGB Colorspace: ENABLED (for proper 8-bit palette handling)");
+    }
+    
     logDiagnostic("Lightweight Filters: Debanding=%s (%.2f), EdgeSmoothing=%s (%.2f)",
                   mEnableDebanding ? "ON" : "OFF", mDebandingStrength,
                   mEnableEdgeSmoothing ? "ON" : "OFF", mSmoothingStrength);
-    logDiagnostic("sRGB Colorspace: ENABLED (for proper 8-bit palette handling)");
     logDiagnostic("Verbose Logging: %s", mVerboseLogging ? "ENABLED" : "DISABLED");
     
     if (mState != UpscalerState::STATE_UNINITIALIZED) {
@@ -860,6 +948,39 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
         mState = UpscalerState::STATE_READY;
         mIsAvailable = false;
         logDiagnostic("UPSCALER INITIALIZATION COMPLETE (DISABLED)");
+        return true;
+    }
+
+    // Integer scaling modes (2x, 3x, 4x)
+    if (mode == UpscalerMode::INTEGER_2X || mode == UpscalerMode::INTEGER_3X || mode == UpscalerMode::INTEGER_4X) {
+        int scaleFactor = (mode == UpscalerMode::INTEGER_2X) ? 2 : 
+                          (mode == UpscalerMode::INTEGER_3X) ? 3 : 4;
+        
+        logDiagnostic("Upscaler mode: INTEGER_%dX (perfect pixel replication)", scaleFactor);
+        logDiagnostic("Step 1/2: Allocating input buffer...");
+        
+        if (!allocateInputBuffer(inputWidth, inputHeight)) {
+            mState = UpscalerState::STATE_ERROR;
+            logDiagnostic("ERROR: Input buffer allocation failed!");
+            return false;
+        }
+        logDiagnostic("Step 1/2: Input buffer allocated ✓ (%dx%d)", inputWidth, inputHeight);
+
+        logDiagnostic("Step 2/2: Allocating output buffer...");
+        if (!allocateOutputBuffer(outputWidth, outputHeight)) {
+            deallocateBuffers();
+            mState = UpscalerState::STATE_ERROR;
+            logDiagnostic("ERROR: Output buffer allocation failed!");
+            return false;
+        }
+        logDiagnostic("Step 2/2: Output buffer allocated ✓ (%dx%d)", outputWidth, outputHeight);
+
+        mIsAvailable = true;
+        mState = UpscalerState::STATE_READY;
+        logDiagnostic("========================================");
+        logDiagnostic("INTEGER SCALING INITIALIZATION COMPLETE ✓");
+        logDiagnostic("Benefits: Zero blur, zero artifacts, perfect sharpness");
+        logDiagnostic("========================================");
         return true;
     }
 
@@ -988,6 +1109,18 @@ bool UpscalerImpl::dispatch() {
 
     if (mMode == UpscalerMode::FSR2) {
         return dispatchFsr2();
+    }
+    
+    if (mMode == UpscalerMode::INTEGER_2X) {
+        return dispatchIntegerScale(2);
+    }
+    
+    if (mMode == UpscalerMode::INTEGER_3X) {
+        return dispatchIntegerScale(3);
+    }
+    
+    if (mMode == UpscalerMode::INTEGER_4X) {
+        return dispatchIntegerScale(4);
     }
 
     return true;
