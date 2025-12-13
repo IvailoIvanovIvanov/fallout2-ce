@@ -140,6 +140,14 @@ int upscalerGetOutputPitch();
 void upscalerGetOutputDimensions(int& width, int& height);
 
 /**
+ * Get the configured upscaler mode from config file
+ * This may differ from the mode passed to upscalerInit() if config overrides it
+ * 
+ * @return Configured upscaler mode
+ */
+UpscalerMode upscalerGetConfiguredMode();
+
+/**
  * Set quality/performance tier
  * 
  * @param quality Upscaler quality mode

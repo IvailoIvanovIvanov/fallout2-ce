@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cfloat>
 #include "diagnostics.h"
 
 namespace fallout {
@@ -450,6 +451,125 @@ bool filterApplyEdgeSmoothing(
 
 // ============================================================================
 // Combined Post-Processing
+// ============================================================================
+
+// ============================================================================
+// Kuwahara Filter (Edge-Preserving Color Smoothing)
+// ============================================================================
+
+/**
+ * Helper: Extract RGB values from packed color
+ */
+inline void getRGB(uint32_t color, float& r, float& g, float& b) {
+    r = static_cast<float>((color >> 16) & 0xFF) / 255.0f;
+    g = static_cast<float>((color >> 8) & 0xFF) / 255.0f;
+    b = static_cast<float>(color & 0xFF) / 255.0f;
+}
+
+/**
+ * Helper: Pack RGB back to color (preserves alpha)
+ */
+inline uint32_t packRGB(uint32_t original, float r, float g, float b) {
+    uint8_t alpha = (original >> 24) & 0xFF;
+    uint8_t rb = static_cast<uint8_t>(std::clamp(r * 255.0f, 0.0f, 255.0f));
+    uint8_t gb = static_cast<uint8_t>(std::clamp(g * 255.0f, 0.0f, 255.0f));
+    uint8_t bb = static_cast<uint8_t>(std::clamp(b * 255.0f, 0.0f, 255.0f));
+    return (static_cast<uint32_t>(alpha) << 24) | (static_cast<uint32_t>(rb) << 16) |
+           (static_cast<uint32_t>(gb) << 8) | static_cast<uint32_t>(bb);
+}
+
+/**
+ * Kuwahara filter: Edge-preserving smoothing
+ * 
+ * For each pixel, divides surrounding window into 4 quadrants,
+ * computes mean color of each quadrant, then selects the mean
+ * closest to the original pixel. This preserves edges while
+ * smoothing flat color regions.
+ */
+bool filterApplyKuwahara(
+    const uint32_t* input,
+    uint32_t* output,
+    int width,
+    int height,
+    int radius)
+{
+    if (input == nullptr || output == nullptr || width <= 0 || height <= 0 || radius <= 0) {
+        return false;
+    }
+    
+    if (radius > 10) {
+        radius = 10;  // Clamp to reasonable range
+    }
+    
+    // Process each pixel
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            uint32_t originalColor = input[y * width + x];
+            float origR, origG, origB;
+            getRGB(originalColor, origR, origG, origB);
+            
+            // Divide window into 4 quadrants and compute mean color of each
+            float meanR[4] = {0}, meanG[4] = {0}, meanB[4] = {0};
+            int counts[4] = {0};
+            
+            // Quadrant offsets: TL, TR, BL, BR
+            int qx[4] = {-1, 0, -1, 0};
+            int qy[4] = {-1, -1, 0, 0};
+            
+            // Sample each quadrant
+            for (int q = 0; q < 4; q++) {
+                int startX = x + qx[q] * radius;
+                int startY = y + qy[q] * radius;
+                int endX = startX + radius;
+                int endY = startY + radius;
+                
+                for (int py = startY; py < endY; py++) {
+                    if (py < 0 || py >= height) continue;
+                    for (int px = startX; px < endX; px++) {
+                        if (px < 0 || px >= width) continue;
+                        
+                        float r, g, b;
+                        getRGB(input[py * width + px], r, g, b);
+                        meanR[q] += r;
+                        meanG[q] += g;
+                        meanB[q] += b;
+                        counts[q]++;
+                    }
+                }
+                
+                if (counts[q] > 0) {
+                    meanR[q] /= counts[q];
+                    meanG[q] /= counts[q];
+                    meanB[q] /= counts[q];
+                }
+            }
+            
+            // Find quadrant with mean closest to original pixel
+            float minDist = FLT_MAX;
+            int bestQuad = 0;
+            
+            for (int q = 0; q < 4; q++) {
+                float dr = meanR[q] - origR;
+                float dg = meanG[q] - origG;
+                float db = meanB[q] - origB;
+                float dist = dr * dr + dg * dg + db * db;
+                
+                if (dist < minDist) {
+                    minDist = dist;
+                    bestQuad = q;
+                }
+            }
+            
+            // Output the mean color of the closest quadrant
+            output[y * width + x] = packRGB(originalColor, meanR[bestQuad], meanG[bestQuad], meanB[bestQuad]);
+        }
+    }
+    
+    return true;
+}
+
+// ============================================================================
+// Post-Processing Pipeline
 // ============================================================================
 
 bool filterApplyPostProcessing(

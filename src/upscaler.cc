@@ -81,8 +81,19 @@ public:
         loadConfiguration();
     }
 
-    bool isAvailable() const { return mIsAvailable; }
+    bool isAvailable() const { 
+        // Log every 60th call to track availability
+        static int checkCount = 0;
+        checkCount++;
+        if (mUpscaleLog != nullptr && (checkCount == 1 || checkCount % 60 == 0)) {
+            fprintf(mUpscaleLog, "[UPSCALER] isAvailable() check #%d: %s (state=%d, mode=%d)\n",
+                checkCount, mIsAvailable ? "TRUE" : "FALSE", (int)mState, (int)mMode);
+            fflush(mUpscaleLog);
+        }
+        return mIsAvailable; 
+    }
     const char* getLastError() const { return mLastError; }
+    UpscalerMode getConfiguredMode() const { return mConfiguredMode; }
 
 private:
     UpscalerImpl() {
@@ -143,6 +154,7 @@ private:
     // Buffers (ARGB8888 format)
     uint32_t* mInputBuffer = nullptr;
     uint32_t* mOutputBuffer = nullptr;
+    uint32_t* mTempBuffer = nullptr;      // Temporary buffer for pre-processing
     int mInputPitch = 0;
     int mOutputPitch = 0;
 
@@ -171,6 +183,11 @@ private:
     float mDebandingStrength = 0.5f;   // Temporal dithering strength
     bool mEnableEdgeSmoothing = true;  // Optional pixel art anti-aliasing
     float mSmoothingStrength = 0.6f;   // Selective edge smoothing strength
+    
+    // Pre-scaling Kuwahara filter (edge-preserving color smoothing)
+    bool mEnableKuwahara = false;      // Edge-preserving smoothing before scaling
+    int mKuwaharaRadius = 2;           // Smoothing window radius (1-5)
+    
     bool mVerboseLogging = false;      // Detailed diagnostic logging
 
     // Error tracking
@@ -323,12 +340,30 @@ void UpscalerImpl::loadConfiguration() {
         logDiagnostic("Config: upscaler_smoothing_strength not found, using default 0.6");
     }
     
-    // Load verbose logging flag
+    // Load Kuwahara filter settings (edge-preserving pre-scaling smoothing)
+    bool kuwaharaEnabled = false;
+    if (configGetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_kuwahara_enable", &kuwaharaEnabled)) {
+        mEnableKuwahara = kuwaharaEnabled;
+        logDiagnostic("Config: upscaler_kuwahara_enable = %s", mEnableKuwahara ? "true" : "false");
+    } else {
+        logDiagnostic("Config: upscaler_kuwahara_enable not found, using default false");
+    }
+    
+    int radiusValue = 2;
+    if (configGetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_kuwahara_radius", &radiusValue)) {
+        mKuwaharaRadius = std::clamp(radiusValue, 1, 5);
+        logDiagnostic("Config: upscaler_kuwahara_radius = %d (clamped 1-5)", mKuwaharaRadius);
+    } else {
+        logDiagnostic("Config: upscaler_kuwahara_radius not found, using default 2");
+    }
+    
+    // Load verbose logging flag (FORCE DISABLED due to performance impact)
     bool verboseValue = false;
     if (configGetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_VERBOSE_LOG_KEY, &verboseValue)) {
-        mVerboseLogging = verboseValue;
-        logDiagnostic("Config: upscaler_verbose_log = %s", mVerboseLogging ? "true" : "false");
+        mVerboseLogging = false;  // FORCE DISABLED - verbose logging causes massive slowdown
+        logDiagnostic("Config: upscaler_verbose_log = %s (forced false for performance)", verboseValue ? "true (config)" : "false (config)");
     } else {
+        mVerboseLogging = false;
         logDiagnostic("Config: upscaler_verbose_log not found, using default false");
     }
     
@@ -426,6 +461,10 @@ void UpscalerImpl::deallocateBuffers() {
     if (mOutputBuffer != nullptr) {
         internal_free(mOutputBuffer);
         mOutputBuffer = nullptr;
+    }
+    if (mTempBuffer != nullptr) {
+        internal_free(mTempBuffer);
+        mTempBuffer = nullptr;
     }
     mInputWidth = 0;
     mInputHeight = 0;
@@ -837,7 +876,12 @@ bool UpscalerImpl::dispatchFsr2() {
  * Optimal for pixel art - zero blur, zero artifacts, perfect sharpness
  */
 bool UpscalerImpl::dispatchIntegerScale(int scaleFactor) {
-    logDiagnostic("================== INTEGER SCALE DISPATCH (Frame %d, Factor: %dx) ==================", mFrameIndex, scaleFactor);
+    // Log every 60 frames (roughly once per second at 60fps) to avoid log spam
+    bool shouldLog = (mFrameIndex % 60 == 0) || mVerboseLogging;
+    
+    if (shouldLog) {
+        logDiagnostic("================== INTEGER SCALE DISPATCH (Frame %d, Factor: %dx) ==================", mFrameIndex, scaleFactor);
+    }
     
     if (mInputBuffer == nullptr || mOutputBuffer == nullptr) {
         setError("Input or output buffer is null");
@@ -851,26 +895,72 @@ bool UpscalerImpl::dispatchIntegerScale(int scaleFactor) {
         return false;
     }
     
-    logDiagnostic("Performing %dx integer scaling: %dx%d -> %dx%d",
-                  scaleFactor, mInputWidth, mInputHeight, mOutputWidth, mOutputHeight);
+    if (shouldLog) {
+        logDiagnostic("Performing %dx integer scaling: %dx%d -> %dx%d",
+                      scaleFactor, mInputWidth, mInputHeight, mOutputWidth, mOutputHeight);
+    }
     
-    // Simple pixel replication: each input pixel becomes an NxN block
-    // This is the FASTEST and MOST ARTIFACT-FREE upscaling method for pixel art
-    const uint32_t* input = mInputBuffer;
+    // Phase 1: Optional pre-scaling edge-preserving smoothing (Kuwahara filter)
+    uint32_t* sourceBuffer = mInputBuffer;
+    
+    if (mEnableKuwahara) {
+        if (shouldLog) {
+            logDiagnostic("Applying Kuwahara filter (pre-scaling smoothing, radius=%d)...", mKuwaharaRadius);
+        }
+        
+        // Allocate temp buffer if not already done
+        if (mTempBuffer == nullptr) {
+            int tempSize = mInputWidth * mInputHeight * sizeof(uint32_t);
+            mTempBuffer = static_cast<uint32_t*>(internal_malloc(tempSize));
+            if (mTempBuffer == nullptr) {
+                logDiagnostic("ERROR: Failed to allocate temp buffer for Kuwahara!");
+                return false;
+            }
+        }
+        
+        // Apply Kuwahara filter (edge-preserving color smoothing)
+        if (!filterApplyKuwahara(mInputBuffer, mTempBuffer, mInputWidth, mInputHeight, mKuwaharaRadius)) {
+            logDiagnostic("ERROR: Kuwahara filter failed!");
+            return false;
+        }
+        
+        sourceBuffer = mTempBuffer;  // Use filtered buffer as source for scaling
+        if (shouldLog) {
+            logDiagnostic("Kuwahara filter applied ✓ (smoothed colors, preserved edges)");
+        }
+    } else if (shouldLog) {
+        logDiagnostic("Kuwahara filter: DISABLED (using raw input)");
+    }
+    
+    // Phase 2: Integer scaling - pixel replication
+    // Each input pixel becomes an NxN block
+    // For INTEGER_3X: 640x480 -> 1920x1440, centered in output buffer with letterboxing
+    
+    // Calculate actual scaled dimensions
+    int scaledWidth = mInputWidth * scaleFactor;   // 640 * 3 = 1920
+    int scaledHeight = mInputHeight * scaleFactor;  // 480 * 3 = 1440
+    
+    // Calculate centering offset for letterboxing
+    int offsetX = (mOutputWidth - scaledWidth) / 2;   // (2560-1920)/2 = 320
+    int offsetY = (mOutputHeight - scaledHeight) / 2;  // (1440-1440)/2 = 0
+    
+    // Clear output buffer to black (for letterbox bars)
+    memset(mOutputBuffer, 0, mOutputWidth * mOutputHeight * sizeof(uint32_t));
+    
     uint32_t* output = mOutputBuffer;
     
     for (int y = 0; y < mInputHeight; y++) {
         for (int x = 0; x < mInputWidth; x++) {
-            uint32_t pixel = input[y * mInputWidth + x];
+            uint32_t pixel = sourceBuffer[y * mInputWidth + x];
             
-            // Replicate to NxN block in output
+            // Replicate to NxN block in output, with centering offset
             for (int dy = 0; dy < scaleFactor; dy++) {
-                int outY = y * scaleFactor + dy;
-                if (outY >= mOutputHeight) break;
+                int outY = offsetY + (y * scaleFactor + dy);
+                if (outY < 0 || outY >= mOutputHeight) continue;
                 
                 for (int dx = 0; dx < scaleFactor; dx++) {
-                    int outX = x * scaleFactor + dx;
-                    if (outX >= mOutputWidth) break;
+                    int outX = offsetX + (x * scaleFactor + dx);
+                    if (outX < 0 || outX >= mOutputWidth) continue;
                     
                     output[outY * mOutputWidth + outX] = pixel;
                 }
@@ -878,7 +968,13 @@ bool UpscalerImpl::dispatchIntegerScale(int scaleFactor) {
         }
     }
     
-    // Apply lightweight post-processing filters (optional debanding/edge smoothing)
+    if (mVerboseLogging || (mFrameIndex % 60 == 0)) {
+        logDiagnostic("Integer %dx scaling: %dx%d -> %dx%d (centered in %dx%d, offset +%d,+%d)",
+                     scaleFactor, mInputWidth, mInputHeight, scaledWidth, scaledHeight,
+                     mOutputWidth, mOutputHeight, offsetX, offsetY);
+    }
+    
+    // Phase 3: Optional post-scaling filters (debanding/edge smoothing)
     if (mVerboseLogging) {
         logDiagnostic("Applying post-processing filters...");
     }
@@ -903,7 +999,9 @@ bool UpscalerImpl::dispatchIntegerScale(int scaleFactor) {
     }
     
     mFrameIndex++;
-    logDiagnostic("================== INTEGER SCALE COMPLETE ✓ (Frame %d) ==================", mFrameIndex - 1);
+    if (shouldLog) {
+        logDiagnostic("================== INTEGER SCALE COMPLETE ✓ (Frame %d) ==================", mFrameIndex - 1);
+    }
     return true;
 }
 
@@ -945,6 +1043,13 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
     logDiagnostic("Lightweight Filters: Debanding=%s (%.2f), EdgeSmoothing=%s (%.2f)",
                   mEnableDebanding ? "ON" : "OFF", mDebandingStrength,
                   mEnableEdgeSmoothing ? "ON" : "OFF", mSmoothingStrength);
+    
+    if (mEnableKuwahara) {
+        logDiagnostic("Kuwahara Filter: ENABLED (radius=%d, pre-scaling edge-preserving smoothing)", mKuwaharaRadius);
+    } else {
+        logDiagnostic("Kuwahara Filter: DISABLED");
+    }
+    
     logDiagnostic("Verbose Logging: %s", mVerboseLogging ? "ENABLED" : "DISABLED");
     
     if (mState != UpscalerState::STATE_UNINITIALIZED) {
@@ -1115,8 +1220,18 @@ bool UpscalerImpl::setRgbaInput(const uint32_t* rgbaBuffer) {
 }
 
 bool UpscalerImpl::dispatch() {
+    static int dispatchCallCount = 0;
+    dispatchCallCount++;
+    
+    // Log first call and every 60th call
+    if (dispatchCallCount == 1 || (dispatchCallCount % 60 == 0)) {
+        logDiagnostic("DISPATCH called (count=%d, mode=%d, state=%d)", 
+                      dispatchCallCount, (int)mMode, (int)mState);
+    }
+    
     if (mState != UpscalerState::STATE_READY) {
         setError("Upscaler not ready");
+        logDiagnostic("ERROR: Dispatch called but upscaler not ready! State=%d", (int)mState);
         return false;
     }
 
@@ -1199,6 +1314,10 @@ UpscalerState upscalerGetState() {
 
 int upscalerSetQuality(UpscalerQuality quality) {
     return upscalerGetImpl()->setQuality(quality) ? 0 : -1;
+}
+
+UpscalerMode upscalerGetConfiguredMode() {
+    return upscalerGetImpl()->getConfiguredMode();
 }
 
 int upscalerSetSharpness(float sharpness) {

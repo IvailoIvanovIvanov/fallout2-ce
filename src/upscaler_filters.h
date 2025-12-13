@@ -102,6 +102,31 @@ bool filterApplyEdgeSmoothing(
 );
 
 /**
+ * @brief Apply Kuwahara filter for edge-preserving color smoothing
+ * 
+ * Pre-scaling smoothing filter that smooths colors while preserving edges.
+ * Perfect for making color gradients smoother before integer scaling.
+ * 
+ * Algorithm: For each pixel, examines 4 quadrants of a window, computes
+ * mean color of each quadrant, and selects the mean closest to original
+ * pixel. This preserves edges while smoothing flat color regions.
+ * 
+ * @param input Input ARGB8888 buffer (640x480)
+ * @param output Output ARGB8888 buffer (same dimensions)
+ * @param width Buffer width in pixels
+ * @param height Buffer height in pixels
+ * @param radius Window radius (typically 1-3, higher = more smoothing)
+ * @return true if successful
+ */
+bool filterApplyKuwahara(
+    const uint32_t* input,
+    uint32_t* output,
+    int width,
+    int height,
+    int radius
+);
+
+/**
  * @brief Apply post-processing filters for pixel art upscaling
  * 
  * Lightweight filter pipeline that complements FSR2's built-in RCAS.

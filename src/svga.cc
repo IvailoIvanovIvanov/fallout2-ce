@@ -9,6 +9,7 @@
 
 #include <SDL.h>
 
+#include "color.h"
 #include "config.h"
 #include "diagnostics.h"
 #include "display_scaler.h"
@@ -852,8 +853,10 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
         
         // Initialize upscaler with game resolution
         // Input: 640x480 (classic Fallout 2 resolution)
-        // Output: Physical window resolution
-        diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Initializing upscaler: 640x480 -> %dx%d", physicalWidth, physicalHeight);
+        // Output: Physical display resolution
+        // For integer scaling modes, the upscaler will center content with letterboxing
+        diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Initializing upscaler: 640x480 -> %dx%d", 
+                      physicalWidth, physicalHeight);
         if (upscalerInit(640, 480, physicalWidth, physicalHeight, UpscalerMode::FSR2) != 0) {
             diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Upscaler initialization failed, continuing without upscaling");
         }
@@ -1690,10 +1693,31 @@ static bool createRenderer()
         presenterWidth = std::max(1, rectGetWidth(&viewport));
         presenterHeight = std::max(1, rectGetHeight(&viewport));
     }
+    
+    // CRITICAL FIX: When upscaler is enabled, texture must match physical display size
+    // to hold the upscaled content (e.g., 2560x1440 for INTEGER_3X mode)
+    int textureWidth = presenterWidth;
+    int textureHeight = presenterHeight;
+    if (upscalerIsAvailable()) {
+        int physicalWidth, physicalHeight;
+        SDL_GetWindowSize(gSdlWindow, &physicalWidth, &physicalHeight);
+        textureWidth = physicalWidth;
+        textureHeight = physicalHeight;
+    }
 
-    gSdlTexture = SDL_CreateTexture(gSdlRenderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, presenterWidth, presenterHeight);
+    gSdlTexture = SDL_CreateTexture(gSdlRenderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, textureWidth, textureHeight);
     if (gSdlTexture == nullptr) {
         return false;
+    }
+    
+    // DEBUG: Log texture creation
+    FILE* pipelineLog = fopen("C:\\Program Files (x86)\\Steam\\steamapps\\common\\Fallout 2\\pipeline.log", "w");
+    if (pipelineLog) {
+        fprintf(pipelineLog, "[TEXTURE CREATE] Logical space: %dx%d\n", logicalSpace.width, logicalSpace.height);
+        fprintf(pipelineLog, "[TEXTURE CREATE] Presenter: %dx%d\n", presenterWidth, presenterHeight);
+        fprintf(pipelineLog, "[TEXTURE CREATE] Upscaler available: %s\n", upscalerIsAvailable() ? "YES" : "NO");
+        fprintf(pipelineLog, "[TEXTURE CREATE] Texture created: %dx%d\n", textureWidth, textureHeight);
+        fclose(pipelineLog);
     }
 
     Uint32 format;
@@ -2263,11 +2287,130 @@ void handleWindowSizeChanged()
 
 void renderPresent()
 {
+    static int renderPresentCallCount = 0;
+    renderPresentCallCount++;
+    
     syncPhysicalSizeWithRenderer();
     ensurePresenterSurfaceMatchesBounds();
     renderTraceCommitFrame();
     windowPresentVirtualScreen();
     renderCommandsBeforePresent();
+    
+    // Apply upscaling if enabled (INTEGER_2X/3X/4X or FSR2)
+    // This runs Kuwahara filter + integer scaling or FSR2 before presenting to screen
+    
+    // Check if upscaler is available
+    bool available = upscalerIsAvailable();
+    bool upscalerDidRender = false;  // Track if upscaler handled the frame
+    int actualUpscaledWidth = 0;  // Actual content dimensions from upscaler
+    int actualUpscaledHeight = 0;
+    
+    if (available) {
+        // Get the SDL surface with the game frame data (8-bit indexed)
+        // This is where the game actually renders the 640x480 frame
+        unsigned char* gameBuffer = nullptr;
+        if (gSdlSurface != nullptr && gSdlSurface->pixels != nullptr) {
+            gameBuffer = static_cast<unsigned char*>(gSdlSurface->pixels);
+        }
+        
+        // DEBUG: Log only once on frame 1 (avoid repeated file I/O)
+        static bool bufferLogged = false;
+        if (!bufferLogged) {
+            bufferLogged = true;
+            FILE* debugLog = fopen("C:\\Program Files (x86)\\Steam\\steamapps\\common\\Fallout 2\\upscale.log", "a");
+            if (debugLog) {
+                fprintf(debugLog, "[RENDER] Frame 1: gSdlSurface=%p, gameBuffer=%p, available=%d\n", 
+                    gSdlSurface, gameBuffer, available ? 1 : 0);
+                fflush(debugLog);
+                fclose(debugLog);
+            }
+        }
+        
+        if (gameBuffer != nullptr) {
+            // Get current palette from SDL surface format
+            unsigned char* paletteData = nullptr;
+            if (gSdlSurface->format->palette != nullptr) {
+                paletteData = reinterpret_cast<unsigned char*>(gSdlSurface->format->palette->colors);
+            }
+            
+            if (paletteData != nullptr) {
+                // Convert palette from SDL_Color (RGB888) to ARGB8888 format
+                uint32_t palette[256];
+                for (int i = 0; i < 256; i++) {
+                    SDL_Color* color = &gSdlSurface->format->palette->colors[i];
+                    palette[i] = 0xFF000000 |  // Alpha = 255
+                                (color->r << 16) |  // R
+                                (color->g << 8) |   // G
+                                (color->b);         // B
+                }
+                
+                // Set indexed input (converts to RGBA internally)
+                int setInputResult = upscalerSetIndexedInput(gameBuffer, palette);
+                
+                if (setInputResult == 0) {
+                    // Dispatch upscaling (Kuwahara + integer scale or FSR2)
+                    int dispatchResult = upscalerDispatch();
+                    
+                    if (dispatchResult == 0) {
+                        // Upscaling successful - get the upscaled output buffer
+                        const uint32_t* upscaledBuffer = upscalerGetOutputBuffer();
+                        
+                        if (upscaledBuffer != nullptr) {
+                            // Upload upscaled output to texture
+                            // The upscaled buffer is in ARGB8888 format and already at display resolution
+                            int upscaledWidth = 0, upscaledHeight = 0;
+                            upscalerGetOutputDimensions(upscaledWidth, upscaledHeight);
+                            
+                            // DEBUG: Log upscaler output (ALWAYS, even after first frame)
+                            static int logCount = 0;
+                            if (logCount < 3) {
+                                logCount++;
+                                FILE* pipelineLog = fopen("C:\\Program Files (x86)\\Steam\\steamapps\\common\\Fallout 2\\pipeline.log", "a");
+                                if (pipelineLog) {
+                                    fprintf(pipelineLog, "\n[FRAME %d] UPSCALER OUTPUT\n", logCount);
+                                    fprintf(pipelineLog, "  upscaledWidth=%d, upscaledHeight=%d\n", upscaledWidth, upscaledHeight);
+                                    fprintf(pipelineLog, "  upscaledBuffer=%p\n", upscaledBuffer);
+                                    fclose(pipelineLog);
+                                }
+                            }
+                            
+                            // Update the SDL texture with the upscaled buffer
+                            if (gSdlTexture != nullptr && upscaledWidth > 0 && upscaledHeight > 0) {
+                                // DEBUG: Log dimensions BEFORE storing them (execute immediately)
+                                static bool firstFrameLogged = false;
+                                if (!firstFrameLogged) {
+                                    firstFrameLogged = true;
+                                    FILE* debugLog = fopen("C:\\Program Files (x86)\\Steam\\steamapps\\common\\Fallout 2\\upscale.log", "a");
+                                    if (debugLog) {
+                                        int texW, texH;
+                                        SDL_QueryTexture(gSdlTexture, nullptr, nullptr, &texW, &texH);
+                                        fprintf(debugLog, "[RENDER] CRITICAL DIMENSIONS:\n");
+                                        fprintf(debugLog, "[RENDER]   Upscaler output: %dx%d\n", upscaledWidth, upscaledHeight);
+                                        fprintf(debugLog, "[RENDER]   Texture size: %dx%d\n", texW, texH);
+                                        fflush(debugLog);
+                                        fclose(debugLog);
+                                    }
+                                }
+                                
+                                // Upload the upscaled content to the texture
+                                // Use UpdateTexture with a target rect to place content at top-left
+                                SDL_Rect uploadRect;
+                                uploadRect.x = 0;
+                                uploadRect.y = 0;
+                                uploadRect.w = upscaledWidth;
+                                uploadRect.h = upscaledHeight;
+                                SDL_UpdateTexture(gSdlTexture, &uploadRect, upscaledBuffer, upscaledWidth * 4);
+                                
+                                upscalerDidRender = true;  // Mark that we handled rendering
+                                actualUpscaledWidth = upscaledWidth;  // Store for srcRect adjustment
+                                actualUpscaledHeight = upscaledHeight;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     Rect presenterBounds = getPresenterSurfaceBounds();
     const int presenterWidth = rectGetWidth(&presenterBounds);
@@ -2275,19 +2418,33 @@ void renderPresent()
     SDL_Rect srcRect;
     srcRect.x = 0;
     srcRect.y = 0;
-    srcRect.w = presenterWidth;
-    srcRect.h = presenterHeight;
+    
+    // When upscaler renders, use full texture (it contains letterboxed content)
+    if (upscalerDidRender) {
+        int texW, texH;
+        SDL_QueryTexture(gSdlTexture, nullptr, nullptr, &texW, &texH);
+        srcRect.w = texW;
+        srcRect.h = texH;
+    } else {
+        srcRect.w = presenterWidth;
+        srcRect.h = presenterHeight;
+    }
 
     // Phase 8.4: Dirty region tracking - only upload changed pixels
     // Phase 8.5: Use streaming texture upload for direct GPU memory access
+    // CRITICAL: SKIP ALL TEXTURE UPLOAD if upscaler already handled it
+    // The upscaler processes gSdlSurface (640x480 phantom display) with filters + scaling
+    // and uploads the result directly to gSdlTexture. We must NOT override it!
     Rect dirtyRect;
     bool hasDirtyRegion = windowVirtualScreenGetDirtyRect(&dirtyRect);
     
-    bool textureUploadOk = false;
+    bool textureUploadOk = upscalerDidRender;  // If upscaler rendered, we're done
     bool usedStreamingUpload = false;
     Rect uploadRect = presenterBounds;
     
-    if (hasDirtyRegion) {
+    // ONLY upload original surface if upscaler did NOT handle the frame
+    if (!upscalerDidRender) {
+      if (hasDirtyRegion) {
         // Clip dirty rect to presenter bounds
         if (dirtyRect.left < 0) dirtyRect.left = 0;
         if (dirtyRect.top < 0) dirtyRect.top = 0;
@@ -2336,8 +2493,8 @@ void renderPresent()
             // Empty dirty region, nothing to upload
             textureUploadOk = true;
         }
-    } else {
-        // No dirty region tracked - upload full frame
+      } else {
+        // No dirty region tracked - upload full frame from original surface
         // Phase 8.5: Use streaming upload for full frame too
         if (settings.system.streaming_textures) {
             textureUploadOk = streamingSurfaceRectToTexture(gSdlTexture, gSdlTextureSurface, presenterBounds);
@@ -2347,7 +2504,8 @@ void renderPresent()
         if (!textureUploadOk) {
             textureUploadOk = SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch) == 0;
         }
-    }
+      }
+    } // End of !upscalerDidRender block
     
     if (!textureUploadOk) {
         if (gTextureUploadFailureLogBudget > 0 && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
@@ -2367,10 +2525,27 @@ void renderPresent()
     const Rect& viewport = displayScalerGetPhysicalViewport();
     logViewportIfChanged(viewport);
     SDL_Rect destRect;
-    destRect.x = viewport.left;
-    destRect.y = viewport.top;
-    destRect.w = rectGetWidth(&viewport);
-    destRect.h = rectGetHeight(&viewport);
+    
+    // When upscaler renders, display full texture at 1:1 centered on display
+    // The texture already contains letterboxed content (e.g., 1920x1440 in 2560x1440 with black bars)
+    if (upscalerDidRender) {
+        const int physicalWidth = screenGetPhysicalWidth();
+        const int physicalHeight = screenGetPhysicalHeight();
+        int texW, texH;
+        SDL_QueryTexture(gSdlTexture, nullptr, nullptr, &texW, &texH);
+        
+        // Render full texture at 1:1, centered
+        destRect.w = texW;
+        destRect.h = texH;
+        destRect.x = (physicalWidth - texW) / 2;
+        destRect.y = (physicalHeight - texH) / 2;
+    } else {
+        // Normal rendering path - use display scaler viewport
+        destRect.x = viewport.left;
+        destRect.y = viewport.top;
+        destRect.w = rectGetWidth(&viewport);
+        destRect.h = rectGetHeight(&viewport);
+    }
 
     SDL_Rect letterboxRects[4];
     int rectCount = 0;
