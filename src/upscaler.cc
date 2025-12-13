@@ -130,6 +130,7 @@ private:
     // State variables
     UpscalerState mState = UpscalerState::STATE_UNINITIALIZED;
     UpscalerMode mMode = UpscalerMode::NONE;
+    UpscalerMode mConfiguredMode = UpscalerMode::FSR2;  // Mode from config file
     UpscalerQuality mQuality = UpscalerQuality::BALANCED;
     bool mIsAvailable = false;
 
@@ -260,6 +261,14 @@ void UpscalerImpl::loadConfiguration() {
         logDiagnostic("Config: upscaler_mode = %d (0=NONE, 1=FSR2, 2=INT2X, 3=INT3X, 4=INT4X)", modeValue);
     } else {
         logDiagnostic("Config: upscaler_mode not found, using default FSR2");
+    }
+    
+    // Convert integer value to enum
+    if (modeValue >= 0 && modeValue <= 4) {
+        mConfiguredMode = static_cast<UpscalerMode>(modeValue);
+    } else {
+        logDiagnostic("WARNING: Invalid upscaler_mode=%d, using FSR2", modeValue);
+        mConfiguredMode = UpscalerMode::FSR2;
     }
     
     // Load upscaler quality (0=QUALITY, 1=BALANCED, 2=PERFORMANCE)
@@ -909,6 +918,10 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
     
     // Load configuration from fallout2.cfg
     loadConfiguration();
+    
+    // IMPORTANT: Use mode from config, not the parameter
+    // The config value takes precedence over the init parameter
+    mode = mConfiguredMode;
     
     logDiagnostic("Input Resolution: %dx%d", inputWidth, inputHeight);
     logDiagnostic("Output Resolution: %dx%d", outputWidth, outputHeight);
