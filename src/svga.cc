@@ -1694,8 +1694,27 @@ static bool createRenderer()
         presenterHeight = std::max(1, rectGetHeight(&viewport));
     }
     
-    // CRITICAL FIX: When upscaler is enabled, texture must match physical display size
-    // to hold the upscaled content (e.g., 2560x1440 for INTEGER_3X mode)
+    // ========================================================================
+    // GPU TEXTURE CREATION - DYNAMIC SIZING
+    // ========================================================================
+    // The GPU texture (gSdlTexture) holds the final frame data before rendering.
+    // Its size depends on whether the upscaler is active:
+    //
+    // WITHOUT UPSCALER:
+    // - Texture size: 640×480 (logical/presenter size)
+    // - Content: Direct upload from gSdlTextureSurface (converted phantom display)
+    // - SDL stretches 640×480 texture to viewport during rendering
+    //
+    // WITH UPSCALER (INTEGER_3X):
+    // - Texture size: 2560×1440 (physical display size)
+    // - Content: Upscaled + letterboxed output from upscaler
+    // - Example: 1920×1440 scaled content centered with 320px black bars
+    // - SDL renders texture 1:1 to display (no stretching needed)
+    //
+    // This dynamic sizing ensures optimal quality:
+    // - Without upscaler: Standard SDL scaling handles resolution difference
+    // - With upscaler: Pre-scaled content rendered directly (perfect pixels)
+    // ========================================================================
     int textureWidth = presenterWidth;
     int textureHeight = presenterHeight;
     if (upscalerIsAvailable()) {
@@ -1872,6 +1891,25 @@ static void logPresenterSurfaceState(const char* reason, bool fullRes, int width
         reason != nullptr ? reason : "update");
 }
 
+// ============================================================================
+// PRESENTER SURFACE MANAGEMENT
+// ============================================================================
+// ensurePresenterSurfaceMatchesBounds() - Ensure texture surface matches logical space
+//
+// The "presenter surface" (gSdlTextureSurface) is an intermediate RGBA surface
+// that bridges the phantom display (indexed color) and the GPU texture.
+//
+// SURFACE HIERARCHY:
+// 1. gSdlSurface (phantom display): 640×480 indexed color (game renders here)
+// 2. gSdlTextureSurface (presenter): 640×480 RGBA converted (uploaded to GPU)
+// 3. gSdlTexture (GPU): Variable size (640×480 or 2560×1440 depending on upscaler)
+//
+// This function ensures gSdlTextureSurface matches the logical space dimensions
+// (typically 640×480). If dimensions change or surface doesn't exist, it's
+// recreated with the correct size.
+//
+// RETURNS: true on success, false if surface creation fails
+// ============================================================================
 static bool ensurePresenterSurfaceMatchesBounds()
 {
     if (gSdlRenderer == nullptr) {
@@ -2285,6 +2323,37 @@ void handleWindowSizeChanged()
     syncPhysicalSizeWithRenderer();
 }
 
+// ============================================================================
+// RENDERING PIPELINE - MAIN ENTRY POINT
+// ============================================================================
+// renderPresent() - Main frame rendering pipeline
+//
+// This is the core rendering function that processes each frame through the
+// complete pipeline from the "phantom display" to the physical screen.
+//
+// PIPELINE OVERVIEW:
+// 1. Phantom Display (gSdlSurface): 640x480 indexed color surface where the
+//    game renders. This is Fallout 2's native resolution and color depth.
+//
+// 2. Upscaler Processing (optional): If upscaler is available, convert indexed
+//    colors to RGBA, apply filters (Kuwahara), then scale (INTEGER_3X) or
+//    upscale (FSR2). Output is typically 2560x1440 for modern displays.
+//
+// 3. Texture Upload: Upload either the upscaled content or original phantom
+//    display content to GPU texture (gSdlTexture).
+//
+// 4. Rendering: Render the texture to screen with proper aspect ratio and
+//    letterboxing (black bars) to maintain 4:3 aspect.
+//
+// KEY SURFACES:
+// - gSdlSurface: 640x480 indexed ("phantom display") - game renders here
+// - gSdlTextureSurface: 640x480 RGBA converted from phantom display
+// - gSdlTexture: Variable size (640x480 or 2560x1440) GPU texture for rendering
+//
+// UPSCALER MODES:
+// - INTEGER_2X/3X/4X: Perfect pixel replication with optional Kuwahara filter
+// - FSR2: DISABLED (requires motion vectors/depth - incompatible with 2D games)
+// ============================================================================
 void renderPresent()
 {
     static int renderPresentCallCount = 0;
@@ -2296,8 +2365,27 @@ void renderPresent()
     windowPresentVirtualScreen();
     renderCommandsBeforePresent();
     
-    // Apply upscaling if enabled (INTEGER_2X/3X/4X or FSR2)
-    // This runs Kuwahara filter + integer scaling or FSR2 before presenting to screen
+    // ========================================================================
+    // UPSCALER PROCESSING PIPELINE
+    // ========================================================================
+    // This section handles optional upscaling before texture upload.
+    // If upscaler is available and configured, it processes the phantom display
+    // through the complete pipeline: palette conversion → filters → scaling
+    //
+    // PROCESSING STEPS:
+    // 1. Extract game buffer from phantom display (gSdlSurface->pixels)
+    // 2. Extract palette from SDL surface format (256 RGBA colors)
+    // 3. Upload indexed data + palette to upscaler (upscalerSetIndexedInput)
+    // 4. Execute upscaling pipeline (upscalerDispatch):
+    //    - Convert indexed → RGBA (640×480×4 bytes)
+    //    - Apply Kuwahara filter (optional edge-preserving smoothing)
+    //    - Integer scale with letterboxing (e.g., 3× → 1920×1440 centered in 2560×1440)
+    // 5. Retrieve upscaled output buffer (upscalerGetOutputBuffer)
+    // 6. Upload to GPU texture (gSdlTexture)
+    //
+    // If upscaler is not available or disabled, skip to standard texture upload
+    // (direct conversion of phantom display → texture via gSdlTextureSurface)
+    // ========================================================================
     
     // Check if upscaler is available
     bool available = upscalerIsAvailable();
@@ -2306,8 +2394,8 @@ void renderPresent()
     int actualUpscaledHeight = 0;
     
     if (available) {
-        // Get the SDL surface with the game frame data (8-bit indexed)
-        // This is where the game actually renders the 640x480 frame
+        // STEP 1: Get game buffer from phantom display (640×480 indexed color)
+        // This is where Fallout 2 actually renders each frame
         unsigned char* gameBuffer = nullptr;
         if (gSdlSurface != nullptr && gSdlSurface->pixels != nullptr) {
             gameBuffer = static_cast<unsigned char*>(gSdlSurface->pixels);

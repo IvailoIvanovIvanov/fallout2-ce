@@ -66,11 +66,33 @@ UpscalerImpl* upscalerGetImpl();
 /**
  * Initialize upscaler with input and output dimensions
  * 
- * @param inputWidth Source resolution width (typically 640)
- * @param inputHeight Source resolution height (typically 480)
- * @param outputWidth Physical display width
- * @param outputHeight Physical display height
- * @param mode Upscaler backend (FSR2, NONE)
+ * RENDERING PIPELINE CONTEXT:
+ * This initializes the upscaling pipeline that processes Fallout 2's "phantom display"
+ * (640x480 indexed color) into modern display resolutions (e.g., 2560x1440).
+ * 
+ * PHANTOM DISPLAY CONCEPT:
+ * - Fallout 2 renders to gSdlSurface (640x480, 8-bit indexed color)
+ * - This is the game's native resolution and color depth
+ * - The upscaler converts indexed → RGBA → applies filters → scales up
+ * - Result is uploaded to GPU texture and rendered to screen
+ * 
+ * SUPPORTED MODES:
+ * - INTEGER_2X: Perfect 2x pixel replication (640x480 → 1280x960)
+ * - INTEGER_3X: Perfect 3x pixel replication (640x480 → 1920x1440) ★ RECOMMENDED
+ * - INTEGER_4X: Perfect 4x pixel replication (640x480 → 2560x1920)
+ * - FSR2: DISABLED (requires motion vectors/depth - incompatible with 2D games)
+ * 
+ * CONFIGURATION OVERRIDE:
+ * Mode can be overridden by fallout2.cfg:
+ *   upscaler_mode=3               # INTEGER_3X recommended for 2560x1440
+ *   upscaler_kuwahara_enable=1    # Edge-preserving color smoothing
+ *   upscaler_kuwahara_radius=2    # Smoothing strength (1-5)
+ * 
+ * @param inputWidth Source resolution width (640 for Fallout 2)
+ * @param inputHeight Source resolution height (480 for Fallout 2)
+ * @param outputWidth Physical display width (e.g., 2560)
+ * @param outputHeight Physical display height (e.g., 1440)
+ * @param mode Initial upscaler mode (can be overridden by config)
  * @return 0 on success, non-zero on failure
  */
 int upscalerInit(int inputWidth, int inputHeight, int outputWidth, int outputHeight, UpscalerMode mode);
@@ -95,10 +117,32 @@ void upscalerShutdown();
 UpscalerState upscalerGetState();
 
 /**
- * Copy indexed 640x480 buffer to upscaler input (with palette conversion)
+ * Convert indexed color buffer to RGBA and upload to upscaler input
  * 
- * @param indexedBuffer Pointer to 640x480 indexed pixel buffer
- * @param palette Pointer to 256-entry RGB palette
+ * INDEXED COLOR CONVERSION:
+ * Fallout 2 uses 8-bit indexed color (256-color palette). This function:
+ * 1. Reads each pixel's palette index (0-255) from indexedBuffer
+ * 2. Looks up the RGBA color from the palette array
+ * 3. Writes the RGBA color to internal input buffer (mInputBuffer)
+ * 
+ * INPUT FORMAT:
+ * - indexedBuffer: 640x480 bytes (1 byte per pixel = palette index)
+ * - palette: 256 colors × 4 bytes = 1024 bytes (RGBA format)
+ * 
+ * OUTPUT:
+ * - Internal mInputBuffer: 640x480x4 bytes = 1,228,800 bytes (RGBA)
+ * 
+ * This converted RGBA buffer is then processed by filters (Kuwahara) and
+ * scaling algorithms (INTEGER_2X/3X/4X).
+ * 
+ * TYPICAL USAGE (in renderPresent):
+ *   uint32_t* palette = convertPaletteToRGBA(gSdlSurface->format->palette);
+ *   upscalerSetIndexedInput(gSdlSurface->pixels, palette);
+ *   upscalerDispatch();
+ *   const uint32_t* output = upscalerGetOutputBuffer();
+ * 
+ * @param indexedBuffer Pointer to 640x480 indexed pixel data (from gSdlSurface->pixels)
+ * @param palette Pointer to 256-color RGBA palette (from SDL_Palette)
  * @return 0 on success, non-zero on failure
  */
 int upscalerSetIndexedInput(const unsigned char* indexedBuffer, const uint32_t* palette);
@@ -112,17 +156,59 @@ int upscalerSetIndexedInput(const unsigned char* indexedBuffer, const uint32_t* 
 int upscalerSetRgbaInput(const uint32_t* rgbaBuffer);
 
 /**
- * Dispatch upscaling operation on GPU
- * Processes input buffer and generates output at target resolution
+ * Execute upscaling pipeline on current input buffer
+ * 
+ * PROCESSING FLOW:
+ * 1. Input buffer contains 640x480 RGBA (set via upscalerSetIndexedInput)
+ * 2. Route to mode-specific algorithm:
+ *    - INTEGER_2X/3X/4X: Perfect pixel replication with optional Kuwahara filter
+ *    - FSR2: DISABLED (incompatible with 2D games)
+ * 3. Output buffer receives upscaled result (e.g., 2560x1440 RGBA)
+ * 
+ * INTEGER SCALING PIPELINE:
+ * 1. Apply Kuwahara filter (optional): Edge-preserving color smoothing
+ *    - Reduces color banding from 8-bit palette
+ *    - Configurable radius (1-5 pixels)
+ * 2. Replicate each pixel N×N times (N = 2, 3, or 4)
+ * 3. Center scaled content in output buffer with black letterbox bars
+ *    - E.g., INTEGER_3X: 1920x1440 content centered in 2560x1440 output
+ *    - Maintains perfect 4:3 aspect ratio
+ * 
+ * PERFORMANCE:
+ * - INTEGER_3X with Kuwahara: ~1-3ms per frame (Release build)
+ * - FSR2: N/A (disabled)
+ * 
+ * After dispatch completes, retrieve output via upscalerGetOutputBuffer()
+ * and upload to GPU texture for rendering.
  * 
  * @return 0 on success, non-zero on failure
  */
 int upscalerDispatch();
 
 /**
- * Get pointer to upscaled output buffer
+ * Get pointer to upscaled output buffer (read-only)
  * 
- * @return Pointer to ARGB8888 buffer at output resolution, or nullptr on error
+ * OUTPUT BUFFER CONTENTS:
+ * After upscalerDispatch() completes, this returns a pointer to the
+ * processed output buffer containing the upscaled frame data.
+ * 
+ * BUFFER FORMAT:
+ * - Format: RGBA (32-bit, 4 bytes per pixel)
+ * - Size: outputWidth × outputHeight × 4 bytes
+ * - Example: 2560×1440×4 = 14,745,600 bytes
+ * 
+ * INTEGER MODE OUTPUT:
+ * - Contains centered scaled content with black letterbox bars
+ * - E.g., INTEGER_3X on 2560×1440 display:
+ *   - 320px black bar (left)
+ *   - 1920×1440 scaled content (center)
+ *   - 320px black bar (right)
+ * 
+ * USAGE:
+ * The returned buffer should be uploaded to GPU texture (gSdlTexture)
+ * and rendered to screen. The buffer remains valid until next dispatch.
+ * 
+ * @return Pointer to RGBA output buffer, or nullptr if not ready/failed
  */
 const uint32_t* upscalerGetOutputBuffer();
 

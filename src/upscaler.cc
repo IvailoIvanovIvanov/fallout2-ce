@@ -401,6 +401,24 @@ void UpscalerImpl::saveConfiguration() {
 // Buffer Management
 // ============================================================================
 
+// ============================================================================
+// BUFFER ALLOCATION - INPUT BUFFER
+// ============================================================================
+// allocateInputBuffer() - Allocate RGBA buffer for converted input
+//
+// Allocates memory to hold the converted RGBA data after palette conversion.
+// For Fallout 2, this is typically 640×480×4 bytes = 1,228,800 bytes.
+//
+// BUFFER PURPOSE:
+// - Stores indexed color converted to RGBA (via setIndexedInput())
+// - Input to filter pipeline (Kuwahara)
+// - Source for integer scaling or FSR2 upload
+//
+// PARAMETERS:
+// - width/height: Input dimensions (640×480 for Fallout 2)
+//
+// RETURNS: true on success, false if allocation fails or invalid dimensions
+// ============================================================================
 bool UpscalerImpl::allocateInputBuffer(int width, int height) {
     if (width <= 0 || height <= 0 || width > MAX_RESOLUTION || height > MAX_RESOLUTION) {
         setError("Invalid input dimensions: %dx%d", width, height);
@@ -424,6 +442,28 @@ bool UpscalerImpl::allocateInputBuffer(int width, int height) {
     return true;
 }
 
+// ============================================================================
+// BUFFER ALLOCATION - OUTPUT BUFFER
+// ============================================================================
+// allocateOutputBuffer() - Allocate RGBA buffer for upscaled output
+//
+// Allocates memory to hold the upscaled/scaled output. Size depends on mode:
+// - INTEGER_2X: 1280×960×4 = 4,915,200 bytes
+// - INTEGER_3X: 1920×1440×4 = 11,059,200 bytes (but buffer is 2560×1440)
+// - INTEGER_4X: 2560×1920×4 = 19,660,800 bytes
+// - Physical display: 2560×1440×4 = 14,745,600 bytes (actual allocation)
+//
+// BUFFER PURPOSE:
+// - Receives output from dispatchIntegerScale() or dispatchFsr2()
+// - For INTEGER modes: Contains centered content with letterbox bars
+// - Retrieved by renderPresent() via upscalerGetOutputBuffer()
+// - Uploaded to gSdlTexture for rendering
+//
+// PARAMETERS:
+// - width/height: Output dimensions (typically 2560×1440 for modern displays)
+//
+// RETURNS: true on success, false if allocation fails or invalid dimensions
+// ============================================================================
 bool UpscalerImpl::allocateOutputBuffer(int width, int height) {
     if (width <= 0 || height <= 0 || width > MAX_RESOLUTION || height > MAX_RESOLUTION) {
         setError("Invalid output dimensions: %dx%d", width, height);
@@ -489,6 +529,32 @@ void UpscalerImpl::calculateJitter(float& outX, float& outY) {
 // FSR2 Backend (Phase 2 implementation pending)
 // ============================================================================
 
+// ============================================================================
+// FSR2 INITIALIZATION - GPU RESOURCE SETUP (DISABLED)
+// ============================================================================
+// initFsr2() - Initialize FSR2 GPU resources and context
+//
+// **DISABLED: Returns early with error message**
+//
+// This function would normally:
+// 1. Acquire DirectX 12 device and command queue
+// 2. Create GPU command allocator
+// 3. Create input texture (640x480) and output texture (2560x1440)
+// 4. Initialize FSR2 context with upscale parameters
+// 5. Set up temporal jitter sequence
+//
+// However, FSR2 is incompatible with Fallout 2 (see dispatchFsr2() docs).
+// This function now fails gracefully during initialization with a clear
+// error message directing users to INTEGER scaling modes.
+//
+// GPU RESOURCE LIFECYCLE (if FSR2 were enabled):
+// - Input texture: D3D12 upload heap, CPU-writable
+// - Output texture: D3D12 unordered access, GPU-writable
+// - Command allocator: Manages GPU command buffers
+// - FSR2 context: Persistent across frames (stores temporal history)
+//
+// RETURNS: false (FSR2 disabled for 2D games)
+// ============================================================================
 bool UpscalerImpl::initFsr2() {
     logDiagnostic("================== FSR2 INITIALIZATION START ==================");
     logDiagnostic("Phase 3 - GPU device binding");
@@ -720,6 +786,36 @@ bool UpscalerImpl::shutdownFsr2() {
     return true;
 }
 
+// ============================================================================
+// FSR2 DISPATCH - TEMPORAL UPSCALING (DISABLED)
+// ============================================================================
+// dispatchFsr2() - AMD FidelityFX Super Resolution 2.0 GPU upscaling
+//
+// **IMPORTANT: FSR2 IS DISABLED FOR FALLOUT 2**
+//
+// FSR2 is a temporal upscaling technology designed for 3D games. It requires:
+// - Motion vectors: Track pixel movement between frames (camera/object motion)
+// - Depth buffer: Z-depth information for proper temporal accumulation
+// - 3D camera data: FOV, near/far planes, view transforms
+//
+// INCOMPATIBILITY WITH FALLOUT 2:
+// Fallout 2 is a 2D isometric game with:
+// - Pre-rendered backgrounds (no camera motion)
+// - 2D sprites (no depth information)
+// - Orthographic projection (no 3D perspective)
+//
+// Without motion vectors and depth buffer, FSR2's GPU compute shaders crash
+// during ffxDispatch(). This is a fundamental incompatibility, not a bug.
+//
+// RECOMMENDED ALTERNATIVE:
+// Use INTEGER_2X/3X/4X modes instead:
+// - Perfect for pixel art preservation
+// - No GPU driver dependencies
+// - Faster performance (<2ms vs ~5-8ms for FSR2)
+// - Optional Kuwahara filter for color smoothing
+//
+// This function now returns an error early to prevent crashes.
+// ============================================================================
 bool UpscalerImpl::dispatchFsr2() {
     // Phase 5: Dispatch GPU compute with FSR2 context
     logDiagnostic("================== FSR2 DISPATCH START (Frame %d) ==================", mFrameIndex);
@@ -927,6 +1023,38 @@ bool UpscalerImpl::dispatchFsr2() {
  * Integer scaling dispatch (lossless pixel replication)
  * Optimal for pixel art - zero blur, zero artifacts, perfect sharpness
  */
+// ============================================================================
+// INTEGER SCALING - PIXEL-PERFECT UPSCALING
+// ============================================================================
+// dispatchIntegerScale() - Perfect pixel replication with optional filters
+//
+// This algorithm provides artifact-free upscaling by replicating each source
+// pixel exactly N times (where N = 2, 3, or 4). This preserves the sharp
+// pixel art aesthetic of Fallout 2.
+//
+// PROCESSING PIPELINE:
+// 1. Apply Kuwahara filter (optional): Edge-preserving color smoothing
+//    - Reduces color banding from 8-bit palette
+//    - Preserves sharp edges (unlike blur)
+//    - Configurable radius (1-5 pixels)
+//
+// 2. Integer scaling: Replicate each pixel N×N times
+//    - 2X: 640×480 → 1280×960
+//    - 3X: 640×480 → 1920×1440 (recommended for 2560×1440 displays)
+//    - 4X: 640×480 → 2560×1920 (for 4K displays)
+//
+// 3. Letterboxing: Center scaled content in output buffer
+//    - For 3X on 2560×1440: place 1920×1440 content centered
+//    - Add 320px black bars on left/right sides
+//    - Maintains perfect 4:3 aspect ratio
+//
+// PERFORMANCE: ~1-3ms per frame (Release build with Kuwahara enabled)
+//
+// PARAMETERS:
+// - scaleFactor: 2, 3, or 4 (pixel replication factor)
+//
+// RETURNS: true on success, false on failure
+// ============================================================================
 bool UpscalerImpl::dispatchIntegerScale(int scaleFactor) {
     // Log every 60 frames (roughly once per second at 60fps) to avoid log spam
     bool shouldLog = (mFrameIndex % 60 == 0) || mVerboseLogging;
@@ -1061,6 +1189,36 @@ bool UpscalerImpl::dispatchIntegerScale(int scaleFactor) {
 // Public Implementation
 // ============================================================================
 
+// ============================================================================
+// UPSCALER INITIALIZATION
+// ============================================================================
+// init() - Initialize the upscaler with input/output dimensions and mode
+//
+// This sets up the complete upscaling pipeline including:
+// - Input/output buffer allocation (RGBA format)
+// - Configuration loading from fallout2.cfg (mode override)
+// - GPU resources for FSR2 (if applicable)
+// - Filter initialization (Kuwahara)
+//
+// PARAMETERS:
+// - inputWidth/Height: Source resolution (640x480 for Fallout 2)
+// - outputWidth/Height: Target resolution (2560x1440 for modern displays)
+// - mode: Initial mode (can be overridden by config file)
+//
+// MODES:
+// - INTEGER_2X: 640x480 → 1280x960 (perfect 2x pixel replication)
+// - INTEGER_3X: 640x480 → 1920x1440 (perfect 3x, optimal for 2560x1440)
+// - INTEGER_4X: 640x480 → 2560x1920 (perfect 4x, for 4K displays)
+// - FSR2: DISABLED (incompatible with 2D games - requires motion vectors)
+//
+// CONFIGURATION OVERRIDE:
+// The mode parameter can be overridden by fallout2.cfg:
+//   upscaler_mode=3  (INTEGER_3X recommended)
+//   upscaler_kuwahara_enable=1
+//   upscaler_kuwahara_radius=2
+//
+// RETURNS: true on success, false on failure
+// ============================================================================
 bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int outputHeight, UpscalerMode mode) {
     logDiagnostic("========================================");
     logDiagnostic("UPSCALER INITIALIZATION STARTED");
@@ -1244,6 +1402,32 @@ void UpscalerImpl::shutdown() {
     }
 }
 
+// ============================================================================
+// INPUT CONVERSION - INDEXED TO RGBA
+// ============================================================================
+// setIndexedInput() - Convert indexed color (palette) to RGBA for processing
+//
+// Fallout 2 uses 8-bit indexed color (256 colors). This function converts
+// the indexed pixels to 32-bit RGBA format using the provided palette.
+//
+// PHANTOM DISPLAY FORMAT:
+// - Input: 640x480 indexed (1 byte per pixel = palette index)
+// - Palette: 256 colors × 4 bytes (RGBA)
+// - Output: 640x480 RGBA (4 bytes per pixel)
+//
+// CONVERSION PROCESS:
+// 1. Read palette index from indexed buffer (0-255)
+// 2. Look up RGBA color in palette
+// 3. Write RGBA color to input buffer (mInputBuffer)
+//
+// This converted RGBA buffer is then processed by filters and scaling.
+//
+// PARAMETERS:
+// - indexedBuffer: Pointer to 640x480 indexed color data (from gSdlSurface)
+// - palette: Pointer to 256-color RGBA palette (from SDL_Color array)
+//
+// RETURNS: true on success, false if upscaler not initialized
+// ============================================================================
 bool UpscalerImpl::setIndexedInput(const unsigned char* indexedBuffer, const uint32_t* palette) {
     if (mState != UpscalerState::STATE_READY || mInputBuffer == nullptr || indexedBuffer == nullptr || palette == nullptr) {
         setError("Invalid input or palette");
@@ -1271,6 +1455,26 @@ bool UpscalerImpl::setRgbaInput(const uint32_t* rgbaBuffer) {
     return true;
 }
 
+// ============================================================================
+// UPSCALER DISPATCH - MAIN PROCESSING
+// ============================================================================
+// dispatch() - Execute the upscaling pipeline for current frame
+//
+// This is the main processing function that routes to the appropriate
+// upscaling algorithm based on the configured mode.
+//
+// PROCESSING FLOW:
+// 1. Input buffer contains 640x480 RGBA (converted from indexed)
+// 2. Route to mode-specific algorithm:
+//    - INTEGER_2X/3X/4X: Call dispatchIntegerScale()
+//    - FSR2: Call dispatchFsr2() [DISABLED - incompatible]
+// 3. Output buffer contains upscaled result (e.g., 2560x1440 RGBA)
+//
+// The output buffer is then retrieved via upscalerGetOutputBuffer() and
+// uploaded to the GPU texture for rendering.
+//
+// RETURNS: true on success, false on failure
+// ============================================================================
 bool UpscalerImpl::dispatch() {
     static int dispatchCallCount = 0;
     dispatchCallCount++;
