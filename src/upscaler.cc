@@ -854,15 +854,23 @@ bool UpscalerImpl::shutdownAnime4k() {
 // ============================================================================
 
 bool UpscalerImpl::initGpuPostProcess() {
-    if (mGpuPostProcessInitialized) return true;
-    if (!checkGpuReadiness()) return false;
+    if (mGpuPostProcessInitialized) {
+        logDiagnostic("GPU PostProcess already initialized");
+        return true;
+    }
+    if (!checkGpuReadiness()) {
+        logDiagnostic("GPU PostProcess init failed: GPU not ready");
+        return false;
+    }
     
+    logDiagnostic("Initializing GPU PostProcess...");
     ID3D12Device* device = gpuDeviceGetDevice();
     
     // Compile post-process shader
     Microsoft::WRL::ComPtr<ID3DBlob> shaderBlob;
     Microsoft::WRL::ComPtr<ID3DBlob> errorBlob;
     
+    logDiagnostic("Compiling post-process shader...");
     HRESULT hr = D3DCompile(
         UPSCALER_POSTPROCESS_SHADER,
         strlen(UPSCALER_POSTPROCESS_SHADER),
@@ -874,11 +882,14 @@ bool UpscalerImpl::initGpuPostProcess() {
     );
     
     if (FAILED(hr)) {
+        logDiagnostic("PostProcess shader compile FAILED: HRESULT=0x%08X", hr);
         if (errorBlob) {
             logDiagnostic("PostProcess shader compile error: %s", (char*)errorBlob->GetBufferPointer());
         }
         return false;
     }
+    
+    logDiagnostic("PostProcess shader compiled successfully");
     
     // Create root signature
     D3D12_ROOT_PARAMETER rootParams[2] = {};
@@ -908,12 +919,20 @@ bool UpscalerImpl::initGpuPostProcess() {
     rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
     
     Microsoft::WRL::ComPtr<ID3DBlob> sigBlob;
+    logDiagnostic("Serializing root signature...");
     hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sigBlob, &errorBlob);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        logDiagnostic("Root signature serialization FAILED: HRESULT=0x%08X", hr);
+        return false;
+    }
     
     ID3D12RootSignature* rootSig = nullptr;
+    logDiagnostic("Creating root signature...");
     hr = device->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(), IID_PPV_ARGS(&rootSig));
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        logDiagnostic("Root signature creation FAILED: HRESULT=0x%08X", hr);
+        return false;
+    }
     mPostProcessRootSignature = rootSig;
     
     // Create pipeline state
@@ -923,8 +942,10 @@ bool UpscalerImpl::initGpuPostProcess() {
     psoDesc.CS.BytecodeLength = shaderBlob->GetBufferSize();
     
     ID3D12PipelineState* pso = nullptr;
+    logDiagnostic("Creating compute pipeline state...");
     hr = device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&pso));
     if (FAILED(hr)) {
+        logDiagnostic("Compute PSO creation FAILED: HRESULT=0x%08X", hr);
         rootSig->Release();
         mPostProcessRootSignature = nullptr;
         return false;
@@ -932,7 +953,7 @@ bool UpscalerImpl::initGpuPostProcess() {
     mPostProcessPipelineState = pso;
     
     mGpuPostProcessInitialized = true;
-    logDiagnostic("GPU PostProcess initialized successfully");
+    logDiagnostic("GPU PostProcess initialized successfully - ready to process");
     return true;
 }
 
@@ -1019,11 +1040,17 @@ bool UpscalerImpl::dispatchAnime4k() {
     cmdList->Dispatch((mOutputWidth + 7) / 8, (mOutputHeight + 7) / 8, 1);
     
     // ========================================================================
-    // GPU POST-PROCESSING (HDR, Black Crush, Saturation, Contrast)
+    // GPU POST-PROCESSING (Palette Normalization, HDR, Black Crush, etc.)
     // ========================================================================
     
-    if (mEnableSoftHDR && mGpuPostProcessInitialized) {
-        logDiagnostic("ANIME4K: Applying GPU post-processing (HDR filter on GPU)");
+    // Always apply if GPU post-processing is initialized (palette normalization needs it!)
+    if (mGpuPostProcessInitialized) {
+        logDiagnostic("ANIME4K: Applying GPU post-processing (palette norm, HDR, filters)");
+        logDiagnostic("  - HDR enabled: %d, Saturation: %.2f, Contrast: %.2f", 
+                      mEnableSoftHDR, mHdrSaturation, mHdrContrast);
+        logDiagnostic("  - Black crush: %.3f / %.2f", mBlackCrushThreshold, mBlackCrushStrength);
+        logDiagnostic("  - Debanding: %d (%.2f), Edge: %d (%.2f)", 
+                      mEnableDebanding, mDebandingStrength, mEnableEdgeSmoothing, mSmoothingStrength);
         
         // Keep output texture in UAV state for post-processing
         // No barrier needed - already in UAV state
@@ -1032,7 +1059,7 @@ bool UpscalerImpl::dispatchAnime4k() {
         cmdList->SetComputeRootSignature(static_cast<ID3D12RootSignature*>(mPostProcessRootSignature));
         cmdList->SetPipelineState(static_cast<ID3D12PipelineState*>(mPostProcessPipelineState));
         
-        // Prepare parameters
+        // Prepare comprehensive post-processing parameters
         struct {
             uint32_t resX, resY;
             float hdrSaturation;
@@ -1040,16 +1067,25 @@ bool UpscalerImpl::dispatchAnime4k() {
             float blackCrushThreshold;
             float blackCrushStrength;
             uint32_t frameIndex;
+            float debandingStrength;
+            float edgeSmoothingStrength;
+            float paletteNormalization;
+            float colorGrading;
             float padding;
         } postParams;
         
         postParams.resX = mOutputWidth;
         postParams.resY = mOutputHeight;
-        postParams.hdrSaturation = mHdrSaturation;
-        postParams.hdrContrast = mHdrContrast;
-        postParams.blackCrushThreshold = mBlackCrushThreshold;
-        postParams.blackCrushStrength = mBlackCrushStrength;
+        // If HDR is disabled, use neutral values (but still run shader for palette/debanding/edge)
+        postParams.hdrSaturation = mEnableSoftHDR ? mHdrSaturation : 1.0f;
+        postParams.hdrContrast = mEnableSoftHDR ? mHdrContrast : 1.0f;
+        postParams.blackCrushThreshold = mEnableSoftHDR ? mBlackCrushThreshold : 0.0f;
+        postParams.blackCrushStrength = mEnableSoftHDR ? mBlackCrushStrength : 0.0f;
         postParams.frameIndex = mFrameIndex++;
+        postParams.debandingStrength = mEnableDebanding ? mDebandingStrength : 0.0f;
+        postParams.edgeSmoothingStrength = mEnableEdgeSmoothing ? mSmoothingStrength : 0.0f;
+        postParams.paletteNormalization = 0.8f; // Always enable 8-bit palette expansion
+        postParams.colorGrading = mEnableSoftHDR ? 0.3f : 0.0f; // Only with HDR
         postParams.padding = 0;
         
         uint64_t cbAddr;
