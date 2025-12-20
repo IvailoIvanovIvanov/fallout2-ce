@@ -628,13 +628,16 @@ bool filterApplySoftHDR(
             float bf = b / 255.0f;
             
             // Apply S-curve tone mapping for expanded dynamic range
+            // Preserve pure black to avoid gray lift on OLED displays
             float luminance = 0.299f * rf + 0.587f * gf + 0.114f * bf;
-            float toneMapped = sCurve(luminance, strength);
-            float liftFactor = (toneMapped / std::max(0.001f, luminance));
-            
-            rf *= liftFactor;
-            gf *= liftFactor;
-            bf *= liftFactor;
+            if (luminance > 0.0001f) {  // Only apply to non-black pixels
+                float toneMapped = sCurve(luminance, strength);
+                float liftFactor = toneMapped / luminance;
+                
+                rf *= liftFactor;
+                gf *= liftFactor;
+                bf *= liftFactor;
+            }
             
             // Apply contrast enhancement (around midpoint)
             rf = std::pow(rf, 1.0f / contrast);
