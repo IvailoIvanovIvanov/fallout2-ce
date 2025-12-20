@@ -585,11 +585,10 @@ bool filterApplyPostProcessing(
     
     bool success = true;
     
-    // Apply lightweight filters that complement FSR2's RCAS
-    // FSR2 already handles edge enhancement, color correction, and contrast
+    // Apply configured filters
     switch (config.type) {
         case FilterType::NONE:
-            // No additional filtering - FSR2 RCAS only
+            // No additional filtering
             break;
             
         case FilterType::DEBANDING:

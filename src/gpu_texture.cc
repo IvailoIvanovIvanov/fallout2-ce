@@ -247,7 +247,7 @@ bool gpuTextureUpload(GpuTextureHandle handle, const void* data, int dataSize)
     
     // Transition texture to shader resource state
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
     cmdList->ResourceBarrier(1, &barrier);
     
     // Execute and wait
@@ -335,7 +335,7 @@ bool gpuTextureDownload(GpuTextureHandle handle, void* outData, int dataSize)
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
     barrier.Transition.pResource = metadata->resource.Get();
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     cmdList->ResourceBarrier(1, &barrier);
@@ -363,7 +363,7 @@ bool gpuTextureDownload(GpuTextureHandle handle, void* outData, int dataSize)
     
     // Transition texture back to UAV state
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
     cmdList->ResourceBarrier(1, &barrier);
     
     // Execute and wait
@@ -491,7 +491,7 @@ bool gpuTextureGetDescriptor(GpuTextureHandle handle, bool isSRV, void* outCPU, 
 
 GpuTextureHandle gpuTextureCreateShared(int width, int height)
 {
-    // Phase 4 TODO: Create shared texture that can be accessed by both SDL renderer and FSR2 compute
+    // Phase 4 TODO: Create shared texture that can be accessed by both SDL renderer and compute shaders
     // This would involve:
     // 1. Querying SDL's D3D12 context for shared heap
     // 2. Creating texture in shared memory

@@ -88,8 +88,8 @@ The **phantom display** (`gSdlSurface`) is Fallout 2's native 640×480 indexed c
 │ │ Step 3: Upload to upscaler (upscalerSetIndexedInput)       │ │
 │ │ Step 4: Execute pipeline (upscalerDispatch)                │ │
 │ │   ├─ Convert indexed → RGBA (640×480×4)                    │ │
-│ │   ├─ Apply Kuwahara filter (optional)                      │ │
-│ │   └─ Integer scale with letterboxing                       │ │
+│ │   ├─ Apply filters (optional)                              │ │
+│ │   └─ Scale (Integer or Anime4K)                            │ │
 │ │       (e.g., 3× → 1920×1440 centered in 2560×1440)        │ │
 │ │ Step 5: Retrieve output (upscalerGetOutputBuffer)          │ │
 │ │ Step 6: Upload to GPU texture (SDL_UpdateTexture)          │ │
@@ -144,7 +144,7 @@ The **phantom display** (`gSdlSurface`) is Fallout 2's native 640×480 indexed c
 - `INTEGER_2X`: 640×480 → 1280×960 (perfect 2× replication)
 - `INTEGER_3X`: 640×480 → 1920×1440 (perfect 3×, **recommended**)
 - `INTEGER_4X`: 640×480 → 2560×1920 (perfect 4×)
-- `FSR2`: **DISABLED** (incompatible with 2D games)
+- `ANIME4K`: Shader-based upscaling
 
 **Configuration Override**: Mode loaded from `fallout2.cfg`:
 ```ini
@@ -260,25 +260,22 @@ upscalerSetIndexedInput(gSdlSurface->pixels, palette);
 
 ---
 
-### FSR2 Implementation (DISABLED)
+### Anime4K Implementation
 
-#### `dispatchFsr2()` (upscaler.cc)
-**Status**: ⚠️ **DISABLED - Incompatible with Fallout 2**
+#### `dispatchAnime4K()` (upscaler.cc)
+**Status**: **Experimental**
 
-**Why Disabled**:
-FSR2 (FidelityFX Super Resolution 2) is a temporal upscaling technology designed for 3D games. It **requires**:
-- Motion vectors (pixel movement between frames)
-- Depth buffer (Z-depth information)
-- 3D camera data (FOV, near/far planes)
+**Description**:
+Anime4K is a set of open-source, high-quality real-time anime upscaling/denoising algorithms. It is implemented as a compute shader in D3D12.
 
-**Fallout 2 Incompatibility**:
-- Pre-rendered 2D backgrounds (no camera motion)
-- 2D sprites (no depth information)
-- Orthographic projection (no 3D perspective)
+**Benefits**:
+- High quality upscaling for 2D art
+- Fast performance
+- No temporal artifacts
 
-Without these inputs, FSR2's GPU compute shaders crash during `ffxDispatch()`.
-
-**Recommended Alternative**: Use INTEGER_3X with Kuwahara filter for best results on pixel art.
+**Requirements**:
+- DirectX 12 capable GPU
+- Compute shader support
 
 ---
 
@@ -353,7 +350,7 @@ gSdlTexture = SDL_CreateTexture(gSdlRenderer, SDL_PIXELFORMAT_ARGB8888,
 ```ini
 [system]
 # Upscaler mode (recommended: 3 for INTEGER_3X)
-upscaler_mode=3                    # 0=disabled, 1=FSR2 (disabled), 2=2×, 3=3×, 4=4×
+upscaler_mode=3                    # 0=disabled, 2=2×, 3=3×, 4=4×, 5=Anime4K
 
 # Kuwahara filter (edge-preserving color smoothing)
 upscaler_kuwahara_enable=1         # 0=disabled, 1=enabled
@@ -399,14 +396,6 @@ upscaler_verbose_log=0             # Verbose logging causes 10-20× slowdown
 
 ---
 
-### Issue: FSR2 Crashes on Startup
-
-**Cause**: FSR2 requires motion vectors/depth (3D game features)
-
-**Solution**: FSR2 now disabled at init with clear error message. Use INTEGER_3X instead.
-
----
-
 ### Issue: Performance Too Slow (1 FPS)
 
 **Causes**:
@@ -449,24 +438,24 @@ upscaler_verbose_log=0             # Performance optimization
 ### Key Files
 
 - **src/svga.cc**: Main rendering pipeline, texture management
-- **src/upscaler.cc**: Upscaling implementation (INTEGER + FSR2)
+- **src/upscaler.cc**: Upscaling implementation (INTEGER + ANIME4K)
 - **src/upscaler.h**: Public API definitions
-- **src/upscaler_filters.cc**: Kuwahara filter implementation
+- **src/upscaler_filters.cc**: Filter implementation
 - **src/gpu_device.cc**: DirectX 12 GPU resource management
 
 ### Key Functions by File
 
 **svga.cc**:
-- `renderPresent()` - Main rendering entry point (line ~2320)
-- `ensurePresenterSurfaceMatchesBounds()` - Surface management (line ~1875)
-- Texture creation with dynamic sizing (line ~1700)
+- `renderPresent()` - Main rendering entry point
+- `ensurePresenterSurfaceMatchesBounds()` - Surface management
+- Texture creation with dynamic sizing
 
 **upscaler.cc**:
-- `UpscalerImpl::init()` - Initialize upscaler (line ~1064)
-- `UpscalerImpl::dispatch()` - Route to scaling algorithm (line ~1274)
-- `UpscalerImpl::dispatchIntegerScale()` - Perfect pixel scaling (line ~930)
-- `UpscalerImpl::dispatchFsr2()` - FSR2 (disabled) (line ~723)
-- `UpscalerImpl::setIndexedInput()` - Palette conversion (line ~1247)
+- `UpscalerImpl::init()` - Initialize upscaler
+- `UpscalerImpl::dispatch()` - Route to scaling algorithm
+- `UpscalerImpl::dispatchIntegerScale()` - Perfect pixel scaling
+- `UpscalerImpl::dispatchAnime4K()` - Shader-based upscaling
+- `UpscalerImpl::setIndexedInput()` - Palette conversion
 
 **upscaler.h**:
 - Public API wrapper functions (line ~76-180)
@@ -481,7 +470,7 @@ upscaler_verbose_log=0             # Performance optimization
 - **Letterboxing**: Black bars on sides/top/bottom to maintain aspect ratio
 - **Integer Scaling**: Replicating each pixel exactly N×N times (no interpolation)
 - **Kuwahara Filter**: Edge-preserving smoothing algorithm that reduces color banding
-- **FSR2**: AMD FidelityFX Super Resolution 2.0 (temporal upscaling for 3D games)
+- **Anime4K**: Shader-based upscaling algorithm optimized for anime/cartoon content
 
 ---
 

@@ -18,13 +18,11 @@ namespace fallout {
  * @enum FilterType
  * @brief Available post-processing filters
  * 
- * NOTE: Edge enhancement, color correction, and contrast are now handled by
- * FSR2's built-in RCAS (Robust Contrast Adaptive Sharpening) which is more
- * sophisticated and GPU-optimized. These custom filters only address issues
- * that FSR2 doesn't handle natively.
+ * NOTE: These filters are designed to complement the upscaling process
+ * by addressing specific artifacts common in pixel art upscaling.
  */
 enum class FilterType {
-    NONE = 0,           // No filtering (FSR2 RCAS only)
+    NONE = 0,           // No filtering
     DEBANDING = 1,      // Reduce color banding from 8-bit palette (temporal dithering)
     SMOOTH_EDGES = 2,   // Anti-alias jagged pixel art edges (Sobel + Gaussian)
     MINIMAL = 3         // Debanding + edge smoothing (recommended for pixel art)
@@ -34,9 +32,7 @@ enum class FilterType {
  * @struct FilterConfig
  * @brief Configuration for post-processing filters
  * 
- * Simplified configuration focused on pixel art quality issues that
- * FSR2's RCAS doesn't address. FSR2 handles edge enhancement, color
- * correction, and contrast via its built-in RCAS sharpening.
+ * Configuration for post-processing filters applied after upscaling.
  */
 struct FilterConfig {
     FilterType type = FilterType::MINIMAL;
@@ -129,8 +125,7 @@ bool filterApplyKuwahara(
 /**
  * @brief Apply post-processing filters for pixel art upscaling
  * 
- * Lightweight filter pipeline that complements FSR2's built-in RCAS.
- * Only applies filters for issues that FSR2 doesn't handle natively:
+ * Lightweight filter pipeline for pixel art enhancement:
  * - Debanding: Reduces 8-bit palette quantization artifacts
  * - Edge smoothing: Optional anti-aliasing for softer pixel art look
  * 

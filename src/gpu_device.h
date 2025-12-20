@@ -15,7 +15,7 @@ namespace fallout {
  * @brief GPU device context for managing Direct3D 12 resources
  * 
  * This module provides access to the underlying D3D12 device from SDL's renderer
- * for advanced GPU operations like AI upscaling with FSR2.
+ * for advanced GPU operations like AI upscaling with Anime4K.
  */
 
 /**

@@ -857,7 +857,7 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
         // For integer scaling modes, the upscaler will center content with letterboxing
         diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Initializing upscaler: 640x480 -> %dx%d", 
                       physicalWidth, physicalHeight);
-        if (upscalerInit(640, 480, physicalWidth, physicalHeight, UpscalerMode::FSR2) != 0) {
+        if (upscalerInit(640, 480, physicalWidth, physicalHeight, UpscalerMode::INTEGER_3X) != 0) {
             diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Upscaler initialization failed, continuing without upscaling");
         } else {
             // Upscaler initialized successfully!
@@ -1862,11 +1862,10 @@ static bool createRenderer()
     // GPU device needed for:
     // - gpu_scaling (GPU texture acceleration)
     // - virtual_adapter (virtual display adapter)
-    // - FSR2 upscaler (mode 1) - requires GPU compute
     // - ANIME4K upscaler (mode 5) - requires GPU compute
-    int upscalerMode = 1; // Default FSR2
+    int upscalerMode = 3; // Default INTEGER_3X
     configGetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_MODE_KEY, &upscalerMode);
-    bool needsGpuCompute = (upscalerMode == 1 || upscalerMode == 5); // FSR2 or ANIME4K
+    bool needsGpuCompute = (upscalerMode == 5); // ANIME4K
     
     if (settings.system.gpu_scaling || settings.system.virtual_adapter || needsGpuCompute) {
         if (!gpuDeviceInit()) {
@@ -2395,7 +2394,7 @@ void handleWindowSizeChanged()
 //
 // 2. Upscaler Processing (optional): If upscaler is available, convert indexed
 //    colors to RGBA, apply filters (Kuwahara), then scale (INTEGER_3X) or
-//    upscale (FSR2). Output is typically 2560x1440 for modern displays.
+//    upscale (Anime4K). Output is typically 2560x1440 for modern displays.
 //
 // 3. Texture Upload: Upload either the upscaled content or original phantom
 //    display content to GPU texture (gSdlTexture).
@@ -2410,7 +2409,7 @@ void handleWindowSizeChanged()
 //
 // UPSCALER MODES:
 // - INTEGER_2X/3X/4X: Perfect pixel replication with optional Kuwahara filter
-// - FSR2: DISABLED (requires motion vectors/depth - incompatible with 2D games)
+// - ANIME4K: Shader-based upscaling
 // ============================================================================
 void renderPresent()
 {
@@ -2494,7 +2493,7 @@ void renderPresent()
                 int setInputResult = upscalerSetIndexedInput(gameBuffer, palette);
                 
                 if (setInputResult == 0) {
-                    // Dispatch upscaling (Kuwahara + integer scale or FSR2)
+                    // Dispatch upscaling (Kuwahara + integer scale or Anime4K)
                     int dispatchResult = upscalerDispatch();
                     
                     if (dispatchResult == 0) {

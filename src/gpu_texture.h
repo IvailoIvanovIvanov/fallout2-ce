@@ -108,7 +108,7 @@ bool gpuTextureGetDescriptor(GpuTextureHandle handle, bool isSRV, void* outCPU, 
 /**
  * @brief Create shared texture between SDL and compute
  * 
- * Useful for directly sharing rendered content with FSR2 compute.
+ * Useful for directly sharing rendered content with compute shaders.
  * 
  * @param width Texture width in pixels
  * @param height Texture height in pixels

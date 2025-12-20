@@ -412,50 +412,6 @@ if(WIN32)
     )
 endif()
 
-# FidelityFX SDK integration
-if(WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/third_party/fidelityfx-sdk")
-    set(FFX_SDK_PATH "${CMAKE_SOURCE_DIR}/third_party/fidelityfx-sdk")
-    set(FFX_KIT_PATH "${FFX_SDK_PATH}/Kits/FidelityFX")
-    
-    # Add FSR SDK include directories
-    target_include_directories(${EXECUTABLE_NAME} PRIVATE 
-        "${FFX_KIT_PATH}/api/include"
-        "${FFX_KIT_PATH}/upscalers/include"
-        "${FFX_KIT_PATH}/backend/dx12"
-    )
-    
-    # Link against FSR pre-built DX12 library
-    if(EXISTS "${FFX_KIT_PATH}/signedbin/amd_fidelityfx_upscaler_dx12.lib")
-        target_link_libraries(${EXECUTABLE_NAME} 
-            "${FFX_KIT_PATH}/signedbin/amd_fidelityfx_upscaler_dx12.lib"
-            "${FFX_KIT_PATH}/signedbin/amd_fidelityfx_loader_dx12.lib"
-        )
-        
-        # Add DLL to output directory for runtime
-        add_custom_command(TARGET ${EXECUTABLE_NAME} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy
-                "${FFX_KIT_PATH}/signedbin/amd_fidelityfx_upscaler_dx12.dll"
-                "$<TARGET_FILE_DIR:${EXECUTABLE_NAME}>/"
-            COMMAND ${CMAKE_COMMAND} -E copy
-                "${FFX_KIT_PATH}/signedbin/amd_fidelityfx_loader_dx12.dll"
-                "$<TARGET_FILE_DIR:${EXECUTABLE_NAME}>/"
-        )
-        
-        target_compile_definitions(${EXECUTABLE_NAME} PRIVATE FALLOUT_HAS_FSR2=1)
-        message(STATUS "FidelityFX SDK found and configured for DirectX 12")
-    else()
-        message(WARNING "FidelityFX SDK libraries not found at ${FFX_KIT_PATH}/signedbin/")
-        message(WARNING "FSR2 upscaling will be disabled")
-    endif()
-else()
-    if(NOT WIN32)
-        message(STATUS "FidelityFX SDK DX12 backend only available on Windows")
-    elseif(NOT EXISTS "${CMAKE_SOURCE_DIR}/third_party/fidelityfx-sdk")
-        message(STATUS "FidelityFX SDK not found - FSR2 upscaling will be disabled")
-        message(STATUS "To enable: git clone https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK.git third_party/fidelityfx-sdk")
-    endif()
-endif()
-
 if(APPLE)
     if(IOS)
         install(TARGETS ${EXECUTABLE_NAME} DESTINATION "Payload")
