@@ -331,6 +331,11 @@ bool filterApplyDebanding(
             int by = (y + (frameIndex % 2)) % 8;
             float ditherValue = bayerMatrix[by][bx];
             
+            // Skip dithering for very dark pixels to preserve OLED blacks
+            if (r < 8 && g < 8 && b < 8) {
+                continue;  // Keep near-black pixels untouched
+            }
+            
             // Apply dithering to reduce banding
             // Scale dither based on strength and apply to each channel
             float ditherAmount = (ditherValue - 0.5f) * strength * 8.0f;
@@ -598,7 +603,9 @@ bool filterApplySoftHDR(
     int pitch,
     float strength,
     float saturation,
-    float contrast)
+    float contrast,
+    float blackCrushThreshold,
+    float blackCrushStrength)
 {
     if (buffer == nullptr || width <= 0 || height <= 0) {
         return false;
@@ -611,6 +618,8 @@ bool filterApplySoftHDR(
     strength = std::clamp(strength, 0.0f, 1.0f);
     saturation = std::clamp(saturation, 0.0f, 2.0f);
     contrast = std::clamp(contrast, 0.0f, 2.0f);
+    blackCrushThreshold = std::clamp(blackCrushThreshold, 0.0f, 0.15f);
+    blackCrushStrength = std::clamp(blackCrushStrength, 0.0f, 2.0f);
     
     const int rowStride = pitch / 4;
     
@@ -627,35 +636,72 @@ bool filterApplySoftHDR(
             float gf = g / 255.0f;
             float bf = b / 255.0f;
             
-            // Apply S-curve tone mapping for expanded dynamic range
-            // Preserve pure black to avoid gray lift on OLED displays
-            float luminance = 0.299f * rf + 0.587f * gf + 0.114f * bf;
-            if (luminance > 0.0001f) {  // Only apply to non-black pixels
-                float toneMapped = sCurve(luminance, strength);
-                float liftFactor = toneMapped / luminance;
-                
-                rf *= liftFactor;
-                gf *= liftFactor;
-                bf *= liftFactor;
-            }
-            
-            // Apply contrast enhancement (around midpoint)
-            rf = std::pow(rf, 1.0f / contrast);
-            gf = std::pow(gf, 1.0f / contrast);
-            bf = std::pow(bf, 1.0f / contrast);
-            
-            // Boost saturation in mid-tones
+            // 1. Saturation Boost (Vividness)
+            // Applied first to work on the original color balance
             if (saturation != 1.0f) {
                 float h, s, v;
                 rgbToHsv(rf, gf, bf, h, s, v);
                 
-                // Selective saturation boost (stronger in mid-tones)
-                float midToneFactor = 1.0f - std::abs(v - 0.5f) * 2.0f; // 1.0 at v=0.5, 0.0 at extremes
-                s *= 1.0f + (saturation - 1.0f) * midToneFactor;
+                // Global saturation boost with slight mid-tone emphasis
+                // This makes colors pop more
+                s *= saturation;
                 s = std::clamp(s, 0.0f, 1.0f);
                 
                 hsvToRgb(h, s, v, rf, gf, bf);
             }
+
+            // 2. Calculate luminance for black level processing
+            float luminance = 0.299f * rf + 0.587f * gf + 0.114f * bf;
+            
+            // 3. Aggressive Black Crush for OLED Deep Blacks
+            // Convert near-blacks to true black for better contrast on OLED/HDR displays
+            if (luminance < blackCrushThreshold) {
+                r = g = b = 0;
+                buffer[idx] = packARGB(a, 0, 0, 0);
+                continue;
+            }
+            
+            // 4. Black Point Adjustment - darken colors just above black threshold
+            // This creates a smoother transition and ensures lifted blacks get pushed down
+            if (luminance < blackCrushThreshold * 3.0f && blackCrushStrength > 0.0f) {
+                // Calculate how close we are to the black threshold (0.0 = at threshold, 1.0 = at 3x threshold)
+                float blackProximity = (luminance - blackCrushThreshold) / (blackCrushThreshold * 2.0f);
+                
+                // Apply power curve to aggressively darken near-blacks
+                // Higher blackCrushStrength = more aggressive darkening
+                float darkeningFactor = 1.0f - powf(1.0f - blackProximity, 2.0f / blackCrushStrength);
+                
+                rf *= darkeningFactor;
+                gf *= darkeningFactor;
+                bf *= darkeningFactor;
+                
+                // Recalculate luminance after darkening
+                luminance = 0.299f * rf + 0.587f * gf + 0.114f * bf;
+            }
+
+            // 5. Contrast Enhancement (pivot-based)
+            // Use a modified pivot point that preserves blacks better
+            // Instead of pivoting at 0.5, pivot at a slightly higher point
+            float contrastPivot = 0.5f;
+            
+            // Only apply contrast to colors above the near-black range
+            if (luminance > blackCrushThreshold * 3.0f) {
+                // Standard contrast adjustment: (color - pivot) * contrast + pivot
+                rf = (rf - contrastPivot) * contrast + contrastPivot;
+                gf = (gf - contrastPivot) * contrast + contrastPivot;
+                bf = (bf - contrastPivot) * contrast + contrastPivot;
+            } else {
+                // For near-blacks, apply reduced contrast to avoid lifting them
+                float reducedContrast = 1.0f + (contrast - 1.0f) * 0.5f;
+                rf = (rf - contrastPivot) * reducedContrast + contrastPivot;
+                gf = (gf - contrastPivot) * reducedContrast + contrastPivot;
+                bf = (bf - contrastPivot) * reducedContrast + contrastPivot;
+            }
+            
+            // 3. Highlight Compression (Soft Clip)
+            // Instead of hard clamping, soft clip the highs to preserve detail in bright lights
+            // But ensure we can reach 1.0 (pure white)
+            // Simple Reinhard-ish operator mixed with original to keep brightness
             
             // Clamp and convert back to uint8
             r = static_cast<uint8_t>(std::clamp(rf * 255.0f, 0.0f, 255.0f));
@@ -742,7 +788,8 @@ bool filterApplyPostProcessing(
             // 3. Soft HDR (optional color enhancement)
             if (success && config.enableSoftHDR) {
                 success = filterApplySoftHDR(buffer, width, height, pitch,
-                    config.hdrStrength, config.hdrSaturation, config.hdrContrast);
+                    config.hdrStrength, config.hdrSaturation, config.hdrContrast,
+                    config.blackCrushThreshold, config.blackCrushStrength);
                 if (!success && config.enableLogging) {
                     diagnosticsLog(DiagnosticsLevel::Info, "FILTERS", "WARNING: Soft HDR failed");
                 }

@@ -16,6 +16,7 @@
 #include "gpu_texture.h"
 #include "memory.h"
 #include "upscaler_filters.h"
+#include "upscaler_postprocess_shader.h"
 #include "game_config.h"
 
 namespace fallout {
@@ -105,6 +106,10 @@ private:
     bool createAnime4kTextures();
     bool createAnime4kDescriptors();
     bool createAnime4kCommandList();
+    
+    // GPU Post-Processing Helpers
+    bool initGpuPostProcess();
+    bool shutdownGpuPostProcess();
 
     // State variables
     UpscalerState mState = UpscalerState::STATE_UNINITIALIZED;
@@ -122,6 +127,11 @@ private:
     GpuTextureHandle mAnime4kOutputTexture = {};
     void* mAnime4kCommandAllocator = nullptr;   // ID3D12CommandAllocator*
     void* mAnime4kCommandList = nullptr;        // ID3D12GraphicsCommandList*
+    
+    // GPU Post-Processing (runs after Anime4K on GPU)
+    bool mGpuPostProcessInitialized = false;
+    void* mPostProcessRootSignature = nullptr;  // ID3D12RootSignature*
+    void* mPostProcessPipelineState = nullptr;  // ID3D12PipelineState*
 
     // Dimensions
     int mInputWidth = 0;
@@ -155,6 +165,8 @@ private:
     float mHdrStrength = 0.5f;
     float mHdrSaturation = 1.2f;
     float mHdrContrast = 1.1f;
+    float mBlackCrushThreshold = 0.03f;  // Luminance below which to crush to black
+    float mBlackCrushStrength = 1.0f;    // How aggressively to darken near-blacks
     
     bool mVerboseLogging = false;
 
@@ -311,6 +323,14 @@ void UpscalerImpl::loadFilterConfig() {
     double hdrCon = 1.1;
     if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_hdr_contrast", &hdrCon)) {
         mHdrContrast = static_cast<float>(std::clamp(hdrCon, 0.0, 2.0));
+    }
+    double blackThresh = 0.03;
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_black_crush_threshold", &blackThresh)) {
+        mBlackCrushThreshold = static_cast<float>(std::clamp(blackThresh, 0.0, 0.15));
+    }
+    double blackStr = 1.0;
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_black_crush_strength", &blackStr)) {
+        mBlackCrushStrength = static_cast<float>(std::clamp(blackStr, 0.0, 2.0));
     }
 }
 
@@ -583,6 +603,9 @@ bool UpscalerImpl::dispatchIntegerScale(int scaleFactor) {
     filterConfig.hdrStrength = mHdrStrength;
     filterConfig.hdrSaturation = mHdrSaturation;
     filterConfig.hdrContrast = mHdrContrast;
+    filterConfig.blackCrushThreshold = mBlackCrushThreshold;
+    filterConfig.blackCrushStrength = mBlackCrushStrength;
+    filterConfig.enableLogging = mVerboseLogging;
     
     filterApplyPostProcessing(mOutputBuffer, mOutputWidth, mOutputHeight, mOutputWidth * sizeof(uint32_t), filterConfig);
     
@@ -798,6 +821,11 @@ bool UpscalerImpl::initAnime4k() {
     gpuDeviceWaitForGpu(); // Sync before command list creation
     
     if (!createAnime4kCommandList()) return false;
+    
+    // Initialize GPU post-processing
+    if (!initGpuPostProcess()) {
+        logDiagnostic("WARNING: GPU post-processing init failed, will fallback to CPU");
+    }
 
     mAnime4kInitialized = true;
     return true;
@@ -805,6 +833,9 @@ bool UpscalerImpl::initAnime4k() {
 
 bool UpscalerImpl::shutdownAnime4k() {
     if (!mAnime4kInitialized) return true;
+    
+    // Shutdown GPU post-processing
+    shutdownGpuPostProcess();
     
     if (mAnime4kCommandList) { static_cast<ID3D12GraphicsCommandList*>(mAnime4kCommandList)->Release(); mAnime4kCommandList = nullptr; }
     if (mAnime4kCommandAllocator) { static_cast<ID3D12CommandAllocator*>(mAnime4kCommandAllocator)->Release(); mAnime4kCommandAllocator = nullptr; }
@@ -815,6 +846,109 @@ bool UpscalerImpl::shutdownAnime4k() {
     if (mAnime4kRootSignature) { static_cast<ID3D12RootSignature*>(mAnime4kRootSignature)->Release(); mAnime4kRootSignature = nullptr; }
     
     mAnime4kInitialized = false;
+    return true;
+}
+
+// ============================================================================
+// GPU Post-Processing (runs after Anime4K)
+// ============================================================================
+
+bool UpscalerImpl::initGpuPostProcess() {
+    if (mGpuPostProcessInitialized) return true;
+    if (!checkGpuReadiness()) return false;
+    
+    ID3D12Device* device = gpuDeviceGetDevice();
+    
+    // Compile post-process shader
+    Microsoft::WRL::ComPtr<ID3DBlob> shaderBlob;
+    Microsoft::WRL::ComPtr<ID3DBlob> errorBlob;
+    
+    HRESULT hr = D3DCompile(
+        UPSCALER_POSTPROCESS_SHADER,
+        strlen(UPSCALER_POSTPROCESS_SHADER),
+        "PostProcessShader",
+        nullptr, nullptr,
+        "main", "cs_5_0",
+        D3DCOMPILE_OPTIMIZATION_LEVEL3, 0,
+        &shaderBlob, &errorBlob
+    );
+    
+    if (FAILED(hr)) {
+        if (errorBlob) {
+            logDiagnostic("PostProcess shader compile error: %s", (char*)errorBlob->GetBufferPointer());
+        }
+        return false;
+    }
+    
+    // Create root signature
+    D3D12_ROOT_PARAMETER rootParams[2] = {};
+    
+    // CBV for parameters
+    rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rootParams[0].Descriptor.ShaderRegister = 0;
+    rootParams[0].Descriptor.RegisterSpace = 0;
+    rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    
+    // UAV descriptor table
+    D3D12_DESCRIPTOR_RANGE descRange = {};
+    descRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    descRange.NumDescriptors = 1;
+    descRange.BaseShaderRegister = 0;
+    descRange.RegisterSpace = 0;
+    descRange.OffsetInDescriptorsFromTableStart = 0;
+    
+    rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[1].DescriptorTable.NumDescriptorRanges = 1;
+    rootParams[1].DescriptorTable.pDescriptorRanges = &descRange;
+    rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    
+    D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
+    rootSigDesc.NumParameters = 2;
+    rootSigDesc.pParameters = rootParams;
+    rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+    
+    Microsoft::WRL::ComPtr<ID3DBlob> sigBlob;
+    hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sigBlob, &errorBlob);
+    if (FAILED(hr)) return false;
+    
+    ID3D12RootSignature* rootSig = nullptr;
+    hr = device->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(), IID_PPV_ARGS(&rootSig));
+    if (FAILED(hr)) return false;
+    mPostProcessRootSignature = rootSig;
+    
+    // Create pipeline state
+    D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
+    psoDesc.pRootSignature = rootSig;
+    psoDesc.CS.pShaderBytecode = shaderBlob->GetBufferPointer();
+    psoDesc.CS.BytecodeLength = shaderBlob->GetBufferSize();
+    
+    ID3D12PipelineState* pso = nullptr;
+    hr = device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&pso));
+    if (FAILED(hr)) {
+        rootSig->Release();
+        mPostProcessRootSignature = nullptr;
+        return false;
+    }
+    mPostProcessPipelineState = pso;
+    
+    mGpuPostProcessInitialized = true;
+    logDiagnostic("GPU PostProcess initialized successfully");
+    return true;
+}
+
+bool UpscalerImpl::shutdownGpuPostProcess() {
+    if (!mGpuPostProcessInitialized) return true;
+    
+    if (mPostProcessPipelineState) {
+        static_cast<ID3D12PipelineState*>(mPostProcessPipelineState)->Release();
+        mPostProcessPipelineState = nullptr;
+    }
+    if (mPostProcessRootSignature) {
+        static_cast<ID3D12RootSignature*>(mPostProcessRootSignature)->Release();
+        mPostProcessRootSignature = nullptr;
+    }
+    
+    mGpuPostProcessInitialized = false;
     return true;
 }
 
@@ -884,6 +1018,64 @@ bool UpscalerImpl::dispatchAnime4k() {
 
     cmdList->Dispatch((mOutputWidth + 7) / 8, (mOutputHeight + 7) / 8, 1);
     
+    // ========================================================================
+    // GPU POST-PROCESSING (HDR, Black Crush, Saturation, Contrast)
+    // ========================================================================
+    
+    if (mEnableSoftHDR && mGpuPostProcessInitialized) {
+        logDiagnostic("ANIME4K: Applying GPU post-processing (HDR filter on GPU)");
+        
+        // Keep output texture in UAV state for post-processing
+        // No barrier needed - already in UAV state
+        
+        // Set up post-process pipeline
+        cmdList->SetComputeRootSignature(static_cast<ID3D12RootSignature*>(mPostProcessRootSignature));
+        cmdList->SetPipelineState(static_cast<ID3D12PipelineState*>(mPostProcessPipelineState));
+        
+        // Prepare parameters
+        struct {
+            uint32_t resX, resY;
+            float hdrSaturation;
+            float hdrContrast;
+            float blackCrushThreshold;
+            float blackCrushStrength;
+            uint32_t frameIndex;
+            float padding;
+        } postParams;
+        
+        postParams.resX = mOutputWidth;
+        postParams.resY = mOutputHeight;
+        postParams.hdrSaturation = mHdrSaturation;
+        postParams.hdrContrast = mHdrContrast;
+        postParams.blackCrushThreshold = mBlackCrushThreshold;
+        postParams.blackCrushStrength = mBlackCrushStrength;
+        postParams.frameIndex = mFrameIndex++;
+        postParams.padding = 0;
+        
+        uint64_t cbAddr;
+        if (gpuUploadConstantBuffer(&postParams, sizeof(postParams), &cbAddr)) {
+            cmdList->SetComputeRootConstantBufferView(0, cbAddr);
+            
+            ID3D12DescriptorHeap* heap = static_cast<ID3D12DescriptorHeap*>(mAnime4kDescriptorHeap);
+            cmdList->SetDescriptorHeaps(1, &heap);
+            
+            // Use UAV descriptor (second entry in heap, offset by handle size)
+            ID3D12Device* device = gpuDeviceGetDevice();
+            UINT handleSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            D3D12_GPU_DESCRIPTOR_HANDLE uavHandle = heap->GetGPUDescriptorHandleForHeapStart();
+            uavHandle.ptr += handleSize; // Skip SRV, go to UAV
+            
+            cmdList->SetComputeRootDescriptorTable(1, uavHandle);
+            
+            // Dispatch post-process shader
+            cmdList->Dispatch((mOutputWidth + 7) / 8, (mOutputHeight + 7) / 8, 1);
+            
+            logDiagnostic("ANIME4K: GPU post-processing dispatched");
+        } else {
+            logDiagnostic("ANIME4K: WARNING - Failed to upload post-process params");
+        }
+    }
+    
     // Transition resources back to COMMON
     // Input: SRV -> COMMON
     barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
@@ -898,8 +1090,10 @@ bool UpscalerImpl::dispatchAnime4k() {
     if (!gpuDeviceExecuteCommandList(cmdList)) return dispatchIntegerScale(3);
     gpuDeviceWaitForGpu();
     
+    // Download final processed result (no more CPU processing needed!)
     if (!gpuTextureDownload(mAnime4kOutputTexture, mOutputBuffer, mOutputWidth * mOutputHeight * 4)) return dispatchIntegerScale(3);
     
+    logDiagnostic("ANIME4K: Dispatch complete (GPU post-processing applied)");
     return true;
 }
 

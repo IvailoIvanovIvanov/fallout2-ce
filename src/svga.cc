@@ -1776,6 +1776,16 @@ static bool createRenderer()
     if (gSdlTexture == nullptr) {
         return false;
     }
+
+    // Ensure the main presenter texture is treated as fully opaque.
+    // If blending is enabled and alpha is <255 for any pixels, SDL/DWM composition can
+    // produce lifted blacks and washed-out colors (very noticeable on OLED).
+    SDL_SetTextureBlendMode(gSdlTexture, SDL_BLENDMODE_NONE);
+    SDL_SetTextureAlphaMod(gSdlTexture, 255);
+    SDL_SetTextureColorMod(gSdlTexture, 255, 255, 255);
+
+    // Also disable renderer blending for the base pass.
+    SDL_SetRenderDrawBlendMode(gSdlRenderer, SDL_BLENDMODE_NONE);
     
     // DEBUG: Log texture creation
     FILE* pipelineLog = fopen("C:\\Program Files (x86)\\Steam\\steamapps\\common\\Fallout 2\\pipeline.log", "w");

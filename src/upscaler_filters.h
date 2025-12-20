@@ -52,6 +52,8 @@ struct FilterConfig {
     float hdrStrength = 0.5f;          // 0.0-1.0, HDR effect intensity
     float hdrSaturation = 1.2f;        // 0.0-2.0, mid-tone saturation boost
     float hdrContrast = 1.1f;          // 0.0-2.0, contrast enhancement
+    float blackCrushThreshold = 0.03f; // 0.0-0.1, luminance below which to crush to black (OLED optimization)
+    float blackCrushStrength = 1.0f;   // 0.0-2.0, how aggressively to darken near-blacks (1.0 = natural)
     
     // General
     bool enableLogging = false;        // Log filter application (verbose mode only)
@@ -110,6 +112,7 @@ bool filterApplyEdgeSmoothing(
  * - S-curve tone mapping to expand dynamic range
  * - Selective saturation boost in mid-tones
  * - Contrast enhancement without clipping
+ * - Aggressive black crush for OLED deep blacks
  * - Subtle highlight/shadow lift
  * 
  * @param buffer Input/output ARGB8888 buffer
@@ -119,6 +122,8 @@ bool filterApplyEdgeSmoothing(
  * @param strength HDR effect strength (0.0-1.0)
  * @param saturation Mid-tone saturation boost (0.0-2.0, 1.0 = neutral)
  * @param contrast Contrast multiplier (0.0-2.0, 1.0 = neutral)
+ * @param blackCrushThreshold Luminance below which to crush to black (0.0-0.1, default 0.03)
+ * @param blackCrushStrength How aggressively to darken near-blacks (0.0-2.0, 1.0 = natural)
  * @return true if successful
  */
 bool filterApplySoftHDR(
@@ -128,7 +133,9 @@ bool filterApplySoftHDR(
     int pitch,
     float strength,
     float saturation,
-    float contrast
+    float contrast,
+    float blackCrushThreshold = 0.03f,
+    float blackCrushStrength = 1.0f
 );
 
 /**
