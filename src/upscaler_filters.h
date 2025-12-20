@@ -47,6 +47,12 @@ struct FilterConfig {
     float smoothingStrength = 0.6f;    // 0.0-1.0, smoothing intensity
     float edgeDetectThreshold = 0.15f; // 0.0-1.0, edge detection sensitivity (optimized for pixel art)
     
+    // Soft HDR parameters (expand color range and enhance contrast)
+    bool enableSoftHDR = false;        // Apply HDR-like tone mapping
+    float hdrStrength = 0.5f;          // 0.0-1.0, HDR effect intensity
+    float hdrSaturation = 1.2f;        // 0.0-2.0, mid-tone saturation boost
+    float hdrContrast = 1.1f;          // 0.0-2.0, contrast enhancement
+    
     // General
     bool enableLogging = false;        // Log filter application (verbose mode only)
 };
@@ -95,6 +101,34 @@ bool filterApplyEdgeSmoothing(
     int pitch,
     float strength,
     float edgeThreshold
+);
+
+/**
+ * @brief Apply soft HDR tone mapping to expand color range
+ * 
+ * Creates an HDR-like effect by:
+ * - S-curve tone mapping to expand dynamic range
+ * - Selective saturation boost in mid-tones
+ * - Contrast enhancement without clipping
+ * - Subtle highlight/shadow lift
+ * 
+ * @param buffer Input/output ARGB8888 buffer
+ * @param width  Buffer width in pixels
+ * @param height Buffer height in pixels
+ * @param pitch  Buffer pitch in bytes
+ * @param strength HDR effect strength (0.0-1.0)
+ * @param saturation Mid-tone saturation boost (0.0-2.0, 1.0 = neutral)
+ * @param contrast Contrast multiplier (0.0-2.0, 1.0 = neutral)
+ * @return true if successful
+ */
+bool filterApplySoftHDR(
+    uint32_t* buffer,
+    int width,
+    int height,
+    int pitch,
+    float strength,
+    float saturation,
+    float contrast
 );
 
 /**

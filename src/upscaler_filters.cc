@@ -569,6 +569,104 @@ bool filterApplyKuwahara(
 }
 
 // ============================================================================
+// Soft HDR Tone Mapping
+// ============================================================================
+
+/**
+ * S-curve for smooth tone mapping (ACES-inspired)
+ */
+inline float sCurve(float x, float strength) {
+    // Sigmoid-based S-curve
+    float a = 2.51f * strength;
+    float b = 0.03f;
+    float c = 2.43f * strength;
+    float d = 0.59f;
+    float e = 0.14f;
+    
+    float numerator = x * (a * x + b);
+    float denominator = x * (c * x + d) + e;
+    return std::max(0.0f, std::min(1.0f, numerator / denominator));
+}
+
+/**
+ * Apply soft HDR tone mapping
+ */
+bool filterApplySoftHDR(
+    uint32_t* buffer,
+    int width,
+    int height,
+    int pitch,
+    float strength,
+    float saturation,
+    float contrast)
+{
+    if (buffer == nullptr || width <= 0 || height <= 0) {
+        return false;
+    }
+    
+    if (strength <= 0.0f) {
+        return true; // No-op
+    }
+    
+    strength = std::clamp(strength, 0.0f, 1.0f);
+    saturation = std::clamp(saturation, 0.0f, 2.0f);
+    contrast = std::clamp(contrast, 0.0f, 2.0f);
+    
+    const int rowStride = pitch / 4;
+    
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            const int idx = y * rowStride + x;
+            uint32_t pixel = buffer[idx];
+            
+            uint8_t a, r, g, b;
+            unpackARGB(pixel, a, r, g, b);
+            
+            // Convert to float [0, 1]
+            float rf = r / 255.0f;
+            float gf = g / 255.0f;
+            float bf = b / 255.0f;
+            
+            // Apply S-curve tone mapping for expanded dynamic range
+            float luminance = 0.299f * rf + 0.587f * gf + 0.114f * bf;
+            float toneMapped = sCurve(luminance, strength);
+            float liftFactor = (toneMapped / std::max(0.001f, luminance));
+            
+            rf *= liftFactor;
+            gf *= liftFactor;
+            bf *= liftFactor;
+            
+            // Apply contrast enhancement (around midpoint)
+            rf = std::pow(rf, 1.0f / contrast);
+            gf = std::pow(gf, 1.0f / contrast);
+            bf = std::pow(bf, 1.0f / contrast);
+            
+            // Boost saturation in mid-tones
+            if (saturation != 1.0f) {
+                float h, s, v;
+                rgbToHsv(rf, gf, bf, h, s, v);
+                
+                // Selective saturation boost (stronger in mid-tones)
+                float midToneFactor = 1.0f - std::abs(v - 0.5f) * 2.0f; // 1.0 at v=0.5, 0.0 at extremes
+                s *= 1.0f + (saturation - 1.0f) * midToneFactor;
+                s = std::clamp(s, 0.0f, 1.0f);
+                
+                hsvToRgb(h, s, v, rf, gf, bf);
+            }
+            
+            // Clamp and convert back to uint8
+            r = static_cast<uint8_t>(std::clamp(rf * 255.0f, 0.0f, 255.0f));
+            g = static_cast<uint8_t>(std::clamp(gf * 255.0f, 0.0f, 255.0f));
+            b = static_cast<uint8_t>(std::clamp(bf * 255.0f, 0.0f, 255.0f));
+            
+            buffer[idx] = packARGB(a, r, g, b);
+        }
+    }
+    
+    return true;
+}
+
+// ============================================================================
 // Post-Processing Pipeline
 // ============================================================================
 
@@ -635,6 +733,15 @@ bool filterApplyPostProcessing(
                     config.smoothingStrength, config.edgeDetectThreshold);
                 if (!success && config.enableLogging) {
                     diagnosticsLog(DiagnosticsLevel::Info, "FILTERS", "WARNING: Edge smoothing failed");
+                }
+            }
+            
+            // 3. Soft HDR (optional color enhancement)
+            if (success && config.enableSoftHDR) {
+                success = filterApplySoftHDR(buffer, width, height, pitch,
+                    config.hdrStrength, config.hdrSaturation, config.hdrContrast);
+                if (!success && config.enableLogging) {
+                    diagnosticsLog(DiagnosticsLevel::Info, "FILTERS", "WARNING: Soft HDR failed");
                 }
             }
             break;

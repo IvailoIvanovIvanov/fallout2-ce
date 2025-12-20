@@ -150,6 +150,12 @@ private:
     bool mEnableKuwahara = false;
     int mKuwaharaRadius = 2;
     
+    // Soft HDR
+    bool mEnableSoftHDR = false;
+    float mHdrStrength = 0.5f;
+    float mHdrSaturation = 1.2f;
+    float mHdrContrast = 1.1f;
+    
     bool mVerboseLogging = false;
 
     // Error tracking
@@ -290,6 +296,21 @@ void UpscalerImpl::loadFilterConfig() {
     int radius = 2;
     if (configGetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_kuwahara_radius", &radius)) {
         mKuwaharaRadius = std::clamp(radius, 1, 5);
+    }
+    
+    // Soft HDR
+    configGetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_hdr_enable", &mEnableSoftHDR);
+    double hdrStr = 0.5;
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_hdr_strength", &hdrStr)) {
+        mHdrStrength = static_cast<float>(std::clamp(hdrStr, 0.0, 1.0));
+    }
+    double hdrSat = 1.2;
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_hdr_saturation", &hdrSat)) {
+        mHdrSaturation = static_cast<float>(std::clamp(hdrSat, 0.0, 2.0));
+    }
+    double hdrCon = 1.1;
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_hdr_contrast", &hdrCon)) {
+        mHdrContrast = static_cast<float>(std::clamp(hdrCon, 0.0, 2.0));
     }
 }
 
@@ -558,6 +579,10 @@ bool UpscalerImpl::dispatchIntegerScale(int scaleFactor) {
     filterConfig.frameIndex = mFrameIndex++;
     filterConfig.enableEdgeSmoothing = mEnableEdgeSmoothing;
     filterConfig.smoothingStrength = mSmoothingStrength;
+    filterConfig.enableSoftHDR = mEnableSoftHDR;
+    filterConfig.hdrStrength = mHdrStrength;
+    filterConfig.hdrSaturation = mHdrSaturation;
+    filterConfig.hdrContrast = mHdrContrast;
     
     filterApplyPostProcessing(mOutputBuffer, mOutputWidth, mOutputHeight, mOutputWidth * sizeof(uint32_t), filterConfig);
     
