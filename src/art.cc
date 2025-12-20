@@ -1398,22 +1398,19 @@ static int hdArtPngEof(void* user)
 
 static bool hdArtProbe(int fid, HdArtInfo& info)
 {
-    if (!settings.system.use_hd_art) {
+    // HD art disabled - using upscaler instead
+    return false;
+    
+    // Original code preserved but unreachable:
+    /*
+    char path[MAX_PATH];
+    artBuildFilePath(path, fid, ".png");
+
+    if (!gArtLanguageInitialized) {
         return false;
     }
 
-    auto cached = gHdArtInfoCache.find(fid);
-    if (cached != gHdArtInfoCache.end()) {
-        info = cached->second;
-        return true;
-    }
-
-    char path[COMPAT_MAX_PATH];
-    if (!hdArtBuildPngFilePath(fid, path, sizeof(path))) {
-        return false;
-    }
-
-    File* stream = fileOpen(path, "rb");
+    File* stream = fileOpen(artGetHdFolder(), path, "rb");
     if (stream == nullptr) {
         return false;
     }
@@ -1443,6 +1440,7 @@ static bool hdArtProbe(int fid, HdArtInfo& info)
     info.height = height;
     gHdArtInfoCache[fid] = info;
     return true;
+    */
 }
 
 static int hdArtComputeDataSize(int width, int height)

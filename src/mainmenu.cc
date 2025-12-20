@@ -290,10 +290,9 @@ void mainMenuWindowUnhide(bool animate)
 
     diagnosticsLog(DiagnosticsLevel::Trace,
         "WINDOW",
-        "mainMenuWindowUnhide hidden=%d animate=%d virtual_adapter=%d",
+        "mainMenuWindowUnhide hidden=%d animate=%d",  // virtual_adapter removed
         gMainMenuWindowHidden,
-        animate,
-        settings.system.virtual_adapter ? 1 : 0);
+        animate);
 
     if (!gMainMenuWindowHidden) {
         return;
@@ -308,7 +307,7 @@ void mainMenuWindowUnhide(bool animate)
 
     gMainMenuWindowHidden = false;
 
-    if (settings.system.virtual_adapter) {
+    if (false) {  // virtual_adapter removed
         Rect refreshRect;
         if (windowGetRect(gMainMenuWindow, &refreshRect) != 0) {
             refreshRect.left = 0;

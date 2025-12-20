@@ -234,7 +234,7 @@ static bool virtualAdapterTraceEnabled()
         return false;
     }
 
-    if (!settings.debug.virtual_adapter_trace) {
+    if (true) {  // virtual_adapter_trace removed
         return false;
     }
 
@@ -483,7 +483,7 @@ static bool shouldAllocatePhysicalTrueColorOverlay()
         return false;
     }
 
-    if (!settings.system.virtual_adapter_fullres) {
+    if (true) {  // virtual_adapter_fullres removed
         return false;
     }
 
@@ -860,9 +860,7 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
     int screenHeight = screenGetHeight();
 
     bool wantScreenBuffer = (a3 & 1) != 0;
-    if (settings.system.virtual_adapter) {
-        wantScreenBuffer = true;
-    }
+    // virtual_adapter removed
 
     if (wantScreenBuffer) {
         _screen_buffer = (unsigned char*)internal_malloc(screenWidth * screenHeight);
@@ -882,7 +880,7 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
         _screen_buffer_pitch = 0;
     }
 
-    gVirtualScreenEnabled = settings.system.virtual_adapter && _screen_buffer != nullptr;
+    gVirtualScreenEnabled = false && _screen_buffer != nullptr;  // virtual_adapter removed
     _buffering = gVirtualScreenEnabled;
     virtualScreenResetDirty();
     if (gVirtualScreenEnabled) {

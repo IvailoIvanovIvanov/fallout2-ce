@@ -281,7 +281,7 @@ bool renderCommandCaptureEnabled()
         return false;
     }
 
-    return settings.system.render_display_orchestrator && settings.system.virtual_adapter;
+    return false;  // virtual_adapter removed
 }
 
 // ---------------- Phase 2: emit/peek for new commands ----------------
@@ -1228,7 +1228,7 @@ void renderCommandsEvaluateAutoFallback()
         return;
     }
 
-    if (!settings.system.virtual_adapter || !settings.system.virtual_adapter_fullres) {
+    if (true) {  // virtual_adapter removed
         return;
     }
 

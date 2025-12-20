@@ -603,25 +603,8 @@ void processPaletteCommands()
 
 bool renderDisplayOrchestratorEnabled()
 {
-    // Phase 5: When virtual adapter is enabled, orchestrator must be active.
-    // Direct blit fallback is only for catastrophic failures (queue overflow).
-    const bool virtualAdapterActive = settings.system.virtual_adapter && settings.system.virtual_adapter_fullres;
-    
-    if (!virtualAdapterActive) {
-        // RENDER PATH TRACE: Log why orchestrator is disabled
-        if (settings.debug.render_path_trace) {
-            static int sConfigLogThrottle = 0;
-            if (++sConfigLogThrottle >= 300) { // Log once per ~300 calls
-                diagnosticsLog(DiagnosticsLevel::Info,
-                    "RENDERPATH",
-                    "orchestrator DISABLED: virtual_adapter=%d virtual_adapter_fullres=%d (both must be 1)",
-                    settings.system.virtual_adapter ? 1 : 0,
-                    settings.system.virtual_adapter_fullres ? 1 : 0);
-                sConfigLogThrottle = 0;
-            }
-        }
-        return false;
-    }
+    // Virtual adapter removed - orchestrator disabled
+    return false;
 
     if (renderCommandDirectBlitFallbackActive()) {
         // Log warning - this should only happen on queue overflow
@@ -684,8 +667,8 @@ void renderDisplayOrchestratorProcess()
         return;
     }
 
-    // Phase 6: Validate orchestrator state consistency
-    if (settings.system.virtual_adapter && !settings.system.render_display_orchestrator) {
+    // Phase 6: Validate orchestrator state consistency (virtual_adapter removed)
+    if (false) {
         if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
             diagnosticsLog(DiagnosticsLevel::Info,
                 "SCALER",

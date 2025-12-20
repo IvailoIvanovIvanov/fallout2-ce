@@ -23,10 +23,7 @@ struct SystemSettings {
     int splash = 0;
     int free_space = 20480;
     int times_run = 0;
-    bool use_hd_art = false;
     std::string hd_art_path = "art";
-    bool virtual_adapter = false;
-    bool virtual_adapter_fullres = false;
     bool render_command_trace = false;
     bool render_command_replay = false;
     bool render_display_orchestrator = false;
@@ -88,7 +85,6 @@ struct DebugSettings {
     bool output_map_data_info = false;
     bool input_overlay = false;
     bool hd_missing_watermark = false;
-    bool virtual_adapter_trace = false;
     // Focused logging for render path debugging (legacy vs orchestrator)
     bool render_path_trace = false;
 };

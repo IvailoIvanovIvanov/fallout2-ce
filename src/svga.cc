@@ -394,6 +394,10 @@ static void logTextureUploadRectStats(const Rect& rect, const char* label)
 
 static bool virtualAdapterTraceChannelEnabled()
 {
+    return false;  // virtual_adapter_trace removed
+    
+    // Original code preserved but unreachable:
+    /*
     if (!settings.debug.virtual_adapter_trace) {
         return false;
     }
@@ -403,6 +407,7 @@ static bool virtualAdapterTraceChannelEnabled()
     }
 
     return diagnosticsWouldLog(DiagnosticsLevel::Trace);
+    */
 }
 
 static void logVirtualAdapterSourceSamples(const char* stage, const unsigned char* src, int width, int height, int pitch)
@@ -473,7 +478,7 @@ static void logVirtualAdapterSourceSamples(const char* stage, const unsigned cha
 // When true, the indexed layer stays at logical resolution and GPU scales during render
 static bool isGpuScalingActive()
 {
-    return settings.system.gpu_scaling && settings.system.virtual_adapter;
+    return settings.system.gpu_scaling;  // virtual_adapter removed
 }
 
 static bool isFullResPresenterActive()
@@ -484,7 +489,7 @@ static bool isFullResPresenterActive()
         return false;
     }
     
-    if (!settings.system.virtual_adapter || !settings.system.virtual_adapter_fullres) {
+    if (true) {  // virtual_adapter removed
         return false;
     }
 
@@ -682,7 +687,7 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
     int scale = 1;
     int logicalWidth = width;
     int logicalHeight = height;
-    bool integerScaling = settings.system.virtual_adapter;
+    bool integerScaling = false;  // virtual_adapter removed
     bool diagnosticsEnabled = false;
     DiagnosticsLevel diagnosticsLevel = DiagnosticsLevel::Info;
     char* diagnosticsLogFileValue = nullptr;
@@ -779,9 +784,7 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
         diagnosticsLog(
             DiagnosticsLevel::Info,
             "RENDERPATH",
-            "CONFIG: virtual_adapter=%d virtual_adapter_fullres=%d render_display_orchestrator=%d render_path_trace=%d",
-            settings.system.virtual_adapter ? 1 : 0,
-            settings.system.virtual_adapter_fullres ? 1 : 0,
+            "CONFIG: render_display_orchestrator=%d render_path_trace=%d",  // virtual_adapter removed
             settings.system.render_display_orchestrator ? 1 : 0,
             settings.debug.render_path_trace ? 1 : 0);
     }
@@ -1127,7 +1130,7 @@ void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect
     }
 
     // RENDER PATH TRACE: Log indexed path activity (informational, not an error)
-    if (settings.debug.render_path_trace && settings.system.virtual_adapter) {
+    if (false) {  // virtual_adapter removed
         bool orchestratorOwns = renderDisplayOrchestratorOwnsPresenter();
         diagnosticsLog(DiagnosticsLevel::Trace,  // Changed to Trace level - this is normal operation
             "RENDERPATH",
@@ -1804,7 +1807,7 @@ static bool createRenderer()
     // Phase 7/8.3: Create GPU overlay texture for HD content
     // The overlay always needs physical resolution for HD assets, regardless of base layer scaling
     // When gpu_scaling is enabled, base layer is 640x480 but overlay is still physical res
-    const bool needsHdOverlay = settings.system.virtual_adapter && settings.system.gpu_overlay;
+    const bool needsHdOverlay = false;  // virtual_adapter removed
     if (needsHdOverlay) {
         const Rect& viewport = displayScalerGetPhysicalViewport();
         const int overlayWidth = std::max(1, rectGetWidth(&viewport));
@@ -1867,7 +1870,7 @@ static bool createRenderer()
     configGetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_MODE_KEY, &upscalerMode);
     bool needsGpuCompute = (upscalerMode == 5); // ANIME4K
     
-    if (settings.system.gpu_scaling || settings.system.virtual_adapter || needsGpuCompute) {
+    if (settings.system.gpu_scaling || needsGpuCompute) {  // virtual_adapter removed
         if (!gpuDeviceInit()) {
             diagnosticsLog(DiagnosticsLevel::Info, "RENDERER",
                 "GPU device initialization failed, GPU compute operations unavailable");
@@ -1986,7 +1989,7 @@ static bool ensurePresenterSurfaceMatchesBounds()
         desiredWidth = rectGetWidth(&logicalBounds);
         desiredHeight = rectGetHeight(&logicalBounds);
         stateReason = "gpu_scaling_active";
-    } else if (settings.system.virtual_adapter && settings.system.virtual_adapter_fullres) {
+    } else if (false) {  // virtual_adapter removed
         const double scale = displayScalerGetScale();
         if (scale >= 1.0 - 1.0e-4) {
             const Rect& viewport = displayScalerGetPhysicalViewport();
@@ -2006,7 +2009,7 @@ static bool ensurePresenterSurfaceMatchesBounds()
         desiredWidth = rectGetWidth(&logicalBounds);
         desiredHeight = rectGetHeight(&logicalBounds);
         if (stateReason == nullptr) {
-            stateReason = settings.system.virtual_adapter_fullres ? "viewport_invalid" : "fullres_disabled";
+            stateReason = "fullres_disabled";  // virtual_adapter removed
         }
     }
 
@@ -2021,7 +2024,7 @@ static bool ensurePresenterSurfaceMatchesBounds()
     // Phase 8.3 fix: Also check if overlay needs recreation
     // When gpu_scaling is enabled, base texture is 640x480 but overlay needs physical resolution
     bool overlayNeedsResize = false;
-    if (settings.system.virtual_adapter && settings.system.gpu_overlay) {
+    if (false) {  // virtual_adapter removed
         const Rect& viewport = displayScalerGetPhysicalViewport();
         const int neededOverlayWidth = std::max(1, rectGetWidth(&viewport));
         const int neededOverlayHeight = std::max(1, rectGetHeight(&viewport));
@@ -2112,7 +2115,7 @@ static bool ensurePresenterSurfaceMatchesBounds()
         gOverlayTextureHeight = 0;
     }
     
-    const bool needsHdOverlay = settings.system.virtual_adapter && settings.system.gpu_overlay;
+    const bool needsHdOverlay = false;  // virtual_adapter removed
     if (needsHdOverlay) {
         const Rect& viewport = displayScalerGetPhysicalViewport();
         const int overlayWidth = std::max(1, rectGetWidth(&viewport));
