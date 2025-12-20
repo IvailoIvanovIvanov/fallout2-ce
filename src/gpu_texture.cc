@@ -27,9 +27,9 @@ struct TextureMetadata {
 static DXGI_FORMAT getD3dFormat(GpuTextureFormat format) {
     switch (format) {
         case GpuTextureFormat::ARGB8888:
-            return DXGI_FORMAT_R8G8B8A8_UNORM;
+            return DXGI_FORMAT_B8G8R8A8_UNORM;  // Windows ARGB is BGRA in memory
         case GpuTextureFormat::RGBA8888:
-            return DXGI_FORMAT_R8G8B8A8_UNORM;  // Same format, different interpretation
+            return DXGI_FORMAT_R8G8B8A8_UNORM;
         default:
             return DXGI_FORMAT_UNKNOWN;
     }
@@ -200,15 +200,69 @@ bool gpuTextureUpload(GpuTextureHandle handle, const void* data, int dataSize)
     memcpy(uploadData, data, dataSize);
     metadata->uploadBuffer->Unmap(0, nullptr);
     
-    // Phase 4 TODO: Record copy command and execute
-    // This would include:
-    // 1. Create command allocator and list
-    // 2. Record: CopyBufferRegion or CopyTextureRegion
-    // 3. Execute command list
-    // 4. Wait for GPU
+    // Execute copy command to transfer from upload buffer to texture
+    ID3D12CommandAllocator* allocator = gpuDeviceCreateCommandAllocator();
+    if (allocator == nullptr) {
+        diagnosticsLog(DiagnosticsLevel::Info, "GPU_TEXTURE", "Failed to create command allocator for upload");
+        return false;
+    }
     
-    diagnosticsLog(DiagnosticsLevel::Info, "GPU_TEXTURE",
-        "Texture upload pending: %d bytes (Phase 4)", dataSize);
+    ID3D12GraphicsCommandList* cmdList = gpuDeviceCreateCommandList(allocator);
+    if (cmdList == nullptr) {
+        allocator->Release();
+        diagnosticsLog(DiagnosticsLevel::Info, "GPU_TEXTURE", "Failed to create command list for upload");
+        return false;
+    }
+    
+    // Transition texture to copy destination state
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    barrier.Transition.pResource = metadata->resource.Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cmdList->ResourceBarrier(1, &barrier);
+    
+    // Copy from upload buffer to texture
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+    footprint.Offset = 0;
+    footprint.Footprint.Format = getD3dFormat(metadata->format);
+    footprint.Footprint.Width = metadata->width;
+    footprint.Footprint.Height = metadata->height;
+    footprint.Footprint.Depth = 1;
+    footprint.Footprint.RowPitch = metadata->width * 4;  // 4 bytes per pixel (RGBA)
+    
+    D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
+    srcLocation.pResource = metadata->uploadBuffer.Get();
+    srcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    srcLocation.PlacedFootprint = footprint;
+    
+    D3D12_TEXTURE_COPY_LOCATION dstLocation = {};
+    dstLocation.pResource = metadata->resource.Get();
+    dstLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dstLocation.SubresourceIndex = 0;
+    
+    cmdList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
+    
+    // Transition texture to shader resource state
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    cmdList->ResourceBarrier(1, &barrier);
+    
+    // Execute and wait
+    if (!gpuDeviceExecuteCommandList(cmdList)) {
+        cmdList->Release();
+        allocator->Release();
+        diagnosticsLog(DiagnosticsLevel::Info, "GPU_TEXTURE", "Failed to execute upload command list");
+        return false;
+    }
+    
+    gpuDeviceWaitForGpu();
+    
+    cmdList->Release();
+    allocator->Release();
+    
     return true;
 }
 
@@ -262,17 +316,83 @@ bool gpuTextureDownload(GpuTextureHandle handle, void* outData, int dataSize)
         }
     }
     
-    // Phase 4 TODO: Record copy command and execute
-    // This would include:
-    // 1. Transition texture to COPY_SOURCE state
-    // 2. Create command allocator and list
-    // 3. Record: CopyTextureRegion or CopyBufferRegion
-    // 4. Execute command list
-    // 5. Wait for GPU
-    // 6. Map readback buffer and copy data
+    // Execute copy command to transfer from texture to readback buffer
+    ID3D12CommandAllocator* allocator = gpuDeviceCreateCommandAllocator();
+    if (allocator == nullptr) {
+        diagnosticsLog(DiagnosticsLevel::Info, "GPU_TEXTURE", "Failed to create command allocator for download");
+        return false;
+    }
     
-    diagnosticsLog(DiagnosticsLevel::Info, "GPU_TEXTURE",
-        "Texture download pending: %d bytes (Phase 4)", dataSize);
+    ID3D12GraphicsCommandList* cmdList = gpuDeviceCreateCommandList(allocator);
+    if (cmdList == nullptr) {
+        allocator->Release();
+        diagnosticsLog(DiagnosticsLevel::Info, "GPU_TEXTURE", "Failed to create command list for download");
+        return false;
+    }
+    
+    // Transition texture to copy source state
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    barrier.Transition.pResource = metadata->resource.Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cmdList->ResourceBarrier(1, &barrier);
+    
+    // Copy from texture to readback buffer
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+    footprint.Offset = 0;
+    footprint.Footprint.Format = getD3dFormat(metadata->format);
+    footprint.Footprint.Width = metadata->width;
+    footprint.Footprint.Height = metadata->height;
+    footprint.Footprint.Depth = 1;
+    footprint.Footprint.RowPitch = metadata->width * 4;  // 4 bytes per pixel (RGBA)
+    
+    D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
+    srcLocation.pResource = metadata->resource.Get();
+    srcLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    srcLocation.SubresourceIndex = 0;
+    
+    D3D12_TEXTURE_COPY_LOCATION dstLocation = {};
+    dstLocation.pResource = metadata->readbackBuffer.Get();
+    dstLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dstLocation.PlacedFootprint = footprint;
+    
+    cmdList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
+    
+    // Transition texture back to UAV state
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    cmdList->ResourceBarrier(1, &barrier);
+    
+    // Execute and wait
+    if (!gpuDeviceExecuteCommandList(cmdList)) {
+        cmdList->Release();
+        allocator->Release();
+        diagnosticsLog(DiagnosticsLevel::Info, "GPU_TEXTURE", "Failed to execute download command list");
+        return false;
+    }
+    
+    gpuDeviceWaitForGpu();
+    
+    cmdList->Release();
+    allocator->Release();
+    
+    // Now read from readback buffer
+    void* readbackData = nullptr;
+    D3D12_RANGE readRange = { 0, static_cast<SIZE_T>(dataSize) };
+    if (FAILED(metadata->readbackBuffer->Map(0, &readRange, &readbackData))) {
+        diagnosticsLog(DiagnosticsLevel::Info, "GPU_TEXTURE",
+            "Failed to map readback buffer");
+        return false;
+    }
+    
+    memcpy(outData, readbackData, dataSize);
+    
+    D3D12_RANGE writeRange = { 0, 0 };
+    metadata->readbackBuffer->Unmap(0, &writeRange);
+    
     return true;
 }
 
@@ -295,6 +415,77 @@ bool gpuTextureGetDimensions(GpuTextureHandle handle, int& outWidth, int& outHei
     auto metadata = static_cast<TextureMetadata*>(handle.resource);
     outWidth = metadata->width;
     outHeight = metadata->height;
+    return true;
+}
+
+bool gpuTextureGetDescriptor(GpuTextureHandle handle, bool isSRV, void* outCPU, void* outGPU)
+{
+    if (handle.resource == nullptr || outCPU == nullptr || outGPU == nullptr) {
+        return false;
+    }
+    
+    auto metadata = static_cast<TextureMetadata*>(handle.resource);
+    ID3D12Device* device = gpuDeviceGetDevice();
+    
+    if (device == nullptr || metadata->resource == nullptr) {
+        diagnosticsLog(DiagnosticsLevel::Info, "GPU_TEXTURE",
+            "Cannot create descriptor: device or resource not initialized");
+        return false;
+    }
+    
+    // TODO: This is a simplified implementation that doesn't manage descriptor heaps properly.
+    // For production code, we should:
+    // 1. Create/manage a persistent descriptor heap for SRVs and UAVs
+    // 2. Allocate descriptor slots from the heap
+    // 3. Cache descriptors per texture to avoid recreating them each frame
+    //
+    // For now, we'll create a temporary descriptor heap (inefficient but functional)
+    
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+    heapDesc.NumDescriptors = 1;
+    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    
+    ComPtr<ID3D12DescriptorHeap> descriptorHeap;
+    HRESULT hr = device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(descriptorHeap.ReleaseAndGetAddressOf()));
+    
+    if (FAILED(hr)) {
+        diagnosticsLog(DiagnosticsLevel::Info, "GPU_TEXTURE",
+            "Failed to create descriptor heap for texture");
+        return false;
+    }
+    
+    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = descriptorHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = descriptorHeap->GetGPUDescriptorHandleForHeapStart();
+    
+    if (isSRV) {
+        // Create Shader Resource View (read-only)
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = getD3dFormat(metadata->format);
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Texture2D.MipLevels = 1;
+        srvDesc.Texture2D.MostDetailedMip = 0;
+        
+        device->CreateShaderResourceView(metadata->resource.Get(), &srvDesc, cpuHandle);
+    } else {
+        // Create Unordered Access View (read-write)
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.Format = getD3dFormat(metadata->format);
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        uavDesc.Texture2D.MipSlice = 0;
+        
+        device->CreateUnorderedAccessView(metadata->resource.Get(), nullptr, &uavDesc, cpuHandle);
+    }
+    
+    // Copy handles to output
+    memcpy(outCPU, &cpuHandle, sizeof(D3D12_CPU_DESCRIPTOR_HANDLE));
+    memcpy(outGPU, &gpuHandle, sizeof(D3D12_GPU_DESCRIPTOR_HANDLE));
+    
+    // Keep descriptor heap alive (memory leak, but functional for proof-of-concept)
+    // TODO: Implement proper descriptor heap management
+    descriptorHeap.Detach();
+    
     return true;
 }
 

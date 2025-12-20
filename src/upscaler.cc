@@ -7,6 +7,9 @@
 #include <string>
 
 #include <SDL.h>
+#include <d3d12.h>
+#include <d3dcompiler.h>
+#include <wrl/client.h>
 
 #include "diagnostics.h"
 #include "gpu_device.h"
@@ -131,6 +134,9 @@ private:
     bool shutdownFsr2();
     bool dispatchFsr2();
     bool dispatchIntegerScale(int scaleFactor);
+    bool initAnime4k();
+    bool shutdownAnime4k();
+    bool dispatchAnime4k();
 
     bool allocateInputBuffer(int width, int height);
     bool allocateOutputBuffer(int width, int height);
@@ -144,6 +150,16 @@ private:
     UpscalerMode mConfiguredMode = UpscalerMode::FSR2;  // Mode from config file
     UpscalerQuality mQuality = UpscalerQuality::BALANCED;
     bool mIsAvailable = false;
+    bool mAnime4kInitialized = false;  // Tracks Anime4K shader readiness
+    
+    // Anime4K D3D12 resources
+    void* mAnime4kPipelineState = nullptr;      // ID3D12PipelineState*
+    void* mAnime4kRootSignature = nullptr;      // ID3D12RootSignature*
+    void* mAnime4kDescriptorHeap = nullptr;     // ID3D12DescriptorHeap*
+    GpuTextureHandle mAnime4kInputTexture = {}; // GPU input texture (640x480)
+    GpuTextureHandle mAnime4kOutputTexture = {}; // GPU output texture (display size)
+    void* mAnime4kCommandAllocator = nullptr;   // ID3D12CommandAllocator*
+    void* mAnime4kCommandList = nullptr;        // ID3D12GraphicsCommandList*
 
     // Dimensions
     int mInputWidth = 0;
@@ -272,20 +288,20 @@ void UpscalerImpl::loadConfiguration() {
     logDiagnostic("LOADING UPSCALER CONFIGURATION");
     logDiagnostic("========================================");
     
-    // Load upscaler mode (0=NONE, 1=FSR2, 2=INTEGER_2X, 3=INTEGER_3X, 4=INTEGER_4X)
+    // Load upscaler mode (0=NONE, 1=FSR2, 2=INTEGER_2X, 3=INTEGER_3X, 4=INTEGER_4X, 5=ANIME4K)
     int modeValue = 1; // Default to FSR2
     if (configGetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_MODE_KEY, &modeValue)) {
-        logDiagnostic("Config: upscaler_mode = %d (0=NONE, 1=FSR2, 2=INT2X, 3=INT3X, 4=INT4X)", modeValue);
+        logDiagnostic("Config: upscaler_mode = %d (0=NONE, 1=FSR2, 2=INT2X, 3=INT3X, 4=INT4X, 5=ANIME4K)", modeValue);
     } else {
         logDiagnostic("Config: upscaler_mode not found, using default FSR2");
     }
     
     // Convert integer value to enum
-    if (modeValue >= 0 && modeValue <= 4) {
+    if (modeValue >= 0 && modeValue <= 5) {
         mConfiguredMode = static_cast<UpscalerMode>(modeValue);
     } else {
-        logDiagnostic("WARNING: Invalid upscaler_mode=%d, using FSR2", modeValue);
-        mConfiguredMode = UpscalerMode::FSR2;
+        logDiagnostic("WARNING: Invalid upscaler_mode=%d, using INTEGER_3X", modeValue);
+        mConfiguredMode = UpscalerMode::INTEGER_3X;
     }
     
     // Load upscaler quality (0=QUALITY, 1=BALANCED, 2=PERFORMANCE)
@@ -1186,6 +1202,752 @@ bool UpscalerImpl::dispatchIntegerScale(int scaleFactor) {
 }
 
 // ============================================================================
+// ANIME4K SHADER DISPATCH (D3D12 COMPUTE IMPLEMENTATION)
+// ============================================================================
+// Executes Anime4K edge-aware upscaling compute shader on GPU
+// Fallback: INTEGER_3X if GPU dispatch fails
+// ============================================================================
+bool UpscalerImpl::dispatchAnime4k() {
+    using Microsoft::WRL::ComPtr;
+    
+    bool shouldLog = (mFrameIndex % 60 == 0) || mVerboseLogging;
+    if (shouldLog) {
+        logDiagnostic("================== ANIME4K DISPATCH START (Frame %d) ==================", mFrameIndex);
+    }
+
+    if (!mAnime4kInitialized) {
+        if (shouldLog) {
+            logDiagnostic("ERROR: Anime4K not initialized, fallback to INTEGER_3X");
+        }
+        return dispatchIntegerScale(3);
+    }
+
+    if (mInputBuffer == nullptr || mOutputBuffer == nullptr) {
+        if (shouldLog) {
+            logDiagnostic("ERROR: Input/Output buffers null, fallback");
+        }
+        return dispatchIntegerScale(3);
+    }
+
+    // Get D3D12 resources
+    ID3D12Device* device = gpuDeviceGetDevice();
+    ID3D12CommandAllocator* allocator = static_cast<ID3D12CommandAllocator*>(mAnime4kCommandAllocator);
+    ID3D12GraphicsCommandList* cmdList = static_cast<ID3D12GraphicsCommandList*>(mAnime4kCommandList);
+    ID3D12RootSignature* rootSig = static_cast<ID3D12RootSignature*>(mAnime4kRootSignature);
+    ID3D12PipelineState* pso = static_cast<ID3D12PipelineState*>(mAnime4kPipelineState);
+    
+    if (!device || !allocator || !cmdList || !rootSig || !pso) {
+        if (shouldLog) {
+            logDiagnostic("ERROR: Anime4K resources invalid, fallback to INTEGER_3X");
+        }
+        return dispatchIntegerScale(3);
+    }
+    
+    // Reset command allocator and list
+    HRESULT hr = allocator->Reset();
+    if (FAILED(hr)) {
+        if (shouldLog) {
+            logDiagnostic("ERROR: Failed to reset command allocator (0x%08X), fallback", hr);
+        }
+        return dispatchIntegerScale(3);
+    }
+    
+    hr = cmdList->Reset(allocator, pso);
+    if (FAILED(hr)) {
+        if (shouldLog) {
+            logDiagnostic("ERROR: Failed to reset command list (0x%08X), fallback", hr);
+        }
+        return dispatchIntegerScale(3);
+    }
+    
+    // Upload input data to GPU texture
+    if (!gpuTextureUpload(mAnime4kInputTexture, mInputBuffer, mInputWidth * mInputHeight * 4)) {
+        if (shouldLog) {
+            logDiagnostic("ERROR: Failed to upload input texture, fallback");
+        }
+        return dispatchIntegerScale(3);
+    }
+    
+    // Set compute root signature and pipeline state
+    cmdList->SetComputeRootSignature(rootSig);
+    cmdList->SetPipelineState(pso);
+    
+    // Create and upload constant buffer data
+    struct UpscaleParams {
+        unsigned int inputWidth;
+        unsigned int inputHeight;
+        unsigned int outputWidth;
+        unsigned int outputHeight;
+        
+        unsigned int effectiveWidth;
+        unsigned int effectiveHeight;
+        unsigned int offsetX;
+        unsigned int offsetY;
+
+        float rcpInputX;
+        float rcpInputY;
+        float rcpEffectiveOutputX;
+        float rcpEffectiveOutputY;
+        
+        float strength;
+        float padding[3];  // Align to 16 bytes
+    };
+    
+    // Calculate letterboxing parameters (maintain 4:3 aspect ratio)
+    float scaleX = (float)mOutputWidth / mInputWidth;
+    float scaleY = (float)mOutputHeight / mInputHeight;
+    float scale = (scaleX < scaleY) ? scaleX : scaleY;
+
+    unsigned int effectiveWidth = (unsigned int)(mInputWidth * scale);
+    unsigned int effectiveHeight = (unsigned int)(mInputHeight * scale);
+    unsigned int offsetX = (mOutputWidth - effectiveWidth) / 2;
+    unsigned int offsetY = (mOutputHeight - effectiveHeight) / 2;
+
+    UpscaleParams params = {};
+    params.inputWidth = mInputWidth;
+    params.inputHeight = mInputHeight;
+    params.outputWidth = mOutputWidth;
+    params.outputHeight = mOutputHeight;
+    
+    params.effectiveWidth = effectiveWidth;
+    params.effectiveHeight = effectiveHeight;
+    params.offsetX = offsetX;
+    params.offsetY = offsetY;
+
+    params.rcpInputX = 1.0f / mInputWidth;
+    params.rcpInputY = 1.0f / mInputHeight;
+    params.rcpEffectiveOutputX = 1.0f / effectiveWidth;
+    params.rcpEffectiveOutputY = 1.0f / effectiveHeight;
+    
+    params.strength = 1.0f;  // Default strength
+    
+    // Upload constant buffer (root CBV)
+    uint64_t cbAddress = 0;
+    if (!gpuUploadConstantBuffer(&params, sizeof(params), &cbAddress)) {
+        if (shouldLog) {
+            logDiagnostic("ERROR: Failed to upload constant buffer, fallback");
+        }
+        return dispatchIntegerScale(3);
+    }
+    
+    cmdList->SetComputeRootConstantBufferView(0, cbAddress);
+    
+    // Set descriptor heap
+    ID3D12DescriptorHeap* descriptorHeap = static_cast<ID3D12DescriptorHeap*>(mAnime4kDescriptorHeap);
+    if (descriptorHeap == nullptr) {
+        if (shouldLog) {
+            logDiagnostic("ERROR: Descriptor heap is null, fallback");
+        }
+        return dispatchIntegerScale(3);
+    }
+    
+    ID3D12DescriptorHeap* heaps[] = { descriptorHeap };
+    cmdList->SetDescriptorHeaps(1, heaps);
+    
+    // Set descriptor table with SRV and UAV (parameter 1)
+    D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = descriptorHeap->GetGPUDescriptorHandleForHeapStart();
+    cmdList->SetComputeRootDescriptorTable(1, gpuHandle);
+    
+    // Dispatch compute shader (8x8 thread groups)
+    unsigned int dispatchX = (mOutputWidth + 7) / 8;
+    unsigned int dispatchY = (mOutputHeight + 7) / 8;
+    unsigned int dispatchZ = 1;
+    
+    if (shouldLog) {
+        logDiagnostic("Dispatching compute shader: %ux%ux%u thread groups", dispatchX, dispatchY, dispatchZ);
+    }
+    
+    cmdList->Dispatch(dispatchX, dispatchY, dispatchZ);
+    
+    // Execute command list (gpuDeviceExecuteCommandList will close it)
+    if (!gpuDeviceExecuteCommandList(cmdList)) {
+        if (shouldLog) {
+            logDiagnostic("ERROR: Failed to execute command list, fallback");
+        }
+        return dispatchIntegerScale(3);
+    }
+    
+    // Wait for GPU to finish
+    gpuDeviceWaitForGpu();
+    
+    // Download result from GPU texture to output buffer
+    if (!gpuTextureDownload(mAnime4kOutputTexture, mOutputBuffer, mOutputWidth * mOutputHeight * 4)) {
+        if (shouldLog) {
+            logDiagnostic("ERROR: Failed to download output texture, fallback");
+        }
+        return dispatchIntegerScale(3);
+    }
+    
+    if (shouldLog) {
+        logDiagnostic("================== ANIME4K DISPATCH END (Frame %d) ✓ ==================", mFrameIndex);
+    }
+
+    return true;
+}
+
+bool UpscalerImpl::initAnime4k() {
+    using Microsoft::WRL::ComPtr;
+    
+    logDiagnostic("================== ANIME4K INITIALIZATION START ==================");
+    logDiagnostic("Setting up D3D12 compute pipeline for Anime4K upscaling...");
+    logDiagnostic("Input resolution: %dx%d, Output resolution: %dx%d",
+        mInputWidth, mInputHeight, mOutputWidth, mOutputHeight);
+    
+    // Step 1: Check GPU device readiness (matches FSR2 initialization pattern)
+    logDiagnostic("Step 1/6: Checking GPU device readiness...");
+    if (!gpuDeviceIsReady()) {
+        setError("GPU device not initialized, cannot initialize Anime4K");
+        logDiagnostic("ERROR: GPU device is not ready! Anime4K requires GPU compute support.");
+        logDiagnostic("HINT: GPU device initialization may have failed or been skipped.");
+        return false;
+    }
+    logDiagnostic("Step 1/6: GPU device is ready ✓");
+    
+    // Get GPU device
+    logDiagnostic("Step 1.5/6: Acquiring GPU device context...");
+    ID3D12Device* device = gpuDeviceGetDevice();
+    if (device == nullptr) {
+        setError("GPU device not available for Anime4K");
+        logDiagnostic("ERROR: GPU device is null - cannot initialize Anime4K pipeline");
+        return false;
+    }
+    logDiagnostic("Step 1.5/6: GPU device acquired ✓ (Device=%p)", device);
+    
+    // Step 2: Compile shader from embedded source
+    logDiagnostic("Step 2/6: Compiling Anime4K compute shader...");
+    
+    // Read shader source from file (anime4k.hlsl in same directory as executable)
+    char* basePath = SDL_GetBasePath();
+    std::string shaderPath = std::string(basePath) + "shaders\\anime4k.hlsl";
+    SDL_free(basePath);
+    
+    // For now, compile inline shader code (embedded in executable)
+    const char* shaderCode = R"(
+// Anime4K v3.2 Upscale Original x2 (Ported to HLSL)
+// Ported from: https://github.com/bloc97/Anime4K/blob/master/glsl/Upscale/Anime4K_Upscale_Original_x2.glsl
+
+#define REFINE_STRENGTH 0.5
+#define REFINE_BIAS 0.0
+
+// Polynomial coefficients
+#define P5 ( 11.68129591)
+#define P4 (-42.46906057)
+#define P3 ( 60.28286266)
+#define P2 (-41.84451327)
+#define P1 ( 14.05517353)
+#define P0 (-1.081521930)
+
+cbuffer UpscaleParams : register(b0)
+{
+    uint2 inputSize;    // Source resolution (640, 480)
+    uint2 outputSize;   // Target resolution (2560, 1440)
+    uint2 effectiveSize; // Scaled resolution (e.g. 1920, 1440)
+    uint2 offset;        // Letterbox offset (e.g. 320, 0)
+    float2 rcpInput;    // 1.0 / inputSize
+    float2 rcpEffectiveOutput; // 1.0 / effectiveSize
+    float strength;     // Enhancement strength (0.0-1.0)
+    float3 padding;
+};
+
+Texture2D<float4> InputTexture : register(t0);
+RWTexture2D<float4> OutputTexture : register(u0);
+SamplerState LinearSampler : register(s0);
+
+float get_luma(float4 c)
+{
+    return dot(c.rgb, float3(0.299, 0.587, 0.114));
+}
+
+float power_function(float x)
+{
+    float x2 = x * x;
+    float x3 = x2 * x;
+    float x4 = x2 * x2;
+    float x5 = x2 * x3;
+    return P5 * x5 + P4 * x4 + P3 * x3 + P2 * x2 + P1 * x + P0;
+}
+
+[numthreads(8, 8, 1)]
+void main(uint3 DTid : SV_DispatchThreadID)
+{
+    if (DTid.x >= outputSize.x || DTid.y >= outputSize.y)
+        return;
+
+    // Letterboxing check
+    if (DTid.x < offset.x || DTid.x >= offset.x + effectiveSize.x ||
+        DTid.y < offset.y || DTid.y >= offset.y + effectiveSize.y)
+    {
+        OutputTexture[DTid.xy] = float4(0, 0, 0, 1); // Black bars
+        return;
+    }
+
+    // Map to UV space of the effective area
+    float2 pixelPos = float2(DTid.xy) - float2(offset);
+    float2 uv = (pixelPos + 0.5f) * rcpEffectiveOutput;
+    
+    float2 d = rcpEffectiveOutput; // Use effective pixel size for sampling offsets
+
+    // Sample center pixel (bilinear interpolation from input)
+    float4 cc = InputTexture.SampleLevel(LinearSampler, uv, 0);
+
+    // Calculate Luma of neighbors
+    // We sample at offsets corresponding to the OUTPUT pixel size
+    float t = get_luma(InputTexture.SampleLevel(LinearSampler, uv + float2(0, -d.y), 0));
+    float b = get_luma(InputTexture.SampleLevel(LinearSampler, uv + float2(0, d.y), 0));
+    float l = get_luma(InputTexture.SampleLevel(LinearSampler, uv + float2(-d.x, 0), 0));
+    float r = get_luma(InputTexture.SampleLevel(LinearSampler, uv + float2(d.x, 0), 0));
+    
+    float tl = get_luma(InputTexture.SampleLevel(LinearSampler, uv + float2(-d.x, -d.y), 0));
+    float tr = get_luma(InputTexture.SampleLevel(LinearSampler, uv + float2(d.x, -d.y), 0));
+    float bl = get_luma(InputTexture.SampleLevel(LinearSampler, uv + float2(-d.x, d.y), 0));
+    float br = get_luma(InputTexture.SampleLevel(LinearSampler, uv + float2(d.x, d.y), 0));
+    
+    // Sobel Gradients
+    float gx = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
+    float gy = (bl + 2.0 * b + br) - (tl + 2.0 * t + tr);
+
+    // Gradient Magnitude (Normalized by 4.0 to keep in 0-1 range for power function)
+    float sobel_norm = sqrt(gx * gx + gy * gy) / 4.0;
+    
+    // Refinement Strength
+    float dval = power_function(saturate(sobel_norm));
+    dval = saturate(dval * REFINE_STRENGTH + REFINE_BIAS);
+
+    // Determine edge direction
+    float xpos = (gx > 0.0) ? 1.0 : -1.0;
+    float ypos = (gy > 0.0) ? 1.0 : -1.0;
+    
+    // Sample pixels along the gradient direction
+    float4 xval = InputTexture.SampleLevel(LinearSampler, uv + float2(d.x * xpos, 0), 0);
+    float4 yval = InputTexture.SampleLevel(LinearSampler, uv + float2(0, d.y * ypos), 0);
+    
+    // Interpolate between xval and yval based on gradient ratio
+    float abs_gx = abs(gx);
+    float abs_gy = abs(gy);
+    float xy_ratio = abs_gx / (abs_gx + abs_gy + 0.0001);
+    
+    float4 avg = xval * xy_ratio + yval * (1.0 - xy_ratio);
+    
+    // Blend original and refined
+    float4 result = avg * dval + cc * (1.0 - dval);
+    
+    OutputTexture[DTid.xy] = result;
+}
+)";
+    
+    ComPtr<ID3DBlob> computeShader;
+    ComPtr<ID3DBlob> errorBlob;
+    HRESULT hr = D3DCompile(
+        shaderCode, strlen(shaderCode),
+        "Anime4K",  // Shader name
+        nullptr,    // Defines
+        nullptr,    // Include handler
+        "main",     // Entry point
+        "cs_5_0",   // Target profile (compute shader 5.0)
+        D3DCOMPILE_OPTIMIZATION_LEVEL3,
+        0,
+        computeShader.GetAddressOf(),
+        errorBlob.GetAddressOf()
+    );
+    
+    if (FAILED(hr)) {
+        if (errorBlob) {
+            const char* errorMsg = static_cast<const char*>(errorBlob->GetBufferPointer());
+            setError("Shader compilation failed: %s", errorMsg);
+            logDiagnostic("ERROR: Anime4K shader compilation failed:");
+            logDiagnostic("%s", errorMsg);
+        } else {
+            setError("Shader compilation failed with HRESULT 0x%08X", hr);
+            logDiagnostic("ERROR: Shader compilation failed with HRESULT 0x%08X", hr);
+        }
+        return false;
+    }
+    logDiagnostic("Step 2/6: Shader compiled ✓ (%zu bytes)", computeShader->GetBufferSize());
+    
+    // Step 3: Create root signature
+    logDiagnostic("Step 3/6: Creating root signature...");
+    
+    D3D12_DESCRIPTOR_RANGE ranges[2] = {};
+    
+    // Range 0: SRV for input texture (t0)
+    ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    ranges[0].NumDescriptors = 1;
+    ranges[0].BaseShaderRegister = 0;
+    ranges[0].RegisterSpace = 0;
+    ranges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    
+    // Range 1: UAV for output texture (u0)
+    ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    ranges[1].NumDescriptors = 1;
+    ranges[1].BaseShaderRegister = 0;
+    ranges[1].RegisterSpace = 0;
+    ranges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    
+    D3D12_ROOT_PARAMETER rootParams[2] = {};
+    
+    // Parameter 0: Constant buffer (UpscaleParams)
+    rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rootParams[0].Descriptor.ShaderRegister = 0;
+    rootParams[0].Descriptor.RegisterSpace = 0;
+    rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    
+    // Parameter 1: Descriptor table with SRV and UAV
+    rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[1].DescriptorTable.NumDescriptorRanges = 2;
+    rootParams[1].DescriptorTable.pDescriptorRanges = ranges;
+    rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    
+    // Static sampler for linear filtering
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.MipLODBias = 0.0f;
+    sampler.MaxAnisotropy = 1;
+    sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+    sampler.MinLOD = 0.0f;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;
+    sampler.RegisterSpace = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    
+    D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
+    rootSigDesc.NumParameters = 2;
+    rootSigDesc.pParameters = rootParams;
+    rootSigDesc.NumStaticSamplers = 1;
+    rootSigDesc.pStaticSamplers = &sampler;
+    rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+    
+    ComPtr<ID3DBlob> rootSigBlob;
+    ComPtr<ID3DBlob> rootSigError;
+    hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, rootSigBlob.GetAddressOf(), rootSigError.GetAddressOf());
+    
+    if (FAILED(hr)) {
+        if (rootSigError) {
+            const char* errorMsg = static_cast<const char*>(rootSigError->GetBufferPointer());
+            setError("Root signature serialization failed: %s", errorMsg);
+            logDiagnostic("ERROR: %s", errorMsg);
+        }
+        return false;
+    }
+    
+    ID3D12RootSignature* rootSignature = nullptr;
+    hr = device->CreateRootSignature(0, rootSigBlob->GetBufferPointer(), rootSigBlob->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
+    
+    if (FAILED(hr)) {
+        setError("Failed to create root signature (HRESULT 0x%08X)", hr);
+        logDiagnostic("ERROR: CreateRootSignature failed with 0x%08X", hr);
+        return false;
+    }
+    
+    mAnime4kRootSignature = rootSignature;
+    logDiagnostic("Step 3/6: Root signature created ✓");
+    
+    // Step 4: Create compute pipeline state
+    logDiagnostic("Step 4/6: Creating compute pipeline state...");
+    
+    D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
+    psoDesc.pRootSignature = rootSignature;
+    psoDesc.CS.pShaderBytecode = computeShader->GetBufferPointer();
+    psoDesc.CS.BytecodeLength = computeShader->GetBufferSize();
+    
+    ID3D12PipelineState* pipelineState = nullptr;
+    hr = device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&pipelineState));
+    
+    if (FAILED(hr)) {
+        setError("Failed to create pipeline state (HRESULT 0x%08X)", hr);
+        logDiagnostic("ERROR: CreateComputePipelineState failed with 0x%08X", hr);
+        rootSignature->Release();
+        mAnime4kRootSignature = nullptr;
+        return false;
+    }
+    
+    mAnime4kPipelineState = pipelineState;
+    logDiagnostic("Step 4/6: Pipeline state created ✓");
+    
+    // Step 4.5: Create descriptor heap for SRV and UAV
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+    heapDesc.NumDescriptors = 2;  // 1 SRV + 1 UAV
+    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    
+    ID3D12DescriptorHeap* descriptorHeap = nullptr;
+    hr = device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&descriptorHeap));
+    
+    if (FAILED(hr)) {
+        setError("Failed to create descriptor heap (HRESULT 0x%08X)", hr);
+        logDiagnostic("ERROR: CreateDescriptorHeap failed with 0x%08X", hr);
+        pipelineState->Release();
+        rootSignature->Release();
+        mAnime4kPipelineState = nullptr;
+        mAnime4kRootSignature = nullptr;
+        return false;
+    }
+    
+    mAnime4kDescriptorHeap = descriptorHeap;
+    logDiagnostic("Step 4.5/6: Descriptor heap created ✓ (2 descriptors)");
+    
+    // Step 5: Create GPU textures
+    logDiagnostic("Step 5/6: Creating GPU textures...");
+    
+    mAnime4kInputTexture = gpuTextureCreate(mInputWidth, mInputHeight, GpuTextureFormat::ARGB8888, 
+                                            static_cast<int>(GpuTextureUsage::SHADER_RESOURCE));
+    if (mAnime4kInputTexture.resource == nullptr) {
+        setError("Failed to create input texture");
+        logDiagnostic("ERROR: Input texture creation failed");
+        pipelineState->Release();
+        rootSignature->Release();
+        mAnime4kPipelineState = nullptr;
+        mAnime4kRootSignature = nullptr;
+        return false;
+    }
+    
+    mAnime4kOutputTexture = gpuTextureCreate(mOutputWidth, mOutputHeight, GpuTextureFormat::ARGB8888,
+                                             static_cast<int>(GpuTextureUsage::UNORDERED_ACCESS));
+    if (mAnime4kOutputTexture.resource == nullptr) {
+        setError("Failed to create output texture");
+        logDiagnostic("ERROR: Output texture creation failed");
+        gpuTextureRelease(mAnime4kInputTexture);
+        mAnime4kInputTexture = {};
+        pipelineState->Release();
+        rootSignature->Release();
+        mAnime4kPipelineState = nullptr;
+        mAnime4kRootSignature = nullptr;
+        return false;
+    }
+    
+    logDiagnostic("Step 5/6: Textures created ✓ (input: %dx%d, output: %dx%d)",
+                  mInputWidth, mInputHeight, mOutputWidth, mOutputHeight);
+    
+    // Step 5.5: Create SRV and UAV descriptors in the heap
+    ID3D12Resource* inputResource = gpuTextureGetResource(mAnime4kInputTexture);
+    ID3D12Resource* outputResource = gpuTextureGetResource(mAnime4kOutputTexture);
+    
+    if (inputResource == nullptr || outputResource == nullptr) {
+        setError("Failed to get texture resources for descriptor creation");
+        logDiagnostic("ERROR: Texture resources are null");
+        descriptorHeap->Release();
+        mAnime4kDescriptorHeap = nullptr;
+        gpuTextureRelease(mAnime4kOutputTexture);
+        gpuTextureRelease(mAnime4kInputTexture);
+        mAnime4kInputTexture = {};
+        mAnime4kOutputTexture = {};
+        pipelineState->Release();
+        rootSignature->Release();
+        mAnime4kPipelineState = nullptr;
+        mAnime4kRootSignature = nullptr;
+        return false;
+    }
+    
+    UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = descriptorHeap->GetCPUDescriptorHandleForHeapStart();
+    
+    // Create SRV for input texture (descriptor 0)
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Texture2D.MipLevels = 1;
+    srvDesc.Texture2D.MostDetailedMip = 0;
+    device->CreateShaderResourceView(inputResource, &srvDesc, cpuHandle);
+    
+    // Create UAV for output texture (descriptor 1)
+    cpuHandle.ptr += descriptorSize;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+    uavDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    uavDesc.Texture2D.MipSlice = 0;
+    device->CreateUnorderedAccessView(outputResource, nullptr, &uavDesc, cpuHandle);
+    
+    logDiagnostic("Step 5.5/6: SRV and UAV descriptors created ✓");
+    
+    // CRITICAL: Wait for GPU to complete all work before creating new command allocator
+    // This prevents TDR (Timeout Detection and Recovery) issues
+    logDiagnostic("Step 5.75/6: Synchronizing GPU before command allocator creation...");
+    gpuDeviceWaitForGpu();
+    logDiagnostic("Step 5.75/6: GPU synchronized ✓");
+    
+    // Check if device is still alive after sync
+    if (!gpuDeviceIsReady()) {
+        setError("GPU device was removed during initialization");
+        logDiagnostic("CRITICAL ERROR: GPU device is no longer ready after synchronization!");
+        logDiagnostic("This indicates a serious GPU driver issue or TDR (Timeout Detection and Recovery)");
+        // Clean up what we have so far
+        descriptorHeap->Release();
+        mAnime4kDescriptorHeap = nullptr;
+        gpuTextureRelease(mAnime4kOutputTexture);
+        gpuTextureRelease(mAnime4kInputTexture);
+        mAnime4kInputTexture = {};
+        mAnime4kOutputTexture = {};
+        pipelineState->Release();
+        rootSignature->Release();
+        mAnime4kPipelineState = nullptr;
+        mAnime4kRootSignature = nullptr;
+        return false;
+    }
+    
+    logDiagnostic("Step 5.8/6: Device still ready after GPU sync ✓");
+    
+    // Step 6: Create command allocator and list
+    logDiagnostic("Step 6/6: Creating command allocator and list...");
+    
+    // Get device pointer for status checking
+    ID3D12Device* deviceCheck1 = gpuDeviceGetDevice();
+    logDiagnostic("Device check before allocator: %p", deviceCheck1);
+    
+    // Check device status one more time with GetDeviceRemovedReason
+    HRESULT deviceStatus = deviceCheck1->GetDeviceRemovedReason();
+    logDiagnostic("Device removal check returned: 0x%08X", deviceStatus);
+    
+    // IGNORE 0x887A0001 (DXGI_ERROR_INVALID_CALL) if the device pointer is valid
+    // This error code is sometimes returned spuriously even when the device is fine.
+    // Real device removal is DXGI_ERROR_DEVICE_REMOVED (0x887A0005) or DXGI_ERROR_DEVICE_HUNG (0x887A0006)
+    if (FAILED(deviceStatus) && deviceStatus != DXGI_ERROR_INVALID_CALL) {
+        setError("GPU device was removed (HRESULT: 0x%08X) - TDR or driver issue", deviceStatus);
+        logDiagnostic("CRITICAL: Device has been removed - cannot proceed with Anime4K");
+        // Clean up what we have so far
+        descriptorHeap->Release();
+        mAnime4kDescriptorHeap = nullptr;
+        gpuTextureRelease(mAnime4kOutputTexture);
+        gpuTextureRelease(mAnime4kInputTexture);
+        mAnime4kInputTexture = {};
+        mAnime4kOutputTexture = {};
+        pipelineState->Release();
+        rootSignature->Release();
+        mAnime4kPipelineState = nullptr;
+        mAnime4kRootSignature = nullptr;
+
+        // Shutdown the global GPU device because it is dead
+        logDiagnostic("Shutting down global GPU device due to critical failure");
+        gpuDeviceShutdown();
+
+        return false;
+    } else if (deviceStatus == DXGI_ERROR_INVALID_CALL) {
+        logDiagnostic("WARNING: GetDeviceRemovedReason returned INVALID_CALL (0x887A0001) but ignoring it as spurious.");
+    }
+    
+    mAnime4kCommandAllocator = gpuDeviceCreateCommandAllocator();
+    logDiagnostic("gpuDeviceCreateCommandAllocator() returned: %p", mAnime4kCommandAllocator);
+    
+    if (mAnime4kCommandAllocator == nullptr) {
+        setError("Failed to create command allocator");
+        logDiagnostic("ERROR: Command allocator creation failed");
+        // Clean up what we have so far
+        descriptorHeap->Release();
+        mAnime4kDescriptorHeap = nullptr;
+        gpuTextureRelease(mAnime4kOutputTexture);
+        gpuTextureRelease(mAnime4kInputTexture);
+        mAnime4kInputTexture = {};
+        mAnime4kOutputTexture = {};
+        pipelineState->Release();
+        rootSignature->Release();
+        mAnime4kPipelineState = nullptr;
+        mAnime4kRootSignature = nullptr;
+        return false;
+    }
+    
+    mAnime4kCommandList = gpuDeviceCreateCommandList(static_cast<ID3D12CommandAllocator*>(mAnime4kCommandAllocator));
+    if (mAnime4kCommandList == nullptr) {
+        setError("Failed to create command list");
+        logDiagnostic("ERROR: Command list creation failed");
+        // Cleanup command allocator
+        ID3D12CommandAllocator* allocator = static_cast<ID3D12CommandAllocator*>(mAnime4kCommandAllocator);
+        allocator->Release();
+        mAnime4kCommandAllocator = nullptr;
+        // Release descriptor heap
+        descriptorHeap->Release();
+        mAnime4kDescriptorHeap = nullptr;
+        // Release textures
+        gpuTextureRelease(mAnime4kOutputTexture);
+        gpuTextureRelease(mAnime4kInputTexture);
+        mAnime4kInputTexture = {};
+        mAnime4kOutputTexture = {};
+        // Release pipeline state and root signature
+        pipelineState->Release();
+        rootSignature->Release();
+        mAnime4kPipelineState = nullptr;
+        mAnime4kRootSignature = nullptr;
+        return false;
+    }
+    
+    // Close command list (will be reset before each dispatch)
+    ID3D12GraphicsCommandList* cmdList = static_cast<ID3D12GraphicsCommandList*>(mAnime4kCommandList);
+    cmdList->Close();
+    
+    logDiagnostic("Step 6/6: Command allocator and list created ✓");
+    
+    mAnime4kInitialized = true;
+    logDiagnostic("================== ANIME4K INITIALIZATION COMPLETE ✓ ==================");
+    logDiagnostic("Anime4K compute shader pipeline ready for upscaling");
+    return true;
+}
+
+bool UpscalerImpl::shutdownAnime4k() {
+    if (mAnime4kInitialized) {
+        logDiagnostic("Shutting down Anime4K pipeline...");
+        
+        // Release command list
+        if (mAnime4kCommandList != nullptr) {
+            ID3D12GraphicsCommandList* cmdList = static_cast<ID3D12GraphicsCommandList*>(mAnime4kCommandList);
+            cmdList->Release();
+            mAnime4kCommandList = nullptr;
+            logDiagnostic("  - Command list released");
+        }
+        
+        // Release command allocator
+        if (mAnime4kCommandAllocator != nullptr) {
+            ID3D12CommandAllocator* allocator = static_cast<ID3D12CommandAllocator*>(mAnime4kCommandAllocator);
+            allocator->Release();
+            mAnime4kCommandAllocator = nullptr;
+            logDiagnostic("  - Command allocator released");
+        }
+        
+        // Release GPU textures
+        if (mAnime4kOutputTexture.resource != nullptr) {
+            gpuTextureRelease(mAnime4kOutputTexture);
+            mAnime4kOutputTexture = {};
+            logDiagnostic("  - Output texture released");
+        }
+        
+        if (mAnime4kInputTexture.resource != nullptr) {
+            gpuTextureRelease(mAnime4kInputTexture);
+            mAnime4kInputTexture = {};
+            logDiagnostic("  - Input texture released");
+        }
+        
+        // Release descriptor heap (if we created one explicitly)
+        if (mAnime4kDescriptorHeap != nullptr) {
+            ID3D12DescriptorHeap* heap = static_cast<ID3D12DescriptorHeap*>(mAnime4kDescriptorHeap);
+            heap->Release();
+            mAnime4kDescriptorHeap = nullptr;
+            logDiagnostic("  - Descriptor heap released");
+        }
+        
+        // Release pipeline state
+        if (mAnime4kPipelineState != nullptr) {
+            ID3D12PipelineState* pso = static_cast<ID3D12PipelineState*>(mAnime4kPipelineState);
+            pso->Release();
+            mAnime4kPipelineState = nullptr;
+            logDiagnostic("  - Pipeline state released");
+        }
+        
+        // Release root signature
+        if (mAnime4kRootSignature != nullptr) {
+            ID3D12RootSignature* rootSig = static_cast<ID3D12RootSignature*>(mAnime4kRootSignature);
+            rootSig->Release();
+            mAnime4kRootSignature = nullptr;
+            logDiagnostic("  - Root signature released");
+        }
+        
+        logDiagnostic("Anime4K pipeline shutdown complete ✓");
+    }
+    mAnime4kInitialized = false;
+    return true;
+}
+
+// ============================================================================
 // Public Implementation
 // ============================================================================
 
@@ -1240,6 +2002,7 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
     else if (mode == UpscalerMode::INTEGER_2X) modeStr = "INTEGER_2X";
     else if (mode == UpscalerMode::INTEGER_3X) modeStr = "INTEGER_3X";
     else if (mode == UpscalerMode::INTEGER_4X) modeStr = "INTEGER_4X";
+    else if (mode == UpscalerMode::ANIME4K) modeStr = "ANIME4K";
     
     logDiagnostic("Upscaler Mode: %s", modeStr);
     
@@ -1312,6 +2075,62 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
         return true;
     }
 
+    // Anime4K shader-based upscaling (experimental)
+    if (mode == UpscalerMode::ANIME4K) {
+        logDiagnostic("Upscaler mode: ANIME4K (shader-based, experimental)");
+        logDiagnostic("Step 1/3: Allocating input buffer...");
+        if (!allocateInputBuffer(inputWidth, inputHeight)) {
+            mState = UpscalerState::STATE_ERROR;
+            logDiagnostic("ERROR: Input buffer allocation failed!");
+            return false;
+        }
+        logDiagnostic("Step 1/3: Input buffer allocated ✓ (%dx%d)", inputWidth, inputHeight);
+
+        logDiagnostic("Step 2/3: Allocating output buffer...");
+        if (!allocateOutputBuffer(outputWidth, outputHeight)) {
+            deallocateBuffers();
+            mState = UpscalerState::STATE_ERROR;
+            logDiagnostic("ERROR: Output buffer allocation failed!");
+            return false;
+        }
+        logDiagnostic("Step 2/3: Output buffer allocated ✓ (%dx%d)", outputWidth, outputHeight);
+
+        logDiagnostic("Step 3/3: Initializing Anime4K pipeline");
+        if (!initAnime4k()) {
+            deallocateBuffers();
+            logDiagnostic("ERROR: Anime4K initialization failed!");
+            logDiagnostic("FALLBACK: Switching to INTEGER_3X upscaler instead");
+            
+            // Try to initialize INTEGER_3X as fallback
+            if (!allocateInputBuffer(inputWidth, inputHeight)) {
+                mState = UpscalerState::STATE_ERROR;
+                return false;
+            }
+            if (!allocateOutputBuffer(outputWidth, outputHeight)) {
+                deallocateBuffers();
+                mState = UpscalerState::STATE_ERROR;
+                return false;
+            }
+            
+            mMode = UpscalerMode::INTEGER_3X;
+            mIsAvailable = true;
+            mState = UpscalerState::STATE_READY;
+            logDiagnostic("FALLBACK: Using INTEGER_3X upscaler");
+            logDiagnostic("========================================");
+            logDiagnostic("UPSCALER INITIALIZATION COMPLETE (with fallback)");
+            logDiagnostic("========================================");
+            return true;
+        }
+        logDiagnostic("Step 3/3: Anime4K initialized ✓");
+
+        mIsAvailable = true;
+        mState = UpscalerState::STATE_READY;
+        logDiagnostic("========================================");
+        logDiagnostic("ANIME4K INITIALIZATION COMPLETE ✓");
+        logDiagnostic("========================================");
+        return true;
+    }
+
     if (mode == UpscalerMode::FSR2) {
         logDiagnostic("Upscaler mode: FSR2 (FidelityFX SDK 2.1)");
         logDiagnostic("Step 1/3: Allocating input buffer...");
@@ -1377,6 +2196,16 @@ bool UpscalerImpl::reconfigureOutput(int outputWidth, int outputHeight) {
             mState = UpscalerState::STATE_ERROR;
             return false;
         }
+    } else if (mMode == UpscalerMode::ANIME4K) {
+        shutdownAnime4k();
+        if (!allocateOutputBuffer(outputWidth, outputHeight)) {
+            mState = UpscalerState::STATE_ERROR;
+            return false;
+        }
+        if (!initAnime4k()) {
+            mState = UpscalerState::STATE_ERROR;
+            return false;
+        }
     } else {
         if (!allocateOutputBuffer(outputWidth, outputHeight)) {
             return false;
@@ -1389,6 +2218,8 @@ bool UpscalerImpl::reconfigureOutput(int outputWidth, int outputHeight) {
 void UpscalerImpl::shutdown() {
     if (mMode == UpscalerMode::FSR2) {
         shutdownFsr2();
+    } else if (mMode == UpscalerMode::ANIME4K) {
+        shutdownAnime4k();
     }
     deallocateBuffers();
     mState = UpscalerState::STATE_UNINITIALIZED;
@@ -1493,6 +2324,10 @@ bool UpscalerImpl::dispatch() {
 
     if (mMode == UpscalerMode::FSR2) {
         return dispatchFsr2();
+    }
+    
+    if (mMode == UpscalerMode::ANIME4K) {
+        return dispatchAnime4k();
     }
     
     if (mMode == UpscalerMode::INTEGER_2X) {

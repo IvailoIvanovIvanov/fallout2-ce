@@ -86,6 +86,19 @@ void gpuDeviceWaitForGpu();
  */
 bool gpuDeviceIsReady();
 
+/**
+ * @brief Upload constant buffer data to GPU and get virtual address
+ * 
+ * Creates an upload heap resource, copies data to it, and returns GPU address.
+ * The resource lifetime is managed internally and reused across frames.
+ * 
+ * @param data Pointer to constant buffer data
+ * @param size Size of data in bytes (must be 256-byte aligned for CBV)
+ * @param outAddress Output GPU virtual address for SetComputeRootConstantBufferView
+ * @return true if upload succeeded, false otherwise
+ */
+bool gpuUploadConstantBuffer(const void* data, int size, uint64_t* outAddress);
+
 }  // namespace fallout
 
 #endif // FALLOUT_GPU_DEVICE_H_

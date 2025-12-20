@@ -12,6 +12,7 @@ enum class UpscalerMode {
     INTEGER_2X, // Integer 2x scaling (640x480 -> 1280x960) - Perfect for pixel art
     INTEGER_3X, // Integer 3x scaling (640x480 -> 1920x1440) - Perfect for pixel art
     INTEGER_4X, // Integer 4x scaling (640x480 -> 2560x1920) - Perfect for pixel art
+    ANIME4K,    // Anime4K shader upscaling (experimental, fast ML-inspired shader)
 };
 
 // Upscaler quality/performance tiers
@@ -50,6 +51,7 @@ class UpscalerImpl;
  *   upscaler_mode=2  # Integer 2x (640x480 -> 1280x960)
  *   upscaler_mode=3  # Integer 3x (640x480 -> 1920x1440)
  *   upscaler_mode=4  # Integer 4x (640x480 -> 2560x1920)
+ *   upscaler_mode=5  # Anime4K (shader-based, experimental)
  * 
  * Usage:
  *   1. Initialize: upscalerInit(inputW, inputH, outputW, outputH, mode)
@@ -80,6 +82,7 @@ UpscalerImpl* upscalerGetImpl();
  * - INTEGER_2X: Perfect 2x pixel replication (640x480 → 1280x960)
  * - INTEGER_3X: Perfect 3x pixel replication (640x480 → 1920x1440) ★ RECOMMENDED
  * - INTEGER_4X: Perfect 4x pixel replication (640x480 → 2560x1920)
+ * - ANIME4K: Fast shader upscaler (experimental, ML-inspired)
  * - FSR2: DISABLED (requires motion vectors/depth - incompatible with 2D games)
  * 
  * CONFIGURATION OVERRIDE:
@@ -87,6 +90,7 @@ UpscalerImpl* upscalerGetImpl();
  *   upscaler_mode=3               # INTEGER_3X recommended for 2560x1440
  *   upscaler_kuwahara_enable=1    # Edge-preserving color smoothing
  *   upscaler_kuwahara_radius=2    # Smoothing strength (1-5)
+ *   upscaler_mode=5               # Anime4K experimental shader
  * 
  * @param inputWidth Source resolution width (640 for Fallout 2)
  * @param inputHeight Source resolution height (480 for Fallout 2)

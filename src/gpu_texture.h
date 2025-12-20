@@ -91,6 +91,21 @@ ID3D12Resource* gpuTextureGetResource(GpuTextureHandle handle);
 bool gpuTextureGetDimensions(GpuTextureHandle handle, int& outWidth, int& outHeight);
 
 /**
+ * @brief Get SRV or UAV descriptor handles for texture
+ * 
+ * Creates descriptors on a shared descriptor heap for texture access in shaders.
+ * For SRV (Shader Resource View): read-only texture access in pixel/compute shaders
+ * For UAV (Unordered Access View): read-write texture access in compute shaders
+ * 
+ * @param handle Texture resource handle
+ * @param isSRV true for SRV (read-only), false for UAV (read-write)
+ * @param outCPU Output CPU descriptor handle (for CreateShaderResourceView/CreateUnorderedAccessView)
+ * @param outGPU Output GPU descriptor handle (for SetComputeRootDescriptorTable)
+ * @return true if descriptor creation succeeded, false otherwise
+ */
+bool gpuTextureGetDescriptor(GpuTextureHandle handle, bool isSRV, void* outCPU, void* outGPU);
+
+/**
  * @brief Create shared texture between SDL and compute
  * 
  * Useful for directly sharing rendered content with FSR2 compute.

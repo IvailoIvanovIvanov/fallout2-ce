@@ -859,6 +859,51 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
                       physicalWidth, physicalHeight);
         if (upscalerInit(640, 480, physicalWidth, physicalHeight, UpscalerMode::FSR2) != 0) {
             diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Upscaler initialization failed, continuing without upscaling");
+        } else {
+            // Upscaler initialized successfully!
+            // CRITICAL: Recreate the GPU texture with physical dimensions if upscaler is active.
+            // The initial texture was created at logical resolution (640x480) because upscaler wasn't ready yet.
+            if (upscalerIsAvailable()) {
+                diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Upscaler active - recreating texture at physical resolution: %dx%d", 
+                              physicalWidth, physicalHeight);
+                
+                if (gSdlTexture != nullptr) {
+                    SDL_DestroyTexture(gSdlTexture);
+                }
+                
+                gSdlTexture = SDL_CreateTexture(gSdlRenderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, 
+                                               physicalWidth, physicalHeight);
+                                               
+                if (gSdlTexture != nullptr) {
+                    // Clear to black to avoid garbage
+                    SDL_SetRenderTarget(gSdlRenderer, gSdlTexture);
+                    SDL_SetRenderDrawColor(gSdlRenderer, 0, 0, 0, 255);
+                    SDL_RenderClear(gSdlRenderer);
+                    SDL_SetRenderTarget(gSdlRenderer, nullptr);
+                } else {
+                    diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Failed to recreate texture: %s", SDL_GetError());
+                }
+            }
+        }
+
+        // CRITICAL FIX: Check if GPU device was lost during upscaler initialization (TDR)
+        // If the GPU device is gone, the SDL renderer (which shares the adapter) is likely invalid.
+        // We must recreate the renderer to recover from the driver reset.
+        if (!gpuDeviceIsReady()) {
+            diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "GPU device not ready after upscaler init - checking for renderer recovery");
+            
+            // Force fallback to D3D11 to ensure stability if D3D12 is unstable/crashed
+            SDL_SetHint(SDL_HINT_RENDER_DRIVER, "direct3d11");
+            
+            destroyRenderer();
+            if (!createRenderer()) {
+                destroyRenderer();
+                SDL_DestroyWindow(gSdlWindow);
+                gSdlWindow = nullptr;
+                return -1;
+            }
+            syncPhysicalSizeWithRenderer();
+            diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Renderer recreated successfully (fallback mode)");
         }
     } else {
         int physicalWidth;
@@ -1814,10 +1859,23 @@ static bool createRenderer()
     }
 
     // Phase 8: Initialize GPU device for compute operations (e.g., AI upscaling)
-    if (settings.system.gpu_scaling || settings.system.virtual_adapter) {
+    // GPU device needed for:
+    // - gpu_scaling (GPU texture acceleration)
+    // - virtual_adapter (virtual display adapter)
+    // - FSR2 upscaler (mode 1) - requires GPU compute
+    // - ANIME4K upscaler (mode 5) - requires GPU compute
+    int upscalerMode = 1; // Default FSR2
+    configGetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_MODE_KEY, &upscalerMode);
+    bool needsGpuCompute = (upscalerMode == 1 || upscalerMode == 5); // FSR2 or ANIME4K
+    
+    if (settings.system.gpu_scaling || settings.system.virtual_adapter || needsGpuCompute) {
         if (!gpuDeviceInit()) {
             diagnosticsLog(DiagnosticsLevel::Info, "RENDERER",
                 "GPU device initialization failed, GPU compute operations unavailable");
+            if (needsGpuCompute) {
+                diagnosticsLog(DiagnosticsLevel::Info, "RENDERER",
+                    "WARNING: Upscaler mode %d requires GPU compute but initialization failed!", upscalerMode);
+            }
         } else if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
             diagnosticsLog(DiagnosticsLevel::Info, "RENDERER",
                 "GPU device initialized for compute operations");
