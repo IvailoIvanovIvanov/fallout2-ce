@@ -575,7 +575,37 @@ bool UpscalerImpl::initFsr2() {
     // Phase 5: Create FSR2 context with GPU device
     logDiagnostic("Step 5/5: Creating FSR2 context...");
 #ifdef FALLOUT_HAS_FSR2
-    // Create D3D12 backend descriptor
+    // CRITICAL: FSR2 is incompatible with 2D pixel art games!
+    // FSR2 requires motion vectors and depth buffer for temporal upscaling.
+    // Fallout 2 is a 2D isometric game with no 3D camera or depth information.
+    // Without motion vectors/depth, FSR2 will crash during GPU dispatch.
+    // 
+    // RECOMMENDED: Use INTEGER_2X/3X/4X modes instead for pixel-perfect scaling.
+    logDiagnostic("WARNING: FSR2 mode is not supported for Fallout 2!");
+    logDiagnostic("FSR2 requires motion vectors and depth buffer (3D games only).");
+    logDiagnostic("Fallout 2 is a 2D game and will crash with FSR2.");
+    logDiagnostic("Please use INTEGER_2X, INTEGER_3X, or INTEGER_4X modes instead.");
+    logDiagnostic("Set upscaler_mode=2 (2x), 3 (3x), or 4 (4x) in fallout2.cfg");
+    setError("FSR2 mode is not compatible with Fallout 2 (2D game)");
+    
+    // Clean up allocated resources
+    if (mGpuOutputTexture.resource != nullptr) {
+        gpuTextureRelease(mGpuOutputTexture);
+        mGpuOutputTexture = { nullptr };
+    }
+    if (mGpuInputTexture.resource != nullptr) {
+        gpuTextureRelease(mGpuInputTexture);
+        mGpuInputTexture = { nullptr };
+    }
+    if (mGpuCommandAllocator != nullptr) {
+        // Command allocator is released by GPU device module
+        mGpuCommandAllocator = nullptr;
+    }
+    mGpuDevice = nullptr;
+    mGpuCommandQueue = nullptr;
+    return false;
+    
+    // Create D3D12 backend descriptor (UNREACHABLE - FSR2 disabled above)
     ffxCreateBackendDX12Desc backendDesc = {};
     backendDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
     backendDesc.header.pNext = nullptr;
@@ -796,9 +826,31 @@ bool UpscalerImpl::dispatchFsr2() {
         dispatchDesc.reset = false;              // No reset for this frame
         dispatchDesc.flags = FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_SRGB;  // Input is sRGB (gamma-corrected)
         
+        // Final validation before dispatch
+        logDiagnostic("  Final pre-dispatch validation...");
+        if (mGpuDevice == nullptr || mGpuCommandQueue == nullptr) {
+            setError("GPU device or command queue is null before dispatch");
+            logDiagnostic("ERROR: GPU resources invalid! device=%p, queue=%p", mGpuDevice, mGpuCommandQueue);
+            return false;
+        }
+        if (inputResource == nullptr || outputResource == nullptr) {
+            setError("Input or output resource is null before dispatch");
+            logDiagnostic("ERROR: Texture resources invalid! input=%p, output=%p", inputResource, outputResource);
+            return false;
+        }
+        logDiagnostic("  Validation PASS ✓");
+        
         // Dispatch FSR2 upscaling (cast to base header for API compatibility)
         logDiagnostic("  Invoking ffxDispatch()...");
-        ffxReturnCode_t result = ffxDispatch(&mFsrContext, (ffxDispatchDescHeader*)&dispatchDesc);
+        ffxReturnCode_t result = FFX_API_RETURN_ERROR;
+        try {
+            result = ffxDispatch(&mFsrContext, (ffxDispatchDescHeader*)&dispatchDesc);
+        } catch (...) {
+            setError("FSR2 dispatch threw exception (GPU driver issue?)");
+            logDiagnostic("ERROR: ffxDispatch threw C++ exception! Possible GPU driver crash.");
+            return false;
+        }
+        
         if (result != FFX_API_RETURN_OK) {
             setError("FSR2 dispatch failed (error code: %d)", result);
             logDiagnostic("ERROR: ffxDispatch returned error code %d!", result);
