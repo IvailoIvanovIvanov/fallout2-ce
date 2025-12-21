@@ -15,6 +15,7 @@ namespace fallout {
 enum class GpuTextureFormat {
     ARGB8888,    // 32-bit ARGB (R8G8B8A8_UNORM)
     RGBA8888,    // 32-bit RGBA
+    R32_FLOAT,   // Single-channel 32-bit float
 };
 
 /**

@@ -394,3 +394,10 @@ FodyWeavers.xsd
 /build
 CMakeUserPresets.json
 build-vcpkg*
+venv*
+third_party*
+realesrgan*
+CMakeFiles*
+_deps*
+onnxruntime*
+DirectML*

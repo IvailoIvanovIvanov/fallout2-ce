@@ -30,6 +30,8 @@ static DXGI_FORMAT getD3dFormat(GpuTextureFormat format) {
             return DXGI_FORMAT_B8G8R8A8_UNORM;  // Windows ARGB is BGRA in memory
         case GpuTextureFormat::RGBA8888:
             return DXGI_FORMAT_R8G8B8A8_UNORM;
+        case GpuTextureFormat::R32_FLOAT:
+            return DXGI_FORMAT_R32_FLOAT;
         default:
             return DXGI_FORMAT_UNKNOWN;
     }

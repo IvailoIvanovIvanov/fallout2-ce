@@ -14,6 +14,7 @@
 #include "diagnostics.h"
 #include "display_scaler.h"
 #include "draw.h"
+#include "game_config.h"
 #include "geometry.h"
 #include "gpu_device.h"
 #include "interface.h"
@@ -858,9 +859,31 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
         // Input: 640x480 (classic Fallout 2 resolution)
         // Output: Physical display resolution
         // For integer scaling modes, the upscaler will center content with letterboxing
-        diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Initializing upscaler: 640x480 -> %dx%d", 
-                      physicalWidth, physicalHeight);
-        if (upscalerInit(640, 480, physicalWidth, physicalHeight, UpscalerMode::INTEGER_3X) != 0) {
+        
+        // Get configured upscaler mode from game config
+        UpscalerMode configuredMode = UpscalerMode::NONE;  // Default fallback
+        
+        diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "gGameConfigInitialized=%d", gGameConfigInitialized);
+        
+        if (gGameConfigInitialized) {
+            int modeValue = static_cast<int>(UpscalerMode::NONE);
+            bool configFound = configGetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_MODE_KEY, &modeValue);
+            diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Config lookup: found=%d, value=%d", configFound, modeValue);
+            if (configFound) {
+                if (modeValue >= 0 && modeValue <= 5) {
+                    configuredMode = static_cast<UpscalerMode>(modeValue);
+                    diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Config mode accepted: %d", modeValue);
+                } else {
+                    diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Config mode out of range: %d", modeValue);
+                }
+            }
+        } else {
+            diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Config not initialized, using default mode");
+        }
+        
+        diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Initializing upscaler: 640x480 -> %dx%d (mode=%d)", 
+                      physicalWidth, physicalHeight, static_cast<int>(configuredMode));
+        if (upscalerInit(640, 480, physicalWidth, physicalHeight, configuredMode) != 0) {
             diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Upscaler initialization failed, continuing without upscaling");
         } else {
             // Upscaler initialized successfully!
@@ -2528,6 +2551,9 @@ void renderPresent()
                                     fprintf(pipelineLog, "\n[FRAME %d] UPSCALER OUTPUT\n", logCount);
                                     fprintf(pipelineLog, "  upscaledWidth=%d, upscaledHeight=%d\n", upscaledWidth, upscaledHeight);
                                     fprintf(pipelineLog, "  upscaledBuffer=%p\n", upscaledBuffer);
+                                    if (upscaledBuffer) {
+                                        fprintf(pipelineLog, "  First pixel: 0x%08X\n", upscaledBuffer[0]);
+                                    }
                                     fclose(pipelineLog);
                                 }
                             }
@@ -2557,8 +2583,27 @@ void renderPresent()
                                 uploadRect.y = 0;
                                 uploadRect.w = upscaledWidth;
                                 uploadRect.h = upscaledHeight;
-                                SDL_UpdateTexture(gSdlTexture, &uploadRect, upscaledBuffer, upscaledWidth * 4);
+                                int updateResult = SDL_UpdateTexture(gSdlTexture, &uploadRect, upscaledBuffer, upscaledWidth * 4);
                                 
+                                // DEBUG: Log pixel data and update result to upscale.log
+                                static int pixelLogCount = 0;
+                                if (pixelLogCount < 5) {
+                                    pixelLogCount++;
+                                    FILE* debugLog = fopen("C:\\Program Files (x86)\\Steam\\steamapps\\common\\Fallout 2\\upscale.log", "a");
+                                    if (debugLog) {
+                                        uint32_t centerIdx = (upscaledHeight / 2) * upscaledWidth + (upscaledWidth / 2);
+                                        fprintf(debugLog, "[RENDER] Frame %d: UpdateResult=%d, Buffer=%p\n", pixelLogCount, updateResult, upscaledBuffer);
+                                        if (upscaledBuffer) {
+                                            fprintf(debugLog, "[RENDER]   Pixel[0]: 0x%08X\n", upscaledBuffer[0]);
+                                            fprintf(debugLog, "[RENDER]   Pixel[Center]: 0x%08X\n", upscaledBuffer[centerIdx]);
+                                        }
+                                        if (updateResult != 0) {
+                                            fprintf(debugLog, "[RENDER]   SDL Error: %s\n", SDL_GetError());
+                                        }
+                                        fclose(debugLog);
+                                    }
+                                }
+
                                 upscalerDidRender = true;  // Mark that we handled rendering
                                 actualUpscaledWidth = upscaledWidth;  // Store for srcRect adjustment
                                 actualUpscaledHeight = upscaledHeight;

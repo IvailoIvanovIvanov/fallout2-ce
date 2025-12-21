@@ -202,6 +202,11 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/queue.h"
     "src/random.cc"
     "src/random.h"
+    "src/renderer/BufferManager.cc"
+    "src/renderer/BufferManager.h"
+    "src/renderer/D3D12Context.cc"
+    "src/renderer/D3D12Context.h"
+    "src/renderer/ShaderPass.h"
     "src/render_asset_registry.cc"
     "src/render_asset_registry.h"
     "src/render_commands.cc"
@@ -240,6 +245,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/svga.h"
     "src/upscaler.cc"
     "src/upscaler.h"
+    "src/upscaler_ml.cc"
+    "src/upscaler_ml.h"
     "src/upscaler_filters.cc"
     "src/upscaler_filters.h"
     "src/text_font.cc"
@@ -430,3 +437,15 @@ if(APPLE)
 
     include(CPack)
 endif()
+
+# ONNX Runtime support
+set(ONNXRUNTIME_ROOT "${CMAKE_SOURCE_DIR}/third_party/onnxruntime-dml")
+if(EXISTS "${ONNXRUNTIME_ROOT}")
+    target_include_directories(${EXECUTABLE_NAME} PRIVATE "${ONNXRUNTIME_ROOT}/include")
+    target_link_libraries(${EXECUTABLE_NAME} 
+        "${ONNXRUNTIME_ROOT}/lib/onnxruntime.lib"
+        "${ONNXRUNTIME_ROOT}/lib/DirectML.lib"
+    )
+    target_compile_definitions(${EXECUTABLE_NAME} PRIVATE HAS_ONNX_RUNTIME)
+endif()
+

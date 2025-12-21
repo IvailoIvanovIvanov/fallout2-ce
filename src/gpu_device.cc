@@ -4,6 +4,7 @@
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <wrl/client.h>
+#include <vector>
 #include "diagnostics.h"
 
 using Microsoft::WRL::ComPtr;
@@ -21,6 +22,7 @@ static struct {
     ComPtr<ID3D12Fence> fence;
     uint64_t fenceValue = 0;
     HANDLE fenceEvent = nullptr;
+    std::vector<ID3D12Resource*> pendingResources;
 } gGpuContext;
 
 bool gpuDeviceInit()
@@ -249,6 +251,12 @@ void gpuDeviceWaitForGpu()
         gGpuContext.fence->SetEventOnCompletion(gGpuContext.fenceValue, gGpuContext.fenceEvent);
         WaitForSingleObject(gGpuContext.fenceEvent, INFINITE);
     }
+
+    // Release pending resources now that GPU is done
+    for (auto* res : gGpuContext.pendingResources) {
+        res->Release();
+    }
+    gGpuContext.pendingResources.clear();
 }
 
 bool gpuDeviceIsReady()
@@ -324,11 +332,8 @@ bool gpuUploadConstantBuffer(const void* data, int size, uint64_t* outAddress)
     // Return GPU virtual address
     *outAddress = uploadBuffer->GetGPUVirtualAddress();
     
-    // Note: The upload buffer is released when ComPtr goes out of scope.
-    // For production code, we should cache these buffers and reuse them across frames.
-    // TODO: Implement a constant buffer ring buffer for better performance
-    
-    uploadBuffer.Detach();  // Keep alive (memory leak, but functional for now)
+    // Keep alive until GPU is done
+    gGpuContext.pendingResources.push_back(uploadBuffer.Detach());
     
     return true;
 }

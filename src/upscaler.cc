@@ -15,8 +15,10 @@
 #include "gpu_device.h"
 #include "gpu_texture.h"
 #include "memory.h"
-#include "upscaler_filters.h"
 #include "upscaler_postprocess_shader.h"
+#include "upscaler_ml_postprocess_shader.h"
+#include "upscaler_ml.h"
+#include "upscaler_preprocess_shader.h"
 #include "game_config.h"
 
 namespace fallout {
@@ -52,7 +54,12 @@ public:
     bool setRgbaInput(const uint32_t* rgbaBuffer);
     bool dispatch();
 
-    const uint32_t* getOutputBuffer() const { return mOutputBuffer; }
+    const uint32_t* getOutputBuffer() const { 
+        // Always return mOutputBuffer. For REAL_ESRGAN, we memcpy the readback data 
+        // to mOutputBuffer in dispatchRealEsrgan to ensure a stable, cached buffer 
+        // for the game engine to read.
+        return mOutputBuffer; 
+    }
     int getOutputPitch() const { return mOutputPitch; }
     void getOutputDimensions(int& width, int& height) const {
         width = mOutputWidth;
@@ -87,10 +94,16 @@ private:
     void saveConfiguration();
     
     // Implementation methods
-    bool dispatchIntegerScale(int scaleFactor);
     bool initAnime4k();
     bool shutdownAnime4k();
     bool dispatchAnime4k();
+
+    // Real-ESRGAN Helpers
+    bool initRealEsrgan();
+    bool shutdownRealEsrgan();
+    bool dispatchRealEsrgan();
+    bool initMlGpuPipeline();
+    bool shutdownMlGpuPipeline();
 
     // Buffer management
     bool allocateInputBuffer(int width, int height);
@@ -114,7 +127,7 @@ private:
     // State variables
     UpscalerState mState = UpscalerState::STATE_UNINITIALIZED;
     UpscalerMode mMode = UpscalerMode::NONE;
-    UpscalerMode mConfiguredMode = UpscalerMode::INTEGER_3X;
+    UpscalerMode mConfiguredMode = UpscalerMode::NONE;
     UpscalerQuality mQuality = UpscalerQuality::BALANCED;
     bool mIsAvailable = false;
     bool mAnime4kInitialized = false;
@@ -132,6 +145,30 @@ private:
     bool mGpuPostProcessInitialized = false;
     void* mPostProcessRootSignature = nullptr;  // ID3D12RootSignature*
     void* mPostProcessPipelineState = nullptr;  // ID3D12PipelineState*
+
+    // ML Upscaler
+    std::unique_ptr<UpscalerML> mUpscalerML;
+    uint32_t mMlFrameSkip = 3;  // Only run ML every N frames (1=every frame, 3=every 3rd frame)
+    std::string mMlModelFile;
+    uint32_t mMlFrameCounter = 0;
+    uint32_t* mMlCachedOutput = nullptr;  // Cache the last ML output
+    
+    // ML GPU Pipeline Resources
+    void* mMlPreprocessPipeline = nullptr;   // ID3D12PipelineState*
+    void* mMlPreprocessRootSig = nullptr;    // ID3D12RootSignature*
+    void* mMlPostprocessPipeline = nullptr;  // ID3D12PipelineState*
+    void* mMlPostprocessRootSig = nullptr;   // ID3D12RootSignature*
+    GpuTextureHandle mMlPlanarR = {};        // Float32 R plane
+    GpuTextureHandle mMlPlanarG = {};        // Float32 G plane
+    GpuTextureHandle mMlPlanarB = {};        // Float32 B plane
+    GpuTextureHandle mMlOutputPlanarR = {};  // Output R plane
+    GpuTextureHandle mMlOutputPlanarG = {};  // Output G plane
+    GpuTextureHandle mMlOutputPlanarB = {};  // Output B plane
+    void* mMlPlanarInputBuffer = nullptr;    // ID3D12Resource* (Planar RGB float buffer)
+    void* mMlPlanarOutputBuffer = nullptr;   // ID3D12Resource* (Planar RGB float buffer for ML output)
+    void* mMlFinalOutputBuffer = nullptr;    // ID3D12Resource* (Interleaved RGBA8 buffer for final output)
+    void* mMlReadbackBuffer = nullptr;       // ID3D12Resource* (Readback buffer for CPU access)
+    void* mMlReadbackMappedPtr = nullptr;    // Mapped pointer to readback buffer
 
     // Dimensions
     int mInputWidth = 0;
@@ -214,11 +251,8 @@ void UpscalerImpl::logDiagnostic(const char* format, ...) {
     va_end(args);
     diagnosticsLog(DiagnosticsLevel::Info, "UPSCALER", "%s", buffer);
     
-    if (mUpscaleLog == nullptr && !mLogFilePath.empty()) {
-        mUpscaleLog = fopen(mLogFilePath.c_str(), "a");
-    }
-    
-    if (mUpscaleLog != nullptr) {
+    FILE* f = fopen("C:/Temp/upscale_debug.log", "a");
+    if (f) {
         time_t now = time(nullptr);
         struct tm timeinfo;
 #if _WIN32
@@ -229,8 +263,8 @@ void UpscalerImpl::logDiagnostic(const char* format, ...) {
         char timestamp[32];
         strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &timeinfo);
         
-        fprintf(mUpscaleLog, "[%s] [UPSCALER] %s\n", timestamp, buffer);
-        fflush(mUpscaleLog);
+        fprintf(f, "[%s] [UPSCALER] %s\n", timestamp, buffer);
+        fclose(f);
     }
 }
 
@@ -257,16 +291,16 @@ void UpscalerImpl::loadConfiguration() {
 
 void UpscalerImpl::loadUpscalerConfig() {
     // Mode
-    int modeValue = 2; // Default to INTEGER_3X
+    int modeValue = 0; // Default to NONE
     if (configGetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_MODE_KEY, &modeValue)) {
-        // Clamp to valid range [0-4]
-        if (modeValue < 0 || modeValue > 4) {
-            logDiagnostic("Invalid mode %d in config, defaulting to INTEGER_3X", modeValue);
-            modeValue = 2; // INTEGER_3X
+        // Clamp to valid range [0-5]
+        if (modeValue < 0 || modeValue > 5) {
+            logDiagnostic("Invalid mode %d in config, defaulting to NONE", modeValue);
+            modeValue = 0; // NONE
         }
         mConfiguredMode = static_cast<UpscalerMode>(modeValue);
     } else {
-        mConfiguredMode = UpscalerMode::INTEGER_3X;
+        mConfiguredMode = UpscalerMode::NONE;
     }
     
     // Quality
@@ -284,8 +318,24 @@ void UpscalerImpl::loadUpscalerConfig() {
     // Verbose Logging
     bool verboseValue = false;
     if (configGetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_VERBOSE_LOG_KEY, &verboseValue)) {
-        mVerboseLogging = false; // Force disabled for performance
+        mVerboseLogging = verboseValue;
     }
+    
+    // ML Frame Skip
+    int frameSkip = 3;
+    if (configGetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_ml_frame_skip", &frameSkip)) {
+        mMlFrameSkip = std::clamp(frameSkip, 1, 10);
+    }
+    logDiagnostic("ML Frame Skip: %d", mMlFrameSkip);
+
+    // ML Model File
+    char* modelFile = nullptr;
+    if (configGetString(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_model_file", &modelFile)) {
+        mMlModelFile = std::string(modelFile);
+    } else {
+        mMlModelFile = "RealESRGAN_x4plus_anime_6B.onnx"; // Default to the requested model
+    }
+    logDiagnostic("ML Model File: %s", mMlModelFile.c_str());
 }
 
 void UpscalerImpl::loadFilterConfig() {
@@ -412,6 +462,7 @@ void UpscalerImpl::deallocateBuffers() {
     if (mInputBuffer) { internal_free(mInputBuffer); mInputBuffer = nullptr; }
     if (mOutputBuffer) { internal_free(mOutputBuffer); mOutputBuffer = nullptr; }
     if (mTempBuffer) { internal_free(mTempBuffer); mTempBuffer = nullptr; }
+    if (mMlCachedOutput) { internal_free(mMlCachedOutput); mMlCachedOutput = nullptr; }
     mInputWidth = 0; mInputHeight = 0;
     mOutputWidth = 0; mOutputHeight = 0;
 }
@@ -452,9 +503,17 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
     // Initialize specific mode
     if (mode == UpscalerMode::ANIME4K) {
         if (!initAnime4k()) {
-            logDiagnostic("Anime4K init failed, falling back to INTEGER_3X");
-            mMode = UpscalerMode::INTEGER_3X;
-            // Re-allocate buffers if needed (though they should be fine)
+            logDiagnostic("Anime4K init failed, falling back to NONE");
+            mMode = UpscalerMode::NONE;
+            mIsAvailable = false;
+        }
+    } else if (mode == UpscalerMode::REAL_ESRGAN) {
+        logDiagnostic("Mode is REAL_ESRGAN, attempting initialization...");
+        if (!initRealEsrgan()) {
+            logDiagnostic("!!! Real-ESRGAN init failed, falling back to NONE !!!");
+            logDiagnostic("Last error: %s", mLastError);
+            mMode = UpscalerMode::NONE;
+            mIsAvailable = false;
         }
     }
 
@@ -474,6 +533,10 @@ bool UpscalerImpl::reconfigureOutput(int outputWidth, int outputHeight) {
         shutdownAnime4k();
         if (!allocateOutputBuffer(outputWidth, outputHeight)) return false;
         if (!initAnime4k()) return false;
+    } else if (mMode == UpscalerMode::REAL_ESRGAN) {
+        shutdownRealEsrgan();
+        if (!allocateOutputBuffer(outputWidth, outputHeight)) return false;
+        if (!initRealEsrgan()) return false;
     } else {
         if (!allocateOutputBuffer(outputWidth, outputHeight)) return false;
     }
@@ -483,6 +546,8 @@ bool UpscalerImpl::reconfigureOutput(int outputWidth, int outputHeight) {
 void UpscalerImpl::shutdown() {
     if (mMode == UpscalerMode::ANIME4K) {
         shutdownAnime4k();
+    } else if (mMode == UpscalerMode::REAL_ESRGAN) {
+        shutdownRealEsrgan();
     }
     deallocateBuffers();
     mState = UpscalerState::STATE_UNINITIALIZED;
@@ -529,87 +594,13 @@ bool UpscalerImpl::dispatch() {
         case UpscalerMode::ANIME4K:
             logDiagnostic("Dispatching ANIME4K");
             return dispatchAnime4k();
-        case UpscalerMode::INTEGER_2X:
-            logDiagnostic("Dispatching INTEGER_2X");
-            return dispatchIntegerScale(2);
-        case UpscalerMode::INTEGER_3X:
-            logDiagnostic("Dispatching INTEGER_3X");
-            return dispatchIntegerScale(3);
-        case UpscalerMode::INTEGER_4X:
-            logDiagnostic("Dispatching INTEGER_4X");
-            return dispatchIntegerScale(4);
+        case UpscalerMode::REAL_ESRGAN:
+            logDiagnostic("Dispatching REAL_ESRGAN");
+            return dispatchRealEsrgan();
         default:
             logDiagnostic("Mode NONE/Unknown - passthrough");
             return true; // Pass-through or None
     }
-}
-
-// ============================================================================
-// Integer Scaling
-// ============================================================================
-
-bool UpscalerImpl::dispatchIntegerScale(int scaleFactor) {
-    logDiagnostic("INTEGER_SCALE: factor=%d, input=%dx%d, output=%dx%d", 
-                  scaleFactor, mInputWidth, mInputHeight, mOutputWidth, mOutputHeight);
-    
-    if (!mInputBuffer || !mOutputBuffer) {
-        logDiagnostic("ERROR: Buffers null - input=%p, output=%p", mInputBuffer, mOutputBuffer);
-        return false;
-    }
-
-    // Kuwahara Filter (Pre-scaling)
-    uint32_t* sourceBuffer = mInputBuffer;
-    if (mEnableKuwahara) {
-        if (!mTempBuffer) {
-            mTempBuffer = static_cast<uint32_t*>(internal_malloc(mInputWidth * mInputHeight * sizeof(uint32_t)));
-        }
-        if (mTempBuffer && filterApplyKuwahara(mInputBuffer, mTempBuffer, mInputWidth, mInputHeight, mKuwaharaRadius)) {
-            sourceBuffer = mTempBuffer;
-        }
-    }
-
-    // Scaling & Letterboxing
-    int scaledWidth = mInputWidth * scaleFactor;
-    int scaledHeight = mInputHeight * scaleFactor;
-    int offsetX = (mOutputWidth - scaledWidth) / 2;
-    int offsetY = (mOutputHeight - scaledHeight) / 2;
-
-    memset(mOutputBuffer, 0, mOutputWidth * mOutputHeight * sizeof(uint32_t));
-
-    for (int y = 0; y < mInputHeight; y++) {
-        for (int x = 0; x < mInputWidth; x++) {
-            uint32_t pixel = sourceBuffer[y * mInputWidth + x];
-            for (int dy = 0; dy < scaleFactor; dy++) {
-                int outY = offsetY + (y * scaleFactor + dy);
-                if (outY < 0 || outY >= mOutputHeight) continue;
-                for (int dx = 0; dx < scaleFactor; dx++) {
-                    int outX = offsetX + (x * scaleFactor + dx);
-                    if (outX < 0 || outX >= mOutputWidth) continue;
-                    mOutputBuffer[outY * mOutputWidth + outX] = pixel;
-                }
-            }
-        }
-    }
-
-    // Post-processing
-    FilterConfig filterConfig;
-    filterConfig.type = FilterType::MINIMAL;
-    filterConfig.enableDebanding = mEnableDebanding;
-    filterConfig.debandingStrength = mDebandingStrength;
-    filterConfig.frameIndex = mFrameIndex++;
-    filterConfig.enableEdgeSmoothing = mEnableEdgeSmoothing;
-    filterConfig.smoothingStrength = mSmoothingStrength;
-    filterConfig.enableSoftHDR = mEnableSoftHDR;
-    filterConfig.hdrStrength = mHdrStrength;
-    filterConfig.hdrSaturation = mHdrSaturation;
-    filterConfig.hdrContrast = mHdrContrast;
-    filterConfig.blackCrushThreshold = mBlackCrushThreshold;
-    filterConfig.blackCrushStrength = mBlackCrushStrength;
-    filterConfig.enableLogging = mVerboseLogging;
-    
-    filterApplyPostProcessing(mOutputBuffer, mOutputWidth, mOutputHeight, mOutputWidth * sizeof(uint32_t), filterConfig);
-    
-    return true;
 }
 
 // ============================================================================
@@ -751,7 +742,7 @@ bool UpscalerImpl::createAnime4kPipelineState(ID3DBlob* shaderBlob) {
 
 bool UpscalerImpl::createAnime4kDescriptorHeap() {
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
-    heapDesc.NumDescriptors = 2;
+    heapDesc.NumDescriptors = 4; // Increased to 4 for ML pipeline (Input SRV, Planar UAV, Planar SRV, Final UAV)
     heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     
@@ -775,23 +766,66 @@ bool UpscalerImpl::createAnime4kTextures() {
 bool UpscalerImpl::createAnime4kDescriptors() {
     ID3D12Device* device = gpuDeviceGetDevice();
     ID3D12DescriptorHeap* heap = static_cast<ID3D12DescriptorHeap*>(mAnime4kDescriptorHeap);
+    if (!heap) {
+        logDiagnostic("ERROR: Descriptor heap is null in createAnime4kDescriptors!");
+        return false;
+    }
     UINT handleSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     D3D12_CPU_DESCRIPTOR_HANDLE handle = heap->GetCPUDescriptorHandleForHeapStart();
 
-    // SRV
+    // SRV (Input texture for Anime4K)
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.Texture2D.MipLevels = 1;
     device->CreateShaderResourceView(gpuTextureGetResource(mAnime4kInputTexture), &srvDesc, handle);
+    logDiagnostic("Created SRV descriptor at offset 0");
 
-    // UAV
+    // UAV (Output buffer for ML preprocessing)
+    // Note: We'll create this as a structured buffer UAV for the planar RGB float buffer
     handle.ptr += handleSize;
-    D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-    uavDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-    device->CreateUnorderedAccessView(gpuTextureGetResource(mAnime4kOutputTexture), nullptr, &uavDesc, handle);
+    if (mMlPlanarInputBuffer) {
+        ID3D12Resource* planarRes = static_cast<ID3D12Resource*>(mMlPlanarInputBuffer);
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uavDesc.Buffer.FirstElement = 0;
+        uavDesc.Buffer.NumElements = mInputWidth * mInputHeight * 3;  // Total float count
+        uavDesc.Buffer.StructureByteStride = sizeof(float);
+        device->CreateUnorderedAccessView(planarRes, nullptr, &uavDesc, handle);
+        logDiagnostic("Created UAV descriptor at offset 1 for planar buffer");
+    } else {
+        logDiagnostic("WARNING: mMlPlanarInputBuffer is null, skipping UAV creation");
+    }
+
+    // SRV (Planar Output Buffer for ML postprocessing)
+    handle.ptr += handleSize;
+    if (mMlPlanarOutputBuffer) {
+        ID3D12Resource* planarRes = static_cast<ID3D12Resource*>(mMlPlanarOutputBuffer);
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc2 = {};
+        srvDesc2.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc2.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srvDesc2.Buffer.FirstElement = 0;
+        srvDesc2.Buffer.NumElements = (mInputWidth * 4) * (mInputHeight * 4) * 3;
+        srvDesc2.Buffer.StructureByteStride = sizeof(float);
+        device->CreateShaderResourceView(planarRes, &srvDesc2, handle);
+        logDiagnostic("Created SRV descriptor at offset 2 for planar output buffer");
+    }
+
+    // UAV (Final Interleaved Output Buffer for ML postprocessing)
+    handle.ptr += handleSize;
+    if (mMlFinalOutputBuffer) {
+        ID3D12Resource* finalRes = static_cast<ID3D12Resource*>(mMlFinalOutputBuffer);
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc2 = {};
+        uavDesc2.Format = DXGI_FORMAT_R32_UINT; // Typed Buffer
+        uavDesc2.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uavDesc2.Buffer.FirstElement = 0;
+        uavDesc2.Buffer.NumElements = mOutputWidth * mOutputHeight;
+        uavDesc2.Buffer.StructureByteStride = 0; // Must be 0 for Typed Buffer
+        device->CreateUnorderedAccessView(finalRes, nullptr, &uavDesc2, handle);
+        logDiagnostic("Created UAV descriptor at offset 3 for final output buffer (Typed R32_UINT)");
+    }
     
     return true;
 }
@@ -978,8 +1012,8 @@ bool UpscalerImpl::dispatchAnime4k() {
                   mAnime4kInitialized, mInputBuffer, mOutputBuffer);
     
     if (!mAnime4kInitialized || !mInputBuffer || !mOutputBuffer) {
-        logDiagnostic("ANIME4K: Falling back to INTEGER_3X");
-        return dispatchIntegerScale(3);
+        logDiagnostic("ANIME4K: Falling back to NONE");
+        return false;
     }
 
     ID3D12GraphicsCommandList* cmdList = static_cast<ID3D12GraphicsCommandList*>(mAnime4kCommandList);
@@ -988,7 +1022,7 @@ bool UpscalerImpl::dispatchAnime4k() {
     allocator->Reset();
     cmdList->Reset(allocator, static_cast<ID3D12PipelineState*>(mAnime4kPipelineState));
     
-    if (!gpuTextureUpload(mAnime4kInputTexture, mInputBuffer, mInputWidth * mInputHeight * 4)) return dispatchIntegerScale(3);
+    if (!gpuTextureUpload(mAnime4kInputTexture, mInputBuffer, mInputWidth * mInputHeight * 4)) return false;
 
     // Transition resources for compute shader
     D3D12_RESOURCE_BARRIER barriers[2] = {};
@@ -1030,7 +1064,7 @@ bool UpscalerImpl::dispatchAnime4k() {
     params.str = 1.0f;
 
     uint64_t cbAddr;
-    if (!gpuUploadConstantBuffer(&params, sizeof(params), &cbAddr)) return dispatchIntegerScale(3);
+    if (!gpuUploadConstantBuffer(&params, sizeof(params), &cbAddr)) return false;
     cmdList->SetComputeRootConstantBufferView(0, cbAddr);
 
     ID3D12DescriptorHeap* heap = static_cast<ID3D12DescriptorHeap*>(mAnime4kDescriptorHeap);
@@ -1123,13 +1157,767 @@ bool UpscalerImpl::dispatchAnime4k() {
     
     cmdList->ResourceBarrier(2, barriers);
 
-    if (!gpuDeviceExecuteCommandList(cmdList)) return dispatchIntegerScale(3);
+    if (!gpuDeviceExecuteCommandList(cmdList)) return false;
     gpuDeviceWaitForGpu();
     
     // Download final processed result (no more CPU processing needed!)
-    if (!gpuTextureDownload(mAnime4kOutputTexture, mOutputBuffer, mOutputWidth * mOutputHeight * 4)) return dispatchIntegerScale(3);
+    if (!gpuTextureDownload(mAnime4kOutputTexture, mOutputBuffer, mOutputWidth * mOutputHeight * 4)) return false;
     
     logDiagnostic("ANIME4K: Dispatch complete (GPU post-processing applied)");
+    return true;
+}
+
+// ============================================================================
+// Real-ESRGAN Implementation
+// ============================================================================
+
+bool UpscalerImpl::initMlGpuPipeline() {
+    logDiagnostic("=== Initializing ML GPU pipeline ===");
+    
+    ID3D12Device* device = gpuDeviceGetDevice();
+    if (!device) {
+        logDiagnostic("ERROR: GPU device is null!");
+        return false;
+    }
+
+    // 1. Create Planar RGB float buffer for ML input
+    // Size: 640 * 480 * 3 channels * 4 bytes (float32)
+    size_t bufferSize = (size_t)mInputWidth * mInputHeight * 3 * sizeof(float);
+    logDiagnostic("Creating planar input buffer: %zu bytes (w=%d, h=%d)", bufferSize, mInputWidth, mInputHeight);
+    
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+    
+    D3D12_RESOURCE_DESC resDesc = {};
+    resDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    resDesc.Width = bufferSize;
+    resDesc.Height = 1;
+    resDesc.DepthOrArraySize = 1;
+    resDesc.MipLevels = 1;
+    resDesc.Format = DXGI_FORMAT_UNKNOWN;
+    resDesc.SampleDesc.Count = 1;
+    resDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    resDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    
+    ID3D12Resource* planarBuffer = nullptr;
+    HRESULT hr = device->CreateCommittedResource(
+        &heapProps, D3D12_HEAP_FLAG_NONE, &resDesc,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+        IID_PPV_ARGS(&planarBuffer));
+    
+    if (FAILED(hr)) {
+        logDiagnostic("Failed to create planar input buffer: 0x%08X", hr);
+        return false;
+    }
+    logDiagnostic("Planar input buffer created successfully (addr=%p)", planarBuffer);
+    mMlPlanarInputBuffer = planarBuffer;
+
+    // 1b. Create Planar RGB float buffer for ML output
+    // Size: (mInputWidth * 4) * (mInputHeight * 4) * 3 channels * 4 bytes (float32)
+    int mlWidth = mInputWidth * 4;
+    int mlHeight = mInputHeight * 4;
+    size_t outputBufferSize = (size_t)mlWidth * mlHeight * 3 * sizeof(float);
+    logDiagnostic("Creating planar output buffer: %zu bytes (w=%d, h=%d)", outputBufferSize, mlWidth, mlHeight);
+    
+    resDesc.Width = outputBufferSize;
+    ID3D12Resource* planarOutputBuffer = nullptr;
+    hr = device->CreateCommittedResource(
+        &heapProps, D3D12_HEAP_FLAG_NONE, &resDesc,
+        D3D12_RESOURCE_STATE_COMMON, nullptr,
+        IID_PPV_ARGS(&planarOutputBuffer));
+    
+    if (FAILED(hr)) {
+        logDiagnostic("Failed to create planar output buffer: 0x%08X", hr);
+        return false;
+    }
+    mMlPlanarOutputBuffer = planarOutputBuffer;
+
+    // 1c. Create Interleaved RGBA8 buffer for final output (GPU)
+    // Size: 2560 * 1920 * 4 bytes
+    size_t finalBufferSize = (size_t)mOutputWidth * mOutputHeight * 4;
+    logDiagnostic("Creating final output buffer: %zu bytes", finalBufferSize);
+    
+    resDesc.Width = finalBufferSize;
+    ID3D12Resource* finalOutputBuffer = nullptr;
+    hr = device->CreateCommittedResource(
+        &heapProps, D3D12_HEAP_FLAG_NONE, &resDesc,
+        D3D12_RESOURCE_STATE_COMMON, nullptr,
+        IID_PPV_ARGS(&finalOutputBuffer));
+    
+    if (FAILED(hr)) {
+        logDiagnostic("Failed to create final output buffer: 0x%08X", hr);
+        return false;
+    }
+    mMlFinalOutputBuffer = finalOutputBuffer;
+
+    // 1d. Create Readback buffer for CPU access
+    D3D12_HEAP_PROPERTIES readbackHeapProps = {};
+    readbackHeapProps.Type = D3D12_HEAP_TYPE_READBACK;
+    
+    D3D12_RESOURCE_DESC readbackResDesc = {};
+    readbackResDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    readbackResDesc.Width = finalBufferSize;
+    readbackResDesc.Height = 1;
+    readbackResDesc.DepthOrArraySize = 1;
+    readbackResDesc.MipLevels = 1;
+    readbackResDesc.Format = DXGI_FORMAT_UNKNOWN;
+    readbackResDesc.SampleDesc.Count = 1;
+    readbackResDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    readbackResDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    
+    ID3D12Resource* readbackBuffer = nullptr;
+    hr = device->CreateCommittedResource(
+        &readbackHeapProps, D3D12_HEAP_FLAG_NONE, &readbackResDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+        IID_PPV_ARGS(&readbackBuffer));
+    
+    if (FAILED(hr)) {
+        logDiagnostic("Failed to create readback buffer: 0x%08X", hr);
+        return false;
+    }
+    mMlReadbackBuffer = readbackBuffer;
+    logDiagnostic("Readback buffer created (will be mapped after each frame)");
+
+    // 2. Compile Preprocessing Shader
+    Microsoft::WRL::ComPtr<ID3DBlob> shaderBlob;
+    Microsoft::WRL::ComPtr<ID3DBlob> errorBlob;
+    
+    logDiagnostic("Compiling preprocessing shader...");
+    hr = D3DCompile(
+        UPSCALER_PREPROCESS_SHADER,
+        strlen(UPSCALER_PREPROCESS_SHADER),
+        "PreprocessShader",
+        nullptr, nullptr,
+        "main", "cs_5_0",
+        D3DCOMPILE_OPTIMIZATION_LEVEL3, 0,
+        &shaderBlob, &errorBlob
+    );
+    
+    if (FAILED(hr)) {
+        logDiagnostic("Preprocess shader compile FAILED: 0x%08X", hr);
+        if (errorBlob) logDiagnostic("Shader error: %s", (char*)errorBlob->GetBufferPointer());
+        return false;
+    }
+    logDiagnostic("Preprocessing shader compiled successfully");
+
+    // 3. Create Root Signature
+    D3D12_ROOT_PARAMETER rootParams[3] = {};
+    
+    // CBV (Params)
+    rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rootParams[0].Descriptor.ShaderRegister = 0;
+    rootParams[0].Descriptor.RegisterSpace = 0;
+    rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    
+    // SRV (Input Texture)
+    D3D12_DESCRIPTOR_RANGE srvRange = {};
+    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors = 1;
+    srvRange.BaseShaderRegister = 0;
+    srvRange.RegisterSpace = 0;
+    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    
+    rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[1].DescriptorTable.NumDescriptorRanges = 1;
+    rootParams[1].DescriptorTable.pDescriptorRanges = &srvRange;
+    rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    
+    // UAV (Output Buffer) - use descriptor table, NOT direct virtual address
+    D3D12_DESCRIPTOR_RANGE uavRange = {};
+    uavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    uavRange.NumDescriptors = 1;
+    uavRange.BaseShaderRegister = 0;
+    uavRange.RegisterSpace = 0;
+    uavRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    
+    rootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[2].DescriptorTable.NumDescriptorRanges = 1;
+    rootParams[2].DescriptorTable.pDescriptorRanges = &uavRange;
+    rootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    
+    D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
+    rootSigDesc.NumParameters = 3;
+    rootSigDesc.pParameters = rootParams;
+    rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+    
+    Microsoft::WRL::ComPtr<ID3DBlob> sigBlob;
+    logDiagnostic("Serializing root signature...");
+    hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sigBlob, &errorBlob);
+    if (FAILED(hr)) {
+        logDiagnostic("Root signature serialization failed: 0x%08X", hr);
+        return false;
+    }
+    
+    ID3D12RootSignature* rootSig = nullptr;
+    logDiagnostic("Creating root signature...");
+    hr = device->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(), IID_PPV_ARGS(&rootSig));
+    if (FAILED(hr)) {
+        logDiagnostic("Root signature creation failed: 0x%08X", hr);
+        return false;
+    }
+    logDiagnostic("Root signature created (addr=%p)", rootSig);
+    mMlPreprocessRootSig = rootSig;
+
+    // 4. Create PSO
+    D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
+    psoDesc.pRootSignature = rootSig;
+    psoDesc.CS = { shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize() };
+    
+    ID3D12PipelineState* pso = nullptr;
+    logDiagnostic("Creating compute PSO...");
+    hr = device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&pso));
+    if (FAILED(hr)) {
+        logDiagnostic("PSO creation failed: 0x%08X", hr);
+        return false;
+    }
+    logDiagnostic("PSO created (addr=%p)", pso);
+    mMlPreprocessPipeline = pso;
+
+    // 5. Create Post-processing Pipeline
+    logDiagnostic("Compiling ML post-processing shader...");
+    hr = D3DCompile(
+        UPSCALER_ML_POSTPROCESS_SHADER,
+        strlen(UPSCALER_ML_POSTPROCESS_SHADER),
+        "PostprocessShader",
+        nullptr, nullptr,
+        "main", "cs_5_0",
+        D3DCOMPILE_OPTIMIZATION_LEVEL3, 0,
+        &shaderBlob, &errorBlob
+    );
+    
+    if (FAILED(hr)) {
+        logDiagnostic("Postprocess shader compile FAILED: 0x%08X", hr);
+        if (errorBlob) logDiagnostic("Shader error: %s", (char*)errorBlob->GetBufferPointer());
+        return false;
+    }
+
+    // Post-process Root Signature
+    D3D12_ROOT_PARAMETER postRootParams[3] = {};
+    
+    // CBV (Params) - Use 32-bit constants for performance and simplicity
+    postRootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    postRootParams[0].Constants.ShaderRegister = 0;
+    postRootParams[0].Constants.RegisterSpace = 0;
+    postRootParams[0].Constants.Num32BitValues = 4; // outputWidth, outputHeight, mlWidth, mlHeight
+    postRootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    
+    // SRV (Input Planar Buffer) -> t0 (Descriptor Table)
+    D3D12_DESCRIPTOR_RANGE postSrvRange = {};
+    postSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    postSrvRange.NumDescriptors = 1;
+    postSrvRange.BaseShaderRegister = 0;
+    postSrvRange.RegisterSpace = 0;
+    postSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    postRootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    postRootParams[1].DescriptorTable.NumDescriptorRanges = 1;
+    postRootParams[1].DescriptorTable.pDescriptorRanges = &postSrvRange;
+    postRootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // UAV (Output Final Buffer) -> u0 (Descriptor Table)
+    D3D12_DESCRIPTOR_RANGE postUavRange = {};
+    postUavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    postUavRange.NumDescriptors = 1;
+    postUavRange.BaseShaderRegister = 0;
+    postUavRange.RegisterSpace = 0;
+    postUavRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    postRootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    postRootParams[2].DescriptorTable.NumDescriptorRanges = 1;
+    postRootParams[2].DescriptorTable.pDescriptorRanges = &postUavRange;
+    postRootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    
+    D3D12_ROOT_SIGNATURE_DESC postRootSigDesc = {};
+    postRootSigDesc.NumParameters = 3;
+    postRootSigDesc.pParameters = postRootParams;
+    postRootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+    
+    hr = D3D12SerializeRootSignature(&postRootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sigBlob, &errorBlob);
+    if (FAILED(hr)) return false;
+    
+    ID3D12RootSignature* postRootSig = nullptr;
+    hr = device->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(), IID_PPV_ARGS(&postRootSig));
+    if (FAILED(hr)) return false;
+    mMlPostprocessRootSig = postRootSig;
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC postPsoDesc = {};
+    postPsoDesc.pRootSignature = postRootSig;
+    postPsoDesc.CS = { shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize() };
+    
+    ID3D12PipelineState* postPso = nullptr;
+    hr = device->CreateComputePipelineState(&postPsoDesc, IID_PPV_ARGS(&postPso));
+    if (FAILED(hr)) return false;
+    mMlPostprocessPipeline = postPso;
+
+    logDiagnostic("=== ML GPU pipeline initialized successfully ===");
+    return true;
+}
+
+bool UpscalerImpl::shutdownMlGpuPipeline() {
+    logDiagnostic("Shutting down ML GPU pipeline...");
+    if (mMlPlanarInputBuffer) {
+        static_cast<ID3D12Resource*>(mMlPlanarInputBuffer)->Release();
+        mMlPlanarInputBuffer = nullptr;
+    }
+    if (mMlPlanarOutputBuffer) {
+        static_cast<ID3D12Resource*>(mMlPlanarOutputBuffer)->Release();
+        mMlPlanarOutputBuffer = nullptr;
+    }
+    if (mMlFinalOutputBuffer) {
+        static_cast<ID3D12Resource*>(mMlFinalOutputBuffer)->Release();
+        mMlFinalOutputBuffer = nullptr;
+    }
+    if (mMlReadbackBuffer) {
+        static_cast<ID3D12Resource*>(mMlReadbackBuffer)->Unmap(0, nullptr);
+        static_cast<ID3D12Resource*>(mMlReadbackBuffer)->Release();
+        mMlReadbackBuffer = nullptr;
+        mMlReadbackMappedPtr = nullptr;
+    }
+    
+    if (mMlPreprocessPipeline) {
+        static_cast<ID3D12PipelineState*>(mMlPreprocessPipeline)->Release();
+        mMlPreprocessPipeline = nullptr;
+    }
+    if (mMlPreprocessRootSig) {
+        static_cast<ID3D12RootSignature*>(mMlPreprocessRootSig)->Release();
+        mMlPreprocessRootSig = nullptr;
+    }
+    if (mMlPostprocessPipeline) {
+        static_cast<ID3D12PipelineState*>(mMlPostprocessPipeline)->Release();
+        mMlPostprocessPipeline = nullptr;
+    }
+    if (mMlPostprocessRootSig) {
+        static_cast<ID3D12RootSignature*>(mMlPostprocessRootSig)->Release();
+        mMlPostprocessRootSig = nullptr;
+    }
+    return true;
+}
+
+bool UpscalerImpl::initRealEsrgan() {
+    logDiagnostic("=== REAL-ESRGAN INIT START ===");
+    
+    if (!checkGpuReadiness()) {
+        logDiagnostic("GPU not ready, cannot initialize ML upscaler");
+        return false;
+    }
+    
+    if (!mUpscalerML) {
+        logDiagnostic("Creating UpscalerML instance");
+        mUpscalerML = std::make_unique<UpscalerML>();
+    }
+    
+    // Initialize ML engine with model path
+    char* basePath = SDL_GetBasePath();
+    std::string basePathStr = basePath ? std::string(basePath) : "";
+    if (basePath) {
+        SDL_free(basePath);
+    }
+    
+    // Use configured model file
+    std::string modelPath = basePathStr + mMlModelFile;
+    logDiagnostic("Attempting to load ML model from: %s", modelPath.c_str());
+    
+    // Create logger callback to bridge ML logs to our log file
+    auto logger = [this](const char* msg) {
+        this->logDiagnostic("[ML] %s", msg);
+    };
+    
+    // Try primary model
+    bool initSuccess = mUpscalerML->init(gpuDeviceGetDevice(), modelPath, logger);
+    
+    if (!initSuccess) {
+        setError("Failed to initialize ML model. Checked paths: %s", modelPath.c_str());
+        logDiagnostic("ML model initialization FAILED");
+        return false;
+    }
+    
+    logDiagnostic("ML model loaded successfully!");
+    
+    // Allocate cache buffer for 4x output (Real-ESRGAN is 4x)
+    if (mMlCachedOutput) internal_free(mMlCachedOutput);
+    mMlCachedOutput = static_cast<uint32_t*>(internal_malloc(mInputWidth * 4 * mInputHeight * 4 * sizeof(uint32_t)));
+    
+    // Create GPU textures for ML upscaler
+    logDiagnostic("Creating GPU textures for ML upscaler");
+    if (!createAnime4kTextures()) {
+        logDiagnostic("Failed to create textures");
+        return false;
+    }
+    
+    logDiagnostic("Creating descriptor heap");
+    if (!createAnime4kDescriptorHeap()) {
+        logDiagnostic("Failed to create descriptor heap");
+        return false;
+    }
+    
+    logDiagnostic("Creating descriptors");
+    if (!createAnime4kDescriptors()) {
+        logDiagnostic("Failed to create descriptors");
+        return false;
+    }
+    
+    logDiagnostic("Creating command list");
+    if (!createAnime4kCommandList()) {
+        logDiagnostic("Failed to create command list");
+        return false;
+    }
+    
+    // Initialize GPU pipeline for preprocessing
+    logDiagnostic("Initializing ML GPU pipeline (Preprocessing)");
+    if (!initMlGpuPipeline()) {
+        logDiagnostic("Failed to initialize ML GPU pipeline");
+        return false;
+    }
+    
+    // Now that the planar buffer is created, create its UAV descriptor
+    logDiagnostic("Creating UAV descriptor for planar buffer");
+    ID3D12Device* device = gpuDeviceGetDevice();
+    ID3D12DescriptorHeap* heap = static_cast<ID3D12DescriptorHeap*>(mAnime4kDescriptorHeap);
+    if (heap && mMlPlanarInputBuffer && device) {
+        UINT handleSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        D3D12_CPU_DESCRIPTOR_HANDLE handle = heap->GetCPUDescriptorHandleForHeapStart();
+        
+        // Offset 1: UAV for Planar Input (Preprocess)
+        handle.ptr += handleSize;
+        ID3D12Resource* planarRes = static_cast<ID3D12Resource*>(mMlPlanarInputBuffer);
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uavDesc.Buffer.FirstElement = 0;
+        uavDesc.Buffer.NumElements = mInputWidth * mInputHeight * 3;  // Total float count
+        uavDesc.Buffer.StructureByteStride = sizeof(float);
+        device->CreateUnorderedAccessView(planarRes, nullptr, &uavDesc, handle);
+        logDiagnostic("Created UAV descriptor for planar buffer at offset 1");
+
+        // Offset 2: SRV for Planar Output (Postprocess)
+        handle.ptr += handleSize;
+        ID3D12Resource* planarOutRes = static_cast<ID3D12Resource*>(mMlPlanarOutputBuffer);
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Buffer.FirstElement = 0;
+        srvDesc.Buffer.NumElements = mInputWidth * 4 * mInputHeight * 4 * 3; // ML Output size
+        srvDesc.Buffer.StructureByteStride = sizeof(float);
+        srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        device->CreateShaderResourceView(planarOutRes, &srvDesc, handle);
+        logDiagnostic("Created SRV descriptor for planar output buffer at offset 2");
+
+        // Offset 3: UAV for Final Output (Postprocess)
+        handle.ptr += handleSize;
+        ID3D12Resource* finalOutRes = static_cast<ID3D12Resource*>(mMlFinalOutputBuffer);
+        D3D12_UNORDERED_ACCESS_VIEW_DESC finalUavDesc = {};
+        finalUavDesc.Format = DXGI_FORMAT_R32_UINT; // Typed Buffer
+        finalUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        finalUavDesc.Buffer.FirstElement = 0;
+        finalUavDesc.Buffer.NumElements = mOutputWidth * mOutputHeight;
+        finalUavDesc.Buffer.StructureByteStride = 0; // Must be 0 for Typed Buffer
+        finalUavDesc.Buffer.CounterOffsetInBytes = 0;
+        finalUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+        device->CreateUnorderedAccessView(finalOutRes, nullptr, &finalUavDesc, handle);
+        logDiagnostic("Created UAV descriptor for final output buffer at offset 3");
+
+    } else {
+        logDiagnostic("WARNING: Could not create planar buffer UAV (heap=%p, buffer=%p, device=%p)", 
+                      heap, mMlPlanarInputBuffer, device);
+    }
+    
+    logDiagnostic("=== REAL-ESRGAN INIT SUCCESS ===");
+    return true;
+}
+
+bool UpscalerImpl::shutdownRealEsrgan() {
+    mUpscalerML.reset();
+    
+    // Clean up ML GPU pipeline
+    shutdownMlGpuPipeline();
+    
+    // Clean up ML cache
+    if (mMlCachedOutput) {
+        internal_free(mMlCachedOutput);
+        mMlCachedOutput = nullptr;
+    }
+    
+    // Clean up shared resources
+    if (mAnime4kOutputTexture.resource) { gpuTextureRelease(mAnime4kOutputTexture); mAnime4kOutputTexture = {}; }
+    if (mAnime4kInputTexture.resource) { gpuTextureRelease(mAnime4kInputTexture); mAnime4kInputTexture = {}; }
+    if (mAnime4kCommandList) { static_cast<ID3D12GraphicsCommandList*>(mAnime4kCommandList)->Release(); mAnime4kCommandList = nullptr; }
+    if (mAnime4kCommandAllocator) { static_cast<ID3D12CommandAllocator*>(mAnime4kCommandAllocator)->Release(); mAnime4kCommandAllocator = nullptr; }
+    
+    return true;
+}
+
+bool UpscalerImpl::dispatchRealEsrgan() {
+    logDiagnostic("=== REAL-ESRGAN DISPATCH START ===");
+    uint64_t dispatchStart = SDL_GetPerformanceCounter();
+    
+    if (!mUpscalerML) {
+        logDiagnostic("ERROR: mUpscalerML is null!");
+        return false;
+    }
+    
+    if (!mMlPlanarInputBuffer) {
+        logDiagnostic("ERROR: Planar input buffer not created during init!");
+        return false;
+    }
+    
+    // 1. Upload input to GPU
+    if (!mAnime4kInputTexture.resource) {
+        logDiagnostic("ERROR: Input texture not created!");
+        return false;
+    }
+    logDiagnostic("Uploading input texture (%dx%d)", mInputWidth, mInputHeight);
+    gpuTextureUpload(mAnime4kInputTexture, mInputBuffer, mInputWidth * mInputHeight * 4);
+
+    // 2. Run Preprocessing Shader (Blur + HDR)
+    logDiagnostic("Starting preprocessing shader dispatch");
+    ID3D12GraphicsCommandList* cmdList = static_cast<ID3D12GraphicsCommandList*>(mAnime4kCommandList);
+    ID3D12CommandAllocator* allocator = static_cast<ID3D12CommandAllocator*>(mAnime4kCommandAllocator);
+    
+    if (!cmdList || !allocator) {
+        logDiagnostic("ERROR: Command list or allocator is null!");
+        return false;
+    }
+    
+    allocator->Reset();
+    if (!mMlPreprocessPipeline) {
+        logDiagnostic("ERROR: Preprocessing PSO not created!");
+        return false;
+    }
+    cmdList->Reset(allocator, static_cast<ID3D12PipelineState*>(mMlPreprocessPipeline));
+    
+    cmdList->SetComputeRootSignature(static_cast<ID3D12RootSignature*>(mMlPreprocessRootSig));
+    
+    // Set Constants
+    struct {
+        uint32_t width, height;
+        float blurStrength;
+        float hdrSaturation;
+        float hdrContrast;
+        float padding[2];
+    } params;
+    params.width = mInputWidth;
+    params.height = mInputHeight;
+    params.blurStrength = 0.5f; // Default blur
+    params.hdrSaturation = mHdrSaturation;
+    params.hdrContrast = mHdrContrast;
+    
+    uint32_t paramCount = sizeof(params) / 4;
+    logDiagnostic("Setting compute root constants (count=%u, size=%zu)", paramCount, sizeof(params));
+    cmdList->SetComputeRoot32BitConstants(0, paramCount, &params, 0);
+    
+    // Set SRV (Input)
+    ID3D12DescriptorHeap* heap = static_cast<ID3D12DescriptorHeap*>(mAnime4kDescriptorHeap);
+    if (!heap) {
+        logDiagnostic("ERROR: Descriptor heap is null!");
+        return false;
+    }
+    cmdList->SetDescriptorHeaps(1, &heap);
+    
+    // SRV descriptor is at offset 0 in the heap
+    D3D12_GPU_DESCRIPTOR_HANDLE srvHandle = heap->GetGPUDescriptorHandleForHeapStart();
+    logDiagnostic("Setting SRV descriptor table");
+    cmdList->SetComputeRootDescriptorTable(1, srvHandle);
+    
+    // Set UAV (Output Planar Buffer) - need to create a UAV for the buffer
+    // For now, we'll use the second handle in the heap (offset by one)
+    ID3D12Device* device = gpuDeviceGetDevice();
+    UINT handleSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_GPU_DESCRIPTOR_HANDLE uavHandle = srvHandle;
+    uavHandle.ptr += handleSize;
+    logDiagnostic("Setting UAV descriptor table");
+    cmdList->SetComputeRootDescriptorTable(2, uavHandle);
+    
+    uint32_t groupX = (mInputWidth + 15) / 16;
+    uint32_t groupY = (mInputHeight + 15) / 16;
+    logDiagnostic("Dispatching %ux%u thread groups", groupX, groupY);
+    cmdList->Dispatch(groupX, groupY, 1);
+    
+    // Barrier to ensure preprocessing is done before ML
+    // Also transition Output Buffer to UAV for ML
+    D3D12_RESOURCE_BARRIER preMlBarriers[2] = {};
+    
+    // 1. UAV Barrier for Input Buffer (ensure writes are visible)
+    preMlBarriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    preMlBarriers[0].UAV.pResource = static_cast<ID3D12Resource*>(mMlPlanarInputBuffer);
+    
+    // 2. Transition Output Buffer to UAV (from COMMON)
+    preMlBarriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    preMlBarriers[1].Transition.pResource = static_cast<ID3D12Resource*>(mMlPlanarOutputBuffer);
+    preMlBarriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    preMlBarriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    preMlBarriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    
+    logDiagnostic("Adding Pre-ML barriers");
+    cmdList->ResourceBarrier(2, preMlBarriers);
+    
+    logDiagnostic("Closing command list and executing");
+    HRESULT closeHr = cmdList->Close();
+    if (FAILED(closeHr)) {
+        logDiagnostic("ERROR: Failed to close command list (HRESULT=0x%08X)", closeHr);
+        return false;
+    }
+    
+    ID3D12CommandQueue* queue = gpuDeviceGetCommandQueue();
+    if (!queue) {
+        logDiagnostic("ERROR: Command queue is null!");
+        return false;
+    }
+    ID3D12CommandList* lists[] = { cmdList };
+    queue->ExecuteCommandLists(1, lists);
+    logDiagnostic("Preprocessing command list executed, waiting for GPU");
+    
+    // Wait for GPU to ensure preprocessing is done before ML starts
+    gpuDeviceWaitForGpu();
+    logDiagnostic("GPU preprocessing complete");
+
+    // 3. Run ML Inference on GPU (GPU-to-GPU)
+    logDiagnostic("Running ML inference on GPU (GPU-to-GPU pipeline)");
+    bool mlSuccess = mUpscalerML->dispatchGpuToGpu(
+        static_cast<ID3D12Resource*>(mMlPlanarInputBuffer), 
+        static_cast<ID3D12Resource*>(mMlPlanarOutputBuffer), 
+        mInputWidth, mInputHeight);
+    
+    if (!mlSuccess) {
+        logDiagnostic("!!! ML DISPATCH FAILED !!!");
+        return false;
+    }
+
+    // 4. Run Post-processing Shader (Planar to Interleaved)
+    logDiagnostic("Starting post-processing shader dispatch");
+    allocator->Reset();
+    if (!mMlPostprocessPipeline) {
+        logDiagnostic("ERROR: Postprocessing PSO not created!");
+        return false;
+    }
+    cmdList->Reset(allocator, static_cast<ID3D12PipelineState*>(mMlPostprocessPipeline));
+    
+    // Transition Output Buffer from UAV (ML) to SRV (PostProcess)
+    D3D12_RESOURCE_BARRIER postMlBarrier = {};
+    postMlBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    postMlBarrier.Transition.pResource = static_cast<ID3D12Resource*>(mMlPlanarOutputBuffer);
+    postMlBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    postMlBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    postMlBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cmdList->ResourceBarrier(1, &postMlBarrier);
+
+    cmdList->SetComputeRootSignature(static_cast<ID3D12RootSignature*>(mMlPostprocessRootSig));
+    
+    // Set Constants
+    struct {
+        uint32_t outputWidth, outputHeight;
+        uint32_t mlWidth, mlHeight;
+    } postParams;
+    postParams.outputWidth = mOutputWidth;
+    postParams.outputHeight = mOutputHeight;
+    postParams.mlWidth = mInputWidth * 4;
+    postParams.mlHeight = mInputHeight * 4;
+    cmdList->SetComputeRoot32BitConstants(0, 4, &postParams, 0);
+    
+    cmdList->SetDescriptorHeaps(1, &heap);
+    
+    // Get handle size again
+    device = gpuDeviceGetDevice();
+    handleSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_GPU_DESCRIPTOR_HANDLE baseHandle = heap->GetGPUDescriptorHandleForHeapStart();
+    
+    // Set SRV (Planar Output) -> t0 (Offset 2)
+    D3D12_GPU_DESCRIPTOR_HANDLE postSrvHandle = baseHandle;
+    postSrvHandle.ptr += handleSize * 2;
+    cmdList->SetComputeRootDescriptorTable(1, postSrvHandle);
+
+    // Set UAV (Final Output) -> u0 (Offset 3)
+    D3D12_GPU_DESCRIPTOR_HANDLE postUavHandle = baseHandle;
+    postUavHandle.ptr += handleSize * 3;
+    cmdList->SetComputeRootDescriptorTable(2, postUavHandle);
+    
+    uint32_t postGroupX = (mOutputWidth + 7) / 8;
+    uint32_t postGroupY = (mOutputHeight + 7) / 8;
+    
+    // Transition Final Output Buffer from COMMON to UAV for writing
+    D3D12_RESOURCE_BARRIER finalOutputTransBarrier = {};
+    finalOutputTransBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    finalOutputTransBarrier.Transition.pResource = static_cast<ID3D12Resource*>(mMlFinalOutputBuffer);
+    finalOutputTransBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    finalOutputTransBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    finalOutputTransBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cmdList->ResourceBarrier(1, &finalOutputTransBarrier);
+
+    logDiagnostic("Dispatching PostProcess: %dx%d groups (Out: %dx%d)", postGroupX, postGroupY, mOutputWidth, mOutputHeight);
+    cmdList->Dispatch(postGroupX, postGroupY, 1);
+    
+    // UAV Barrier to ensure writes are complete before state transition
+    D3D12_RESOURCE_BARRIER postBarrier = {};
+    postBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    postBarrier.UAV.pResource = static_cast<ID3D12Resource*>(mMlFinalOutputBuffer);
+    cmdList->ResourceBarrier(1, &postBarrier);
+    
+    // Copy to Readback buffer
+    D3D12_RESOURCE_BARRIER copyBarriers[2] = {};
+    copyBarriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    copyBarriers[0].Transition.pResource = static_cast<ID3D12Resource*>(mMlFinalOutputBuffer);
+    copyBarriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    copyBarriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    copyBarriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    
+    copyBarriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    copyBarriers[1].Transition.pResource = static_cast<ID3D12Resource*>(mMlReadbackBuffer);
+    copyBarriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    copyBarriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST; // No change
+    copyBarriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    
+    cmdList->ResourceBarrier(1, &copyBarriers[0]);
+    
+    // Use CopyResource for full buffer copy
+    cmdList->CopyResource(static_cast<ID3D12Resource*>(mMlReadbackBuffer), static_cast<ID3D12Resource*>(mMlFinalOutputBuffer));
+    
+    // Transition back
+    copyBarriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    copyBarriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+    
+    // Also transition Planar Output Buffer back to COMMON (from SRV)
+    copyBarriers[1].Transition.pResource = static_cast<ID3D12Resource*>(mMlPlanarOutputBuffer);
+    copyBarriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    copyBarriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+    
+    cmdList->ResourceBarrier(2, copyBarriers);
+    
+    cmdList->Close();
+    queue->ExecuteCommandLists(1, lists);
+    gpuDeviceWaitForGpu();
+    
+    // Now map the readback buffer to read the results
+    ID3D12Resource* readbackRes = static_cast<ID3D12Resource*>(mMlReadbackBuffer);
+    if (mMlReadbackMappedPtr) {
+        readbackRes->Unmap(0, nullptr);
+        mMlReadbackMappedPtr = nullptr;
+    }
+    
+    D3D12_RANGE readRange = { 0, (SIZE_T)(mOutputWidth * mOutputHeight * 4) };
+    HRESULT mapHr = readbackRes->Map(0, &readRange, &mMlReadbackMappedPtr);
+    if (FAILED(mapHr)) {
+        logDiagnostic("ERROR: Failed to map readback buffer for reading: 0x%08X", mapHr);
+        return false;
+    }
+    
+    // DEBUG: Check first pixel value
+    if (mMlReadbackMappedPtr) {
+        uint32_t* pixels = static_cast<uint32_t*>(mMlReadbackMappedPtr);
+        uint32_t centerIdx = (mOutputHeight / 2) * mOutputWidth + (mOutputWidth / 2);
+        logDiagnostic("DEBUG: Readback pixel[0]: 0x%08X, pixel[center]: 0x%08X", pixels[0], pixels[centerIdx]);
+        
+        // Copy to output buffer
+        if (mOutputBuffer) {
+            memcpy(mOutputBuffer, mMlReadbackMappedPtr, mOutputWidth * mOutputHeight * 4);
+            logDiagnostic("DEBUG: OutputBuffer pixel[0]: 0x%08X", mOutputBuffer[0]);
+        } else {
+            logDiagnostic("ERROR: mOutputBuffer is NULL!");
+        }
+    }
+    
+    uint64_t dispatchEnd = SDL_GetPerformanceCounter();
+    double totalMs = (dispatchEnd - dispatchStart) * 1000.0 / SDL_GetPerformanceFrequency();
+    logDiagnostic("=== REAL-ESRGAN ZERO-COPY DISPATCH COMPLETE (%.2f ms) ===", totalMs);
     return true;
 }
 

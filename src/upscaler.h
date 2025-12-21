@@ -8,10 +8,8 @@ namespace fallout {
 // Upscaler mode selection
 enum class UpscalerMode {
     NONE,       // No upscaling - passthrough
-    INTEGER_2X, // Integer 2x scaling (640x480 -> 1280x960) - Perfect for pixel art
-    INTEGER_3X, // Integer 3x scaling (640x480 -> 1920x1440) - Perfect for pixel art
-    INTEGER_4X, // Integer 4x scaling (640x480 -> 2560x1920) - Perfect for pixel art
     ANIME4K,    // Anime4K shader upscaling (experimental, fast ML-inspired shader)
+    REAL_ESRGAN // Real-ESRGAN ML upscaling (via ONNX Runtime + DirectML)
 };
 
 // Upscaler quality/performance tiers
