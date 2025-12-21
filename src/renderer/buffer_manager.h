@@ -1,7 +1,7 @@
 #ifndef FALLOUT_RENDERER_BUFFER_MANAGER_H
 #define FALLOUT_RENDERER_BUFFER_MANAGER_H
 
-#include "D3D12Context.h"
+#include "d3d12_context.h"
 #include <vector>
 #include <memory>
 

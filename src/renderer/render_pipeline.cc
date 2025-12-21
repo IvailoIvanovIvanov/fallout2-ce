@@ -1,6 +1,10 @@
-#include "RenderPipeline.h"
+#include "render_pipeline.h"
 #include "../diagnostics.h"
 #include <d3d12.h>
+
+#include "blur_filter.h"
+#include "hdr_filter.h"
+#include "ml_upscale_pass.h"
 
 namespace fallout {
 namespace renderer {
@@ -32,8 +36,11 @@ bool RenderPipeline::Init(int inputWidth, int inputHeight, int outputWidth, int 
         return false;
     }
 
-    // TODO: Initialize passes here
-    // mPasses.push_back(std::make_unique<PreprocessingPass>());
+    // Initialize passes
+    // Passes are added via AddPass() by the controller (UpscalerImpl)
+    // mPasses.push_back(std::make_unique<BlurFilter>());
+    // mPasses.push_back(std::make_unique<HdrFilter>());
+    // mPasses.push_back(std::make_unique<MlUpscalePass>());
 
     for (auto& pass : mPasses) {
         if (!pass->Init(mContext, inputWidth, inputHeight, outputWidth, outputHeight)) {

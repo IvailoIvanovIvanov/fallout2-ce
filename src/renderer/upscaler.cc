@@ -10,9 +10,10 @@
 
 #include <SDL.h>
 
-#include "RenderPipeline.h"
-#include "MlUpscalePass.h"
-#include "PreprocessingPass.h"
+#include "render_pipeline.h"
+#include "ml_upscale_pass.h"
+#include "blur_filter.h"
+#include "hdr_filter.h"
 
 #include "../diagnostics.h"
 #include "../game_config.h"
@@ -362,14 +363,35 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
         // Fallback or placeholder
     }
 
-    // Add Preprocessing Pass if needed
-    if (mEnableSoftHDR || mEnableEdgeSmoothing || mEnableDebanding) {
-        logDiagnostic("Adding PreprocessingPass (HDR/Blur)");
-        auto ppPass = std::make_unique<renderer::PreprocessingPass>();
-        ppPass->SetParams(mEnableEdgeSmoothing ? mSmoothingStrength : 0.0f, 
-                          mEnableSoftHDR ? mHdrSaturation : 1.0f, 
-                          mEnableSoftHDR ? mHdrContrast : 1.0f);
-        mPipeline->AddPass(std::move(ppPass));
+    // Add Blur Pass if needed
+    if (mEnableEdgeSmoothing) {
+        logDiagnostic("Adding BlurFilter");
+        auto blurPass = std::make_unique<renderer::BlurFilter>();
+        blurPass->SetStrength(mSmoothingStrength);
+        mPipeline->AddPass(std::move(blurPass));
+    }
+
+    // Add HDR Pass if needed
+    if (mEnableSoftHDR) {
+        logDiagnostic("Adding HdrFilter");
+        auto hdrPass = std::make_unique<renderer::HdrFilter>();
+        hdrPass->SetParams(mHdrSaturation, mHdrContrast);
+        mPipeline->AddPass(std::move(hdrPass));
+    }
+
+    // Ensure at least one pass exists for scaling if input != output
+    // If no passes are added, we use BlurFilter with 0 strength as a scaler
+    if (inputWidth != outputWidth || inputHeight != outputHeight) {
+        // Check if pipeline has passes (we can't check mPipeline->mPasses directly as it's private)
+        // But we know if we added any above.
+        bool hasPasses = (mode == UpscalerMode::REAL_ESRGAN) || mEnableEdgeSmoothing || mEnableSoftHDR;
+        
+        if (!hasPasses) {
+            logDiagnostic("Adding BlurFilter (Strength 0) as default Scaler");
+            auto scalerPass = std::make_unique<renderer::BlurFilter>();
+            scalerPass->SetStrength(0.0f);
+            mPipeline->AddPass(std::move(scalerPass));
+        }
     }
 
     mState = UpscalerState::STATE_READY;

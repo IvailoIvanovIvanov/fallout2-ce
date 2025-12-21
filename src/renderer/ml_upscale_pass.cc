@@ -1,4 +1,4 @@
-#include "MlUpscalePass.h"
+#include "ml_upscale_pass.h"
 #include "../diagnostics.h"
 #include <d3dcompiler.h>
 

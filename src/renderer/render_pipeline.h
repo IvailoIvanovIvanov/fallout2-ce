@@ -1,9 +1,9 @@
 #ifndef FALLOUT_RENDERER_RENDER_PIPELINE_H
 #define FALLOUT_RENDERER_RENDER_PIPELINE_H
 
-#include "D3D12Context.h"
-#include "BufferManager.h"
-#include "ShaderPass.h"
+#include "d3d12_context.h"
+#include "buffer_manager.h"
+#include "shader_pass.h"
 
 #include <vector>
 #include <memory>

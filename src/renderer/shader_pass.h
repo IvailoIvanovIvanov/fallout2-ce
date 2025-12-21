@@ -1,8 +1,8 @@
 #ifndef FALLOUT_RENDERER_SHADER_PASS_H
 #define FALLOUT_RENDERER_SHADER_PASS_H
 
-#include "D3D12Context.h"
-#include "BufferManager.h"
+#include "d3d12_context.h"
+#include "buffer_manager.h"
 
 namespace fallout {
 namespace renderer {

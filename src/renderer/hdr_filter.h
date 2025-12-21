@@ -1,33 +1,29 @@
-#ifndef FALLOUT_RENDERER_PREPROCESSING_PASS_H
-#define FALLOUT_RENDERER_PREPROCESSING_PASS_H
+#ifndef FALLOUT_RENDERER_HDR_FILTER_H
+#define FALLOUT_RENDERER_HDR_FILTER_H
 
-#include "ShaderPass.h"
+#include "shader_pass.h"
 #include <d3d12.h>
 #include <wrl/client.h>
 
 namespace fallout {
 namespace renderer {
 
-class PreprocessingPass : public ShaderPass {
+class HdrFilter : public ShaderPass {
 public:
-    PreprocessingPass();
-    ~PreprocessingPass() override;
+    HdrFilter();
+    ~HdrFilter() override;
 
     bool Init(D3D12Context& context, int inputWidth, int inputHeight, int outputWidth, int outputHeight) override;
     void Execute(D3D12Context& context, BufferManager& buffers) override;
     void Shutdown() override;
 
-    void SetParams(float blur, float saturation, float contrast);
+    void SetParams(float saturation, float contrast);
 
 private:
-    struct PreprocessParams {
-        uint32_t outputResolution[2];
-        uint32_t inputResolution[2];
-        float blurStrength;
-        float hdrSaturation;
-        float hdrContrast;
-        float scale;
-        float offset[2];
+    struct HdrParams {
+        uint32_t resolution[2];
+        float saturation;
+        float contrast;
         float padding[2];
     };
 
@@ -35,10 +31,14 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> mPipelineState;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> mDescriptorHeap;
     
-    PreprocessParams mParams = {};
+    HdrParams mParams = {};
+    int mInputWidth = 0;
+    int mInputHeight = 0;
+    int mOutputWidth = 0;
+    int mOutputHeight = 0;
 };
 
 } // namespace renderer
 } // namespace fallout
 
-#endif // FALLOUT_RENDERER_PREPROCESSING_PASS_H
+#endif // FALLOUT_RENDERER_HDR_FILTER_H

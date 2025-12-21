@@ -1,4 +1,4 @@
-#include "BufferManager.h"
+#include "buffer_manager.h"
 #include "../diagnostics.h"
 #include <d3d12.h>
 #include <cstring>

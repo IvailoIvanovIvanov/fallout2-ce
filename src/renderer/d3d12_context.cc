@@ -1,4 +1,4 @@
-#include "D3D12Context.h"
+#include "d3d12_context.h"
 #include "gpu_device.h"
 #include "../diagnostics.h"
 #include <d3d12.h>

@@ -1,7 +1,7 @@
 #ifndef FALLOUT_RENDERER_ML_UPSCALE_PASS_H
 #define FALLOUT_RENDERER_ML_UPSCALE_PASS_H
 
-#include "ShaderPass.h"
+#include "shader_pass.h"
 #include "upscaler_ml.h"
 #include <d3d12.h>
 #include <wrl/client.h>
