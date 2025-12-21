@@ -28,6 +28,8 @@ bool keyboardDeviceUnacquire();
 bool keyboardDeviceReset();
 bool keyboardDeviceGetData(KeyboardData* keyboardData);
 bool mouseDeviceInit();
+void mouseDeviceAccumulateWheelDelta(int x, int y);
+void mouseDeviceHandleEvent(const SDL_Event* event);
 void mouseDeviceFree();
 bool keyboardDeviceInit();
 void keyboardDeviceFree();

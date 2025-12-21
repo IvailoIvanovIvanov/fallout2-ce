@@ -13,12 +13,9 @@
 #include "kb.h"
 #include "memory.h"
 #include "mouse.h"
-#include "render_commands.h"
-#include "render_trace.h"
 #include "svga.h"
 #include "text_font.h"
 #include "touch.h"
-#include "virtual_input.h"
 #include "win32.h"
 #include "window_manager.h"
 
@@ -224,13 +221,6 @@ void enqueueInputEvent(int a1)
         return;
     }
 
-    if (renderTraceHandleHotkey(a1)) {
-        return;
-    }
-
-    if (renderCommandsHandleHotkey(a1)) {
-        return;
-    }
 
     if (gInputEventQueueWriteIndex == gInputEventQueueReadIndex) {
         return;
@@ -982,19 +972,18 @@ void _GNW95_process_message()
         case SDL_MOUSEMOTION:
         case SDL_MOUSEBUTTONDOWN:
         case SDL_MOUSEBUTTONUP:
+            mouseDeviceHandleEvent(&e);
+            break;
         case SDL_MOUSEWHEEL:
-            virtualInputCaptureEvent(&e);
+            mouseDeviceAccumulateWheelDelta(e.wheel.x, e.wheel.y);
             break;
         case SDL_FINGERDOWN:
-            virtualInputCaptureEvent(&e);
             touch_handle_start(&(e.tfinger));
             break;
         case SDL_FINGERMOTION:
-            virtualInputCaptureEvent(&e);
             touch_handle_move(&(e.tfinger));
             break;
         case SDL_FINGERUP:
-            virtualInputCaptureEvent(&e);
             touch_handle_end(&(e.tfinger));
             break;
         case SDL_KEYDOWN:

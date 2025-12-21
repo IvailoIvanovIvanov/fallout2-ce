@@ -19,15 +19,10 @@
 #include "light.h"
 #include "map.h"
 #include "object.h"
-#include "render_commands.h"
-#include "render_asset_registry.h"
-#include "render_display_orchestrator.h"
-#include "render_trace.h"
 #include "platform_compat.h"
 #include "settings.h"
 #include "svga.h"
 #include "window_manager.h"
-#include "display_scaler.h"
 
 namespace fallout {
 
@@ -72,20 +67,7 @@ static void roof_fill_off_process_task(std::stack<roof_fill_task>& tasks_stack, 
 static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light);
 static void _draw_grid(int tile, int elevation, Rect* rect);
 static void tileRenderFloor(int fid, int x, int y, Rect* rect);
-static void tileEmitRenderCommand(RenderCommandOp op,
-    int fid,
-    const Rect& rect,
-    int tileIndex,
-    uint16_t extraFlags,
-    int16_t lighting,
-    int16_t sourceOffsetX,
-    int16_t sourceOffsetY,
-    uint16_t sourceWidth,
-    uint16_t sourceHeight,
-    const void* frameOwner,
-    const unsigned char* frameData,
-    uint16_t frameWidth,
-    uint16_t frameHeight);
+
 static int _tile_make_line(int currentCenterTile, int newCenterTile, int* tiles, int tilesCapacity);
 static void tileUpdatePixelScale(int windowWidth, int windowHeight);
 
@@ -274,24 +256,7 @@ static TileData** gTileSquares;
 // 0x66BE0C
 static unsigned char* gTileWindowBuffer;
 static int gTileWindowId = -1;
-static uint32_t* gTileWindowTrueColorOverlay = nullptr;
-static unsigned char* gTileWindowTrueColorMask = nullptr;
-struct TilePhysicalOverlayView {
-    uint32_t* pixels = nullptr;
-    unsigned char* mask = nullptr;
-    int pitch = 0;
-    Rect viewport = { 0, 0, -1, -1 };
-    int width = 0;
-    int height = 0;
 
-    bool valid() const
-    {
-        return pixels != nullptr && mask != nullptr && pitch > 0 && width > 0 && height > 0;
-    }
-};
-
-static TilePhysicalOverlayView gTilePhysicalOverlayView;
-static uint32_t gTilePhysicalOverlayRevision = 0;
 
 // Number of tiles vertically.
 //
@@ -354,328 +319,19 @@ static inline int tileScaleDown(int value)
     return tileFloorDiv(value, gTilePixelScale);
 }
 
-static inline bool tileHasTrueColorOverlay()
-{
-    if (renderDisplayOrchestratorConsumesTileOverlays()) {
-        return false;
-    }
 
-    return gTileWindowTrueColorOverlay != nullptr && gTileWindowTrueColorMask != nullptr;
-}
 
-static void tileEmitRenderCommand(RenderCommandOp op,
-    int fid,
-    const Rect& rect,
-    int tileIndex,
-    uint16_t extraFlags,
-    int16_t lighting,
-    int16_t sourceOffsetX,
-    int16_t sourceOffsetY,
-    uint16_t sourceWidth,
-    uint16_t sourceHeight,
-    const void* frameOwner,
-    const unsigned char* frameData,
-    uint16_t frameWidth,
-    uint16_t frameHeight)
-{
-    if (!renderCommandCaptureEnabled()) {
-        return;
-    }
 
-    if (frameOwner != nullptr && frameData != nullptr && frameWidth > 0 && frameHeight > 0) {
-        RenderAssetHandle assetHandle {};
-        assetHandle.fid = static_cast<uint32_t>(fid);
-        assetHandle.frame = 0;
-        assetHandle.rotation = 0;
-        assetHandle.variant = 0;
-        renderAssetRegistryTrackFrame(assetHandle, frameOwner, frameData, frameWidth, frameHeight);
-    }
 
-    RenderCommandTileBlitPayload payload;
-    payload.asset.fid = fid;
-    payload.asset.frame = 0;
-    payload.asset.rotation = 0;
-    payload.screenRect = rect;
-    payload.fid = fid;
-    payload.tileIndex = tileIndex;
-    payload.depthBucket = static_cast<uint8_t>(op == RenderCommandOp::RoofBlit ? RenderTraceLayer::TileRoof : RenderTraceLayer::TileFloor);
-    payload.windowId = static_cast<int16_t>(std::clamp(gTileWindowId, -1, static_cast<int>(std::numeric_limits<int16_t>::max())));
-    payload.paletteId = 0;
-    payload.flags = RenderCommandFlag_Masked | extraFlags;
-    payload.lighting = lighting;
-    payload.elevation = static_cast<uint8_t>(std::clamp(gElevation, 0, 255));
-    payload.sourceOffsetX = sourceOffsetX;
-    payload.sourceOffsetY = sourceOffsetY;
-    payload.sourceWidth = sourceWidth;
-    payload.sourceHeight = sourceHeight;
-    if ((extraFlags & RenderCommandFlag_LightingPerPixel) != 0) {
-        payload.perPixelLightingCount = static_cast<uint8_t>(kRenderCommandMaxLightingVertices);
-        for (size_t i = 0; i < kRenderCommandMaxLightingVertices; i++) {
-            payload.perPixelLighting[i] = _verticies[i].intensity;
-        }
-    }
-    if (tileIndex >= 0) {
-        payload.isoTileX = static_cast<int16_t>(tileIndex % gHexGridWidth);
-        payload.isoTileY = static_cast<int16_t>(tileIndex / gHexGridWidth);
-    } else {
-        payload.isoTileX = -1;
-        payload.isoTileY = -1;
-    }
 
-    renderCommandEmitTileBlit(op, payload);
-}
 
-static inline const TilePhysicalOverlayView* tileGetPhysicalOverlayView()
-{
-    uint32_t revision = windowGetPhysicalTrueColorOverlayRevision();
-    if (!gTilePhysicalOverlayView.valid() || revision != gTilePhysicalOverlayRevision) {
-        WindowPhysicalTrueColorBuffer physicalBuffer;
-        gTilePhysicalOverlayView = {};
 
-        if (gTileWindowId != -1 && windowGetPhysicalTrueColorOverlay(gTileWindowId, &physicalBuffer)) {
-            gTilePhysicalOverlayView.pixels = physicalBuffer.pixels;
-            gTilePhysicalOverlayView.mask = physicalBuffer.mask;
-            gTilePhysicalOverlayView.pitch = physicalBuffer.pitch;
-            gTilePhysicalOverlayView.viewport = physicalBuffer.viewport;
-            gTilePhysicalOverlayView.width = physicalBuffer.width;
-            gTilePhysicalOverlayView.height = physicalBuffer.height;
-        } else if (gTileWindowId != -1 && diagnosticsWouldLog(DiagnosticsLevel::Trace) && windowHasTrueColorOverlay(gTileWindowId)) {
-            diagnosticsLog(DiagnosticsLevel::Trace,
-                "SCALER",
-                "tileBindPhysicalOverlayView window=%d missing physical overlay",
-                gTileWindowId);
-        }
 
-        gTilePhysicalOverlayRevision = windowGetPhysicalTrueColorOverlayRevision();
-    }
 
-    return gTilePhysicalOverlayView.valid() ? &gTilePhysicalOverlayView : nullptr;
-}
 
-// Edge-aligned sampling for tiles to prevent visible grid lines at tile boundaries.
-// Unlike center-weighted sampling used for sprites, tiles need edge-to-edge alignment
-// so that adjacent tiles seamlessly connect without visible seams.
-//
-// For tiles: the first physical pixel samples from the first HD texel, and the last
-// physical pixel samples from the last HD texel, with linear distribution between.
-// This ensures that when two tiles meet, their edge pixels sample from matching
-// texel positions.
-static inline int tileSelectSampleIndex(int position, int spanLength, int sampleCount)
-{
-    if (sampleCount <= 1 || spanLength <= 0) {
-        return 0;
-    }
 
-    if (spanLength == 1) {
-        return 0;
-    }
 
-    // Center-weighted sampling (same as objects use)
-    // Samples from the center of each physical pixel's region for smooth blending
-    const int numerator = (2 * position + 1) * sampleCount;
-    const int denominator = 2 * spanLength;
-    int index = numerator / denominator;
-    if (index < 0) {
-        return 0;
-    }
-    if (index >= sampleCount) {
-        return sampleCount - 1;
-    }
-    return index;
-}
 
-struct TileIntensitySource {
-    const int* data = nullptr;
-    int stride = 0;
-    int defaultIntensityIndex = 0;
-    bool hasPerPixel = false;
-    // Bounds for safe access
-    int maxRows = 0;
-    int maxColumns = 0;
-
-    int sample(int row, int column) const
-    {
-        if (hasPerPixel && data != nullptr && stride > 0) {
-            // Bounds check to prevent reading garbage memory
-            if (row < 0 || row >= maxRows || column < 0 || column >= maxColumns) {
-                return std::clamp(defaultIntensityIndex, 0, 255);
-            }
-            const int value = data[row * stride + column] >> 9;
-            return std::clamp(value, 0, 255);
-        }
-        return std::clamp(defaultIntensityIndex, 0, 255);
-    }
-};
-
-static void tileClearTrueColorRegion(const Rect& rect)
-{
-    if (renderDisplayOrchestratorConsumesTileOverlays()) {
-        return;
-    }
-
-    if (tileHasTrueColorOverlay()) {
-        int left = std::max(rect.left, 0);
-        int top = std::max(rect.top, 0);
-        int right = std::min(rect.right, gTileWindowWidth - 1);
-        int bottom = std::min(rect.bottom, gTileWindowHeight - 1);
-        if (left <= right && top <= bottom) {
-            int width = right - left + 1;
-            uint32_t* overlayRow = gTileWindowTrueColorOverlay + top * gTileWindowWidth + left;
-            unsigned char* maskRow = gTileWindowTrueColorMask + top * gTileWindowWidth + left;
-            for (int y = top; y <= bottom; y++) {
-                memset(maskRow, 0, width);
-                memset(overlayRow, 0, width * sizeof(uint32_t));
-                overlayRow += gTileWindowWidth;
-                maskRow += gTileWindowWidth;
-            }
-        }
-    }
-
-    const TilePhysicalOverlayView* physicalView = tileGetPhysicalOverlayView();
-    if (physicalView != nullptr) {
-        Rect logicalRect = rect;
-        Rect physicalRect = displayScalerLogicalToPhysical(logicalRect);
-        Rect viewport = physicalView->viewport;
-        if (rectIntersection(&physicalRect, &viewport, &physicalRect) != -1) {
-            const int destLeft = physicalRect.left - viewport.left;
-            const int destTop = physicalRect.top - viewport.top;
-            const int physicalWidth = rectGetWidth(&physicalRect);
-            const int physicalHeight = rectGetHeight(&physicalRect);
-            if (physicalWidth > 0 && physicalHeight > 0) {
-                for (int row = 0; row < physicalHeight; row++) {
-                    uint32_t* overlayRow = physicalView->pixels + (destTop + row) * physicalView->pitch + destLeft;
-                    unsigned char* maskRow = physicalView->mask + (destTop + row) * physicalView->pitch + destLeft;
-                    memset(overlayRow, 0, physicalWidth * sizeof(uint32_t));
-                    memset(maskRow, 0, physicalWidth);
-                }
-            }
-        }
-    }
-}
-
-static void tileBlitTrueColorOverlayPhysical(const TilePhysicalOverlayView& physicalView,
-    const HdTrueColorFrameView& view,
-    const unsigned char* indexed,
-    int frameWidth,
-    int offsetX,
-    int offsetY,
-    const Rect& logicalRect,
-    int objectWidth,
-    int objectHeight,
-    const TileIntensitySource& intensitySource)
-{
-    if (indexed == nullptr || objectWidth <= 0 || objectHeight <= 0 || physicalView.pixels == nullptr || physicalView.mask == nullptr || physicalView.pitch <= 0 || physicalView.width <= 0 || physicalView.height <= 0) {
-        return;
-    }
-
-    // Validate HD texture dimensions
-    if (view.pixels == nullptr || view.width <= 0 || view.height <= 0) {
-        return;
-    }
-
-    const DisplayScalerScaleTable& scaleTable = displayScalerGetScaleTable();
-    const Rect& viewport = physicalView.viewport;
-    const int horizontalLimit = static_cast<int>(scaleTable.horizontal.starts.size());
-    const int verticalLimit = static_cast<int>(scaleTable.vertical.starts.size());
-
-    const int hdScaleX = std::max(1, view.scaleX);
-    const int hdScaleY = std::max(1, view.scaleY);
-    const int hdStride = view.width;
-    const int hdWidth = view.width;
-    const int hdHeight = view.height;
-    
-    // Calculate the base offset into the HD texture
-    const int hdBaseOffsetY = offsetY * hdScaleY;
-    const int hdBaseOffsetX = offsetX * hdScaleX;
-    
-    // Calculate the maximum safe indices accounting for the base offset
-    const int hdMaxRowIndex = hdHeight - hdBaseOffsetY;
-    const int hdMaxColumnIndex = hdWidth - hdBaseOffsetX;
-    
-    // Validate that there's any valid region to render
-    if (hdMaxRowIndex <= 0 || hdMaxColumnIndex <= 0) {
-        return;
-    }
-    
-    const uint32_t* hdBase = view.pixels + hdBaseOffsetY * hdStride + hdBaseOffsetX;
-
-    for (int logicalRowIndex = 0; logicalRowIndex < objectHeight; logicalRowIndex++) {
-        int logicalY = logicalRect.top + logicalRowIndex;
-        if (logicalY < 0 || logicalY >= verticalLimit) {
-            continue;
-        }
-
-        int physicalRowStart = scaleTable.vertical.starts[logicalY] - viewport.top;
-        int physicalRowEnd = scaleTable.vertical.ends[logicalY] - viewport.top;
-        physicalRowStart = std::max(physicalRowStart, 0);
-        physicalRowEnd = std::min(physicalRowEnd, physicalView.height - 1);
-        if (physicalRowStart > physicalRowEnd) {
-            continue;
-        }
-
-        const int rowSpanHeight = physicalRowEnd - physicalRowStart + 1;
-        const unsigned char* indexedRow = indexed + logicalRowIndex * frameWidth;
-
-        for (int spanRow = 0; spanRow < rowSpanHeight; spanRow++) {
-            const int physicalRow = physicalRowStart + spanRow;
-            const int hdRowOffset = tileSelectSampleIndex(spanRow, rowSpanHeight, hdScaleY);
-            const int hdRowIndex = logicalRowIndex * hdScaleY + hdRowOffset;
-            
-            // Bounds check for HD row access (relative to hdBase, so check against max available)
-            if (hdRowIndex < 0 || hdRowIndex >= hdMaxRowIndex) {
-                continue;
-            }
-            
-            const uint32_t* hdRow = hdBase + hdRowIndex * hdStride;
-            uint32_t* destRow = physicalView.pixels + physicalRow * physicalView.pitch;
-            unsigned char* maskRow = physicalView.mask + physicalRow * physicalView.pitch;
-
-            const unsigned char* indexedPixel = indexedRow;
-            for (int logicalColumnIndex = 0; logicalColumnIndex < objectWidth; logicalColumnIndex++) {
-                int logicalX = logicalRect.left + logicalColumnIndex;
-                if (logicalX < 0 || logicalX >= horizontalLimit) {
-                    indexedPixel++;
-                    continue;
-                }
-
-                int physicalColumnStart = scaleTable.horizontal.starts[logicalX] - viewport.left;
-                int physicalColumnEnd = scaleTable.horizontal.ends[logicalX] - viewport.left;
-                physicalColumnStart = std::max(physicalColumnStart, 0);
-                physicalColumnEnd = std::min(physicalColumnEnd, physicalView.width - 1);
-                if (physicalColumnStart > physicalColumnEnd) {
-                    indexedPixel++;
-                    continue;
-                }
-
-                const int columnSpanWidth = physicalColumnEnd - physicalColumnStart + 1;
-                const unsigned char indexedValue = *indexedPixel++;
-                if (indexedValue == 0) {
-                    // Skip transparent pixels - don't erase previously rendered tiles.
-                    // Tiles are rendered in order and may overlap at diamond-shaped edges.
-                    // Erasing here would create visible grid lines by clearing adjacent tile content.
-                    continue;
-                }
-
-                const int intensityIndex = intensitySource.sample(logicalRowIndex, logicalColumnIndex);
-                for (int spanColumn = 0; spanColumn < columnSpanWidth; spanColumn++) {
-                    const int hdColumnOffset = tileSelectSampleIndex(spanColumn, columnSpanWidth, hdScaleX);
-                    // Bounds check for HD texture column access (relative to hdBase row)
-                    const int hdX = logicalColumnIndex * hdScaleX + hdColumnOffset;
-                    if (hdX < 0 || hdX >= hdMaxColumnIndex) {
-                        continue; // Skip out-of-bounds pixels
-                    }
-                    const uint32_t hdPixel = hdRow[hdX];
-                    // Force alpha to 255 for opaque tiles to prevent blending artifacts at tile edges.
-                    // HD textures may have semi-transparent edge pixels from anti-aliasing which would
-                    // blend with the indexed render and create visible grid lines.
-                    const uint32_t opaquePixel = hdPixel | 0xFF000000u;
-                    destRow[physicalColumnStart + spanColumn] = colorApplyLightingToArgb(opaquePixel, intensityIndex);
-                    maskRow[physicalColumnStart + spanColumn] = 1;
-                }
-            }
-        }
-    }
-}
 
 static void tileUpdatePixelScale(int windowWidth, int windowHeight)
 {
@@ -720,19 +376,7 @@ int tileInit(TileData** a1, int squareGridWidth, int squareGridHeight, int hexGr
     _dir_tile[1][3] = 1;
     gTileWindowBuffer = buf;
     gTileWindowId = windowId;
-    if (windowId != -1 && windowHasTrueColorOverlay(windowId)) {
-        gTileWindowTrueColorOverlay = windowGetTrueColorOverlay(windowId);
-        gTileWindowTrueColorMask = windowGetTrueColorMask(windowId);
-    } else {
-        gTileWindowTrueColorOverlay = nullptr;
-        gTileWindowTrueColorMask = nullptr;
-    }
 
-    gTilePhysicalOverlayView = {};
-    gTilePhysicalOverlayRevision = 0;
-    if (windowId != -1) {
-        tileGetPhysicalOverlayView();
-    }
     _dir_tile2[0][0] = -1;
     gTileWindowWidth = windowWidth;
     _dir_tile2[0][3] = -1;
@@ -914,24 +558,12 @@ void tileReset()
 void tileExit()
 {
     gTileWindowId = -1;
-    gTileWindowTrueColorOverlay = nullptr;
-    gTileWindowTrueColorMask = nullptr;
-    gTilePhysicalOverlayView = {};
-    gTilePhysicalOverlayRevision = 0;
     _tile_reset_();
 }
 
 // 0x4B12A8
 void tileDisable()
 {
-    if (gTileEnabled) {
-        if (gTileWindowId != -1 && windowHasTrueColorOverlay(gTileWindowId)) {
-            windowClearTrueColorRegion(gTileWindowId, 0, 0, gTileWindowWidth, gTileWindowHeight);
-        } else if (tileHasTrueColorOverlay()) {
-            tileClearTrueColorRegion(gTileWindowRect);
-        }
-    }
-
     gTileEnabled = false;
 }
 
@@ -1050,8 +682,6 @@ static void tileRefreshMapper(Rect* rect, int elevation)
         gTileWindowPitch,
         0);
 
-    tileClearTrueColorRegion(rectToUpdate);
-
     tileRenderFloorsInRect(&rectToUpdate, elevation);
     _grid_render(&rectToUpdate, elevation);
     _obj_render_pre_roof(&rectToUpdate, elevation);
@@ -1076,8 +706,6 @@ static void tileRefreshGame(Rect* rect, int elevation)
         rectGetHeight(&rectToUpdate),
         gTileWindowPitch,
         0);
-
-    tileClearTrueColorRegion(rectToUpdate);
 
     tileRenderFloorsInRect(&rectToUpdate, elevation);
     _obj_render_pre_roof(&rectToUpdate, elevation);
@@ -1802,28 +1430,6 @@ static void tileRenderRoof(int fid, int x, int y, Rect* rect, int light)
     int roofIsoTile = tileFromScreenXY(x + tileScaleValue(16), y + tileScaleValue(8), gElevation);
 
     if (rectIntersection(&tileRect, rect, &tileRect) == 0) {
-        const int16_t sourceOffsetX = static_cast<int16_t>(tileRect.left - x);
-        const int16_t sourceOffsetY = static_cast<int16_t>(tileRect.top - y);
-        const uint16_t sourceWidth = static_cast<uint16_t>(std::max(0, tileRect.right - tileRect.left + 1));
-        const uint16_t sourceHeight = static_cast<uint16_t>(std::max(0, tileRect.bottom - tileRect.top + 1));
-
-        tileEmitRenderCommand(RenderCommandOp::RoofBlit,
-            fid,
-            tileRect,
-            roofIsoTile,
-            RenderCommandFlag_LightingFlat,
-            static_cast<int16_t>(std::clamp(light >> 9, 0, 255)),
-            sourceOffsetX,
-            sourceOffsetY,
-            sourceWidth,
-            sourceHeight,
-            tileFrm,
-            tileFrameData,
-            static_cast<uint16_t>(std::clamp(tileWidth, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))),
-            static_cast<uint16_t>(std::clamp(tileHeight, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))));
-
-        renderTraceRecord(RenderTraceLayer::TileRoof, fid, 0, 0, tileRect, gElevation, tileRect.bottom);
-
         unsigned char* tileFrmBuffer = tileFrameData + tileWidth * (tileRect.top - y) + (tileRect.left - x);
 
         CacheEntry* eggFrmHandle;
@@ -2113,10 +1719,6 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
     int savedX = x;
     int savedY = y;
 
-    HdTrueColorFrameView trueColorView;
-    bool hasTrueColor = false;
-    bool lostTrueColor = false;
-
     if (left < 0) {
         left = 0;
     }
@@ -2140,33 +1742,6 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
     unsigned char* frameData = artGetFrameData(art, 0, 0);
     if (frameData == nullptr) {
         goto out;
-    }
-
-    if (tileHasTrueColorOverlay()) {
-        if (artLookupRegisteredTrueColorFrame(frameData, trueColorView)) {
-            if (artConformTrueColorFrame(fid, frameWidth, frameHeight, trueColorView)) {
-                if (trueColorView.alphaMode != HdAlphaMode::Straight) {
-                    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-                        diagnosticsLog(DiagnosticsLevel::Info,
-                            "SCALER",
-                            "tileRenderFloor fid=%d rejected HD frame due to alphaMode=%d",
-                            fid,
-                            static_cast<int>(trueColorView.alphaMode));
-                    }
-                    lostTrueColor |= artTrueColorMarkInactive(fid, "alpha_mode");
-                } else {
-                    hasTrueColor = trueColorView.pixels != nullptr;
-                    if (hasTrueColor) {
-                        artTrueColorMarkActive(fid);
-                        assert(trueColorView.logicalWidth == frameWidth && trueColorView.logicalHeight == frameHeight);
-                    }
-                }
-            } else {
-                lostTrueColor |= artTrueColorMarkInactive(fid, "dimension_mismatch");
-            }
-        } else {
-            lostTrueColor |= artTrueColorMarkInactive(fid, "registry_miss");
-        }
     }
 
     if (left < x) {
@@ -2197,29 +1772,8 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
 
     if (v77 <= 0 || v76 <= 0) goto out;
 
-    Rect renderRect;
-    renderRect.left = x;
-    renderRect.top = y;
-    renderRect.right = x + v77 - 1;
-    renderRect.bottom = y + v76 - 1;
-    const int clippedWidth = v77;
-    const int clippedHeight = v76;
-    renderTraceRecord(RenderTraceLayer::TileFloor, fid, 0, 0, renderRect, gElevation, renderRect.bottom);
-
-    if (lostTrueColor) {
-        tileClearTrueColorRegion(renderRect);
-        if (gTileWindowId != -1) {
-            windowDebugStampMissingHdGlyph(gTileWindowId,
-                renderRect.left,
-                renderRect.top,
-                rectGetWidth(&renderRect),
-                rectGetHeight(&renderRect));
-        }
-    }
-
     tile = tileFromScreenXY(savedX, savedY + tileScaleValue(13), gElevation);
     if (tile != -1) {
-        const int isoTileIndex = tile;
         int parity = tile & 1;
         int ambientIntensity = lightGetAmbientIntensity();
         for (int i = 0; i < 10; i++) {
@@ -2237,123 +1791,10 @@ static void tileRenderFloor(int fid, int x, int y, Rect* rect)
         }
 
         if (v23 == 9) {
-            const uint16_t commandWidth = static_cast<uint16_t>(std::max(0, v77));
-            const uint16_t commandHeight = static_cast<uint16_t>(std::max(0, v76));
-            const int16_t commandSourceOffsetX = static_cast<int16_t>(v79);
-            const int16_t commandSourceOffsetY = static_cast<int16_t>(v78);
-            const int16_t lightingIndex = static_cast<int16_t>(_verticies[0].intensity >> 9);
-            tileEmitRenderCommand(RenderCommandOp::TileBlit,
-                fid,
-                renderRect,
-                isoTileIndex,
-                RenderCommandFlag_LightingFlat,
-                lightingIndex,
-                commandSourceOffsetX,
-                commandSourceOffsetY,
-                commandWidth,
-                commandHeight,
-                art,
-                frameData,
-                static_cast<uint16_t>(std::clamp(frameWidth, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))),
-                static_cast<uint16_t>(std::clamp(frameHeight, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))));
-
             unsigned char* buf = frameData;
             _dark_trans_buf_to_buf(buf + frameWidth * v78 + v79, v77, v76, frameWidth, gTileWindowBuffer, x, y, gTileWindowPitch, _verticies[0].intensity);
-
-            if (hasTrueColor) {
-                int intensityIndex = _verticies[0].intensity >> 9;
-                const int srcStride = trueColorView.width;
-                const int hdWidth = trueColorView.width;
-                const int hdHeight = trueColorView.height;
-                const int stepX = std::max(1, trueColorView.scaleX);
-                const int stepY = std::max(1, trueColorView.scaleY);
-                const int rowAdvance = srcStride * stepY;
-                // Center-weighted sampling: sample from center of each logical pixel's HD texel range
-                // This matches the physical overlay sampling for consistent rendering
-                const int sampleOffsetX = (stepX > 1) ? (stepX / 2) : 0;
-                const int sampleOffsetY = (stepY > 1) ? (stepY / 2) : 0;
-
-                // Calculate safe iteration bounds to prevent reading outside HD texture
-                const int hdStartRow = v78 * stepY + sampleOffsetY;
-                const int hdStartCol = v79 * stepX + sampleOffsetX;
-                const int safeRows = std::min(v76, (hdHeight - hdStartRow - 1) / stepY + 1);
-                const int safeCols = std::min(v77, (hdWidth - hdStartCol - 1) / stepX + 1);
-                
-                if (safeRows <= 0 || safeCols <= 0) {
-                    goto skip_logical_truecolor;
-                }
-
-                const uint32_t* trueColorBaseRow = trueColorView.pixels + v78 * rowAdvance + v79 * stepX + sampleOffsetY * srcStride;
-                uint32_t* trueColorDestRow = gTileWindowTrueColorOverlay + gTileWindowWidth * y + x;
-                unsigned char* trueColorMaskRow = gTileWindowTrueColorMask + gTileWindowWidth * y + x;
-                unsigned char* indexedRow = buf + frameWidth * v78 + v79;
-
-                for (int row = 0; row < safeRows; row++) {
-                    const uint32_t* trueColorPixel = trueColorBaseRow + sampleOffsetX;
-                    uint32_t* trueColorDestPixel = trueColorDestRow;
-                    unsigned char* trueColorMaskPixel = trueColorMaskRow;
-                    unsigned char* indexedPixel = indexedRow;
-
-                    for (int col = 0; col < safeCols; col++) {
-                        if (*indexedPixel != 0) {
-                            // Force alpha to 255 for opaque tiles to prevent blending artifacts.
-                            const uint32_t opaquePixel = *trueColorPixel | 0xFF000000u;
-                            *trueColorDestPixel = colorApplyLightingToArgb(opaquePixel, intensityIndex);
-                            *trueColorMaskPixel = 1;
-                        }
-                        // Skip transparent pixels - don't erase previously rendered tiles.
-                        // Tiles overlap at diamond edges; erasing would create visible grid lines.
-
-                        indexedPixel++;
-                        trueColorPixel += stepX;
-                        trueColorDestPixel++;
-                        trueColorMaskPixel++;
-                    }
-
-                    indexedRow += frameWidth;
-                    trueColorDestRow += gTileWindowWidth;
-                    trueColorMaskRow += gTileWindowWidth;
-                    trueColorBaseRow += rowAdvance;
-                }
-
-skip_logical_truecolor:
-                if (const TilePhysicalOverlayView* physicalView = tileGetPhysicalOverlayView()) {
-                    TileIntensitySource intensitySource;
-                    intensitySource.defaultIntensityIndex = intensityIndex;
-                    tileBlitTrueColorOverlayPhysical(*physicalView,
-                        trueColorView,
-                        buf + frameWidth * v78 + v79,
-                        frameWidth,
-                        v79,
-                        v78,
-                        renderRect,
-                        clippedWidth,
-                        clippedHeight,
-                        intensitySource);
-                }
-            }
-
             goto out;
         }
-
-        const uint16_t perPixelWidth = static_cast<uint16_t>(std::max(0, v77));
-        const uint16_t perPixelHeight = static_cast<uint16_t>(std::max(0, v76));
-        const int16_t perPixelSourceOffsetX = static_cast<int16_t>(v79);
-        const int16_t perPixelSourceOffsetY = static_cast<int16_t>(v78);
-        tileEmitRenderCommand(RenderCommandOp::TileBlit,
-            fid,
-            renderRect,
-            isoTileIndex,
-            RenderCommandFlag_LightingPerPixel,
-            -1,
-            perPixelSourceOffsetX,
-            perPixelSourceOffsetY,
-            perPixelWidth,
-            perPixelHeight,
-            art,
-            frameData,
-            static_cast<uint16_t>(std::clamp(frameWidth, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))),
-            static_cast<uint16_t>(std::clamp(frameHeight, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))));
 
         // Initialize intensity map region to ambient intensity to prevent reading stale/garbage values
         // The triangle interpolation fills specific cells but may leave gaps that could be read
@@ -2477,72 +1918,13 @@ skip_logical_truecolor:
         int v85 = gTileWindowPitch - v77;
         int v87 = 80 - v77;
 
-        const int srcStride = trueColorView.width;
-        const int hdWidth = trueColorView.width;
-        const int hdHeight = trueColorView.height;
-        const int stepX = hasTrueColor ? std::max(1, trueColorView.scaleX) : 1;
-        const int stepY = hasTrueColor ? std::max(1, trueColorView.scaleY) : 1;
-        const int rowAdvance = srcStride * stepY;
-        // Center-weighted sampling: sample from center of each logical pixel's HD texel range
-        // This matches the physical overlay sampling for consistent rendering
-        const int sampleOffsetX = (stepX > 1) ? (stepX / 2) : 0;
-        const int sampleOffsetY = (stepY > 1) ? (stepY / 2) : 0;
-
-        // Calculate safe iteration bounds to prevent reading outside HD texture
-        int safeV76 = v76;
-        int safeV77 = v77;
-        if (hasTrueColor && hdWidth > 0 && hdHeight > 0) {
-            const int hdStartRow = v78 * stepY + sampleOffsetY;
-            const int hdStartCol = v79 * stepX + sampleOffsetX;
-            safeV76 = std::min(v76, (hdHeight - hdStartRow - 1) / stepY + 1);
-            safeV77 = std::min(v77, (hdWidth - hdStartCol - 1) / stepX + 1);
-            safeV76 = std::max(0, safeV76);
-            safeV77 = std::max(0, safeV77);
-        }
-
-        const uint32_t* trueColorBaseRow = nullptr;
-        uint32_t* trueColorDestRow = nullptr;
-        unsigned char* trueColorMaskRow = nullptr;
-        if (hasTrueColor) {
-            trueColorBaseRow = trueColorView.pixels + v78 * rowAdvance + v79 * stepX + sampleOffsetY * srcStride;
-            trueColorDestRow = gTileWindowTrueColorOverlay + gTileWindowWidth * y + x;
-            trueColorMaskRow = gTileWindowTrueColorMask + gTileWindowWidth * y + x;
-        }
-
-        int currentRow = 0;
         while (--v76 != -1) {
-            const uint32_t* trueColorSrcPixel = nullptr;
-            uint32_t* trueColorDestPixel = nullptr;
-            unsigned char* trueColorMaskPixel = nullptr;
-            const bool rowInBounds = currentRow < safeV76;
-            if (hasTrueColor && rowInBounds) {
-                trueColorSrcPixel = trueColorBaseRow + sampleOffsetX;
-                trueColorDestPixel = trueColorDestRow;
-                trueColorMaskPixel = trueColorMaskRow;
-            }
-
             for (int kk = 0; kk < v77; kk++) {
                 unsigned char paletteIndex = *v67;
                 if (paletteIndex != 0) {
                     int intensityIndex = *v68 >> 9;
                     *v66 = intensityColorTable[paletteIndex][intensityIndex];
-                    if (hasTrueColor && rowInBounds && kk < safeV77) {
-                        // Force alpha to 255 for opaque tiles to prevent blending artifacts.
-                        const uint32_t opaquePixel = *trueColorSrcPixel | 0xFF000000u;
-                        *trueColorDestPixel = colorApplyLightingToArgb(opaquePixel, intensityIndex);
-                        *trueColorMaskPixel = 1;
-                    }
                 }
-                // Skip transparent pixels - don't erase previously rendered tiles.
-                // Tiles overlap at diamond edges; erasing would create visible grid lines.
-                
-                // Only advance HD pointers within safe bounds
-                if (hasTrueColor && rowInBounds && kk < safeV77) {
-                    trueColorSrcPixel += stepX;
-                    trueColorDestPixel++;
-                    trueColorMaskPixel++;
-                }
-
                 v67++;
                 v68++;
                 v66++;
@@ -2551,37 +1933,6 @@ skip_logical_truecolor:
             v66 += v85;
             v68 += v87;
             v67 += v86;
-            currentRow++;
-
-            if (hasTrueColor) {
-                trueColorDestRow += gTileWindowWidth;
-                trueColorMaskRow += gTileWindowWidth;
-                trueColorBaseRow += rowAdvance;
-            }
-        }
-
-        if (hasTrueColor) {
-            if (const TilePhysicalOverlayView* physicalView = tileGetPhysicalOverlayView()) {
-                TileIntensitySource intensitySource;
-                intensitySource.hasPerPixel = true;
-                intensitySource.data = &_intensity_map[160 + 80 * v78] + v79;
-                intensitySource.stride = 80;
-                // Calculate safe bounds for intensity map access
-                // The intensity map is 80 columns wide, so maxColumns = 80 - v79
-                // The intensity map has 41 rows, starting offset is 160 + 80*v78, so maxRows = 41 - 2 - v78 = 39 - v78
-                intensitySource.maxColumns = std::max(0, 80 - v79);
-                intensitySource.maxRows = std::max(0, 39 - v78);
-                tileBlitTrueColorOverlayPhysical(*physicalView,
-                    trueColorView,
-                    frameData + frameWidth * v78 + v79,
-                    frameWidth,
-                    v79,
-                    v78,
-                    renderRect,
-                    clippedWidth,
-                    clippedHeight,
-                    intensitySource);
-            }
         }
     }
 

@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cfloat>
-#include "diagnostics.h"
+#include "../diagnostics.h"
 
 namespace fallout {
 

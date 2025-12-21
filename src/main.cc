@@ -3,7 +3,7 @@
 #include <limits.h>
 #include <string.h>
 
-#include "upscaler.h"
+#include "renderer/upscaler.h"
 #include "art.h"
 #include "autorun.h"
 #include "character_selector.h"

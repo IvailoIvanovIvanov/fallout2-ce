@@ -1,5 +1,5 @@
 #include "upscaler_ml.h"
-#include "diagnostics.h"
+#include "../diagnostics.h"
 
 #ifdef HAS_ONNX_RUNTIME
 #include <onnxruntime/onnxruntime_cxx_api.h>

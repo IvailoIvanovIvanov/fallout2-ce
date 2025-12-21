@@ -10,7 +10,7 @@
 
 #include <SDL.h>
 
-#include "display_scaler.h"
+#include "renderer/display_scaler.h"
 #include "diagnostics.h"
 #include "color.h"
 #include "debug.h"
@@ -21,8 +21,6 @@
 #include "memory.h"
 #include "mouse.h"
 #include "palette.h"
-#include "render_trace.h"
-#include "render_display_orchestrator.h"
 #include "svga.h"
 #include "text_font.h"
 #include "settings.h"
@@ -987,7 +985,6 @@ void windowManagerExit(void)
         _insideWinExit = true;
         if (gWindowSystemInitialized) {
             _GNW_intr_exit();
-            renderTraceReset();
 
             for (int index = gWindowsLength - 1; index >= 0; index--) {
                 windowFree(gWindows[index]->id);
@@ -3617,7 +3614,6 @@ bool windowIsVirtualScreenEnabled()
 void windowPresentVirtualScreen()
 {
     windowRefreshPhysicalTrueColorBuffers();
-    renderDisplayOrchestratorProcess();
 
     if (!gVirtualScreenEnabled || !gVirtualScreenDirty || _screen_buffer == nullptr) {
         return;
@@ -3663,7 +3659,6 @@ void windowPresentVirtualScreen()
     windowAccumulatePhysicalRectStats(physicalDirtyRect);
 
     // Phase 5: When orchestrator is active, it handles HD overlays but base indexed background still needs rendering
-    const bool orchestratorOwnsPresenter = renderDisplayOrchestratorOwnsPresenter();
     
     // Always render the indexed background to presenter (8-bit base layer)
     const unsigned char* virtualScreenBuffer = windowGetVirtualScreenBuffer();
@@ -3672,23 +3667,11 @@ void windowPresentVirtualScreen()
         blitIndexedRectToTexture(virtualScreenBuffer, pitch, rect);
     }
     
-    if (orchestratorOwnsPresenter) {
-        if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
-            diagnosticsLog(DiagnosticsLevel::Trace,
-                "SCALER",
-                "orchestrator_active rendering base+overlays rect=(%d,%d %dx%d)",
-                rect.left,
-                rect.top,
-                width,
-                height);
-        }
-    } else {
-        // Only warn if virtual adapter is explicitly enabled but orchestrator isn't working
-        if (gVirtualScreenEnabled && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-            diagnosticsLog(DiagnosticsLevel::Info,
-                "SCALER",
-                "virtual_adapter enabled but orchestrator inactive - using fallback rendering");
-        }
+    // Only warn if virtual adapter is explicitly enabled but orchestrator isn't working
+    if (gVirtualScreenEnabled && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        diagnosticsLog(DiagnosticsLevel::Info,
+            "SCALER",
+            "virtual_adapter enabled but orchestrator inactive - using fallback rendering");
     }
 
     int overlayPixels = windowCompositeTrueColorOverlays(rect);
@@ -3900,45 +3883,7 @@ void windowClearTrueColorRegion(int win, int left, int top, int width, int heigh
     }
 
     if (window->trueColorPhysicalOverlay != nullptr && window->trueColorPhysicalMask != nullptr) {
-        const DisplayScalerScaleTable& scaleTable = displayScalerGetScaleTable();
-        if (scaleTable.valid) {
-            Rect windowRect;
-            if (windowGetRect(win, &windowRect) == 0) {
-                int globalStartX = std::clamp(windowRect.left + startX, 0, static_cast<int>(scaleTable.horizontal.starts.size()));
-                int globalEndX = std::clamp(windowRect.left + endX, 0, static_cast<int>(scaleTable.horizontal.starts.size()));
-                int globalStartY = std::clamp(windowRect.top + startY, 0, static_cast<int>(scaleTable.vertical.starts.size()));
-                int globalEndY = std::clamp(windowRect.top + endY, 0, static_cast<int>(scaleTable.vertical.starts.size()));
-
-                if (globalStartX < globalEndX && globalStartY < globalEndY) {
-                    int physXStart = scaleTable.horizontal.starts[globalStartX] - window->trueColorPhysicalViewport.left;
-                    int physXEnd = scaleTable.horizontal.ends[globalEndX - 1] - window->trueColorPhysicalViewport.left;
-
-                    physXStart = std::max(physXStart, 0);
-                    physXEnd = std::min(physXEnd, window->trueColorPhysicalWidth - 1);
-
-                    if (physXStart <= physXEnd) {
-                        int physWidth = physXEnd - physXStart + 1;
-                        size_t physBytes = physWidth * sizeof(uint32_t);
-
-                        for (int y = globalStartY; y < globalEndY; y++) {
-                            int physYStart = scaleTable.vertical.starts[y] - window->trueColorPhysicalViewport.top;
-                            int physYEnd = scaleTable.vertical.ends[y] - window->trueColorPhysicalViewport.top;
-
-                            physYStart = std::max(physYStart, 0);
-                            physYEnd = std::min(physYEnd, window->trueColorPhysicalHeight - 1);
-
-                            // Phase 8.1 Optimization: Use efficient row-based memset
-                            // This clears contiguous physical rows for each logical row
-                            for (int physY = physYStart; physY <= physYEnd; physY++) {
-                                int offset = physY * window->trueColorPhysicalPitch + physXStart;
-                                std::memset(window->trueColorPhysicalMask + offset, 0, physWidth);
-                                std::memset(window->trueColorPhysicalOverlay + offset, 0, physBytes);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Optimization disabled due to missing DisplayScalerScaleTable
     }
 
     if (window->trueColorPhysicalOverlay != nullptr && window->trueColorPhysicalMask != nullptr && window->trueColorPhysicalPitch > 0 && window->trueColorPhysicalWidth > 0 && window->trueColorPhysicalHeight > 0) {

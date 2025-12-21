@@ -10,13 +10,13 @@
 
 #include <SDL.h>
 
-#include "renderer/RenderPipeline.h"
-#include "renderer/MlUpscalePass.h"
-#include "renderer/PreprocessingPass.h"
+#include "RenderPipeline.h"
+#include "MlUpscalePass.h"
+#include "PreprocessingPass.h"
 
-#include "diagnostics.h"
-#include "game_config.h"
-#include "memory.h"
+#include "../diagnostics.h"
+#include "../game_config.h"
+#include "../memory.h"
 
 namespace fallout {
 

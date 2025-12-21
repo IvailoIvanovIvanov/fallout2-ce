@@ -15,7 +15,6 @@
 #include "mouse.h"
 #include "palette.h"
 #include "preferences.h"
-#include "render_display_orchestrator.h"
 #include "settings.h"
 #include "sfall_config.h"
 #include "svga.h"
@@ -284,9 +283,6 @@ void mainMenuWindowUnhide(bool animate)
         return;
     }
 
-    // Reset orchestrator content state when returning to main menu.
-    // This ensures indexed fallback rendering works properly for menu screens.
-    renderDisplayOrchestratorResetContent();
 
     diagnosticsLog(DiagnosticsLevel::Trace,
         "WINDOW",

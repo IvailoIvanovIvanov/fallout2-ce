@@ -19,7 +19,7 @@
 #include "cycle.h"
 #include "debug.h"
 #include "diagnostics.h"
-#include "display_scaler.h"
+#include "renderer/display_scaler.h"
 #include "draw.h"
 #include "elevator.h"
 #include "game.h"
@@ -40,8 +40,6 @@
 #include "proto_instance.h"
 #include "queue.h"
 #include "random.h"
-#include "render_commands.h"
-#include "render_display_orchestrator.h"
 #include "scripts.h"
 #include "settings.h"
 #include "svga.h"
@@ -349,14 +347,6 @@ bool isoDisable()
         return false;
     }
 
-    // RENDER PATH TRACE: Log iso disable (transition to menu/loading)
-    if (settings.debug.render_path_trace) {
-        diagnosticsLog(DiagnosticsLevel::Info,
-            "RENDERPATH",
-            "isoDisable: transitioning to menu/loading orchestrator_enabled=%d orchestrator_owns=%d",
-            renderDisplayOrchestratorEnabled() ? 1 : 0,
-            renderDisplayOrchestratorOwnsPresenter() ? 1 : 0);
-    }
 
     _scr_disable_critters();
     tickersRemove(_dude_fidget);
@@ -366,17 +356,8 @@ bool isoDisable()
 
     gIsoEnabled = false;
 
-    // When orchestrator is active, preserve HD overlay content behind UI windows.
-    // The HD tiles should remain visible as the background when menus are displayed.
-    // Only clear when orchestrator is not managing the display (legacy fallback mode).
     if (gIsoWindow != -1 && windowHasTrueColorOverlay(gIsoWindow)) {
-        if (!renderDisplayOrchestratorEnabled()) {
-            windowClearTrueColorRegion(gIsoWindow, 0, 0, windowGetWidth(gIsoWindow), windowGetHeight(gIsoWindow));
-        } else if (settings.debug.render_path_trace) {
-            diagnosticsLog(DiagnosticsLevel::Info,
-                "RENDERPATH",
-                "isoDisable: preserving HD overlay (orchestrator active)");
-        }
+        windowClearTrueColorRegion(gIsoWindow, 0, 0, windowGetWidth(gIsoWindow), windowGetHeight(gIsoWindow));
     }
 
     return true;
@@ -860,13 +841,6 @@ int mapScroll(int dx, int dy)
         src += step;
     }
 
-    if (renderCommandCaptureEnabled() && diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
-        diagnosticsLog(DiagnosticsLevel::Trace,
-            "SCALER",
-            "command_miss path=tile_memmove reason=map_scroll dx=%d dy=%d",
-            screenDx,
-            screenDy);
-    }
 
     if (windowHasTrueColorOverlay(gIsoWindow)) {
         uint32_t* overlay = windowGetTrueColorOverlay(gIsoWindow);
@@ -970,12 +944,6 @@ int mapScroll(int dx, int dy)
 
     windowRefresh(gIsoWindow);
 
-    RenderViewportEventType scrollEventType = RenderViewportEventType::Scroll;
-    renderCommandEmitViewportEvent(scrollEventType,
-        gIsoWindowRect,
-        static_cast<int16_t>(std::clamp(screenDx, -32768, 32767)),
-        static_cast<int16_t>(std::clamp(screenDy, -32768, 32767)),
-        windowVirtualScreenGetDirtySequence());
 
     return 0;
 }
@@ -1105,13 +1073,6 @@ static int mapLoad(File* stream)
     _map_save_in_game(true);
     backgroundSoundLoad("wind2", 12, 13, 16);
     
-    // Reset orchestrator content state before loading new map.
-    // This allows indexed fallback rendering during the load screen.
-    renderDisplayOrchestratorResetContent();
-    
-    // Also reset any command queue fallback state (e.g., from overflow).
-    // This gives the orchestrator a fresh start for the new map.
-    renderCommandResetFallbackState();
     
     isoDisable();
     _partyMemberPrepLoad();

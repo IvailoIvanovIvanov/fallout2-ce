@@ -12,20 +12,16 @@
 #include "color.h"
 #include "config.h"
 #include "diagnostics.h"
-#include "display_scaler.h"
+#include "renderer/display_scaler.h"
 #include "draw.h"
 #include "game_config.h"
 #include "geometry.h"
-#include "gpu_device.h"
+#include "renderer/gpu_device.h"
 #include "interface.h"
 #include "memory.h"
 #include "mouse.h"
-#include "render_trace.h"
-#include "render_commands.h"
-#include "render_display_orchestrator.h"
 #include "settings.h"
-#include "upscaler.h"
-#include "virtual_input.h"
+#include "renderer/upscaler.h"
 #include "win32.h"
 #include "window_manager.h"
 #include "window_manager_private.h"
@@ -768,7 +764,6 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
     }
 
     displayScalerInit(logicalWidth, logicalHeight);
-    displayScalerSetIntegerScaling(integerScaling);
 
     if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
         diagnosticsLog(
@@ -1011,12 +1006,6 @@ void directDrawSetPaletteInRange(unsigned char* palette, int start, int count)
         }
         updateTexturePaletteRange(start, count, palette);
 
-        // Phase 2: Emit palette effect command for orchestrator
-        RenderCommandPaletteEffectPayload palettePayload;
-        palettePayload.type = 2; // palette update
-        palettePayload.param = static_cast<uint16_t>(start | (count << 8));
-        renderCommandEmitPaletteEffect(palettePayload);
-
         if (windowIsVirtualScreenEnabled()) {
             windowVirtualScreenInvalidateAll();
         }
@@ -1152,25 +1141,8 @@ void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect
         return;
     }
 
-    // RENDER PATH TRACE: Log indexed path activity (informational, not an error)
-    if (false) {  // virtual_adapter removed
-        bool orchestratorOwns = renderDisplayOrchestratorOwnsPresenter();
-        diagnosticsLog(DiagnosticsLevel::Trace,  // Changed to Trace level - this is normal operation
-            "RENDERPATH",
-            "indexed_blit: rect=(%d,%d %dx%d) orchestrator_owns=%d",
-            rect.left,
-            rect.top,
-            rectGetWidth(&rect),
-            rectGetHeight(&rect),
-            orchestratorOwns ? 1 : 0);
-    }
-
     // Note: Even in virtual adapter mode, the indexed base layer uploads
     // are required to populate the presenter with the 640x480 background.
-
-    // Phase 6: Track direct write metric
-    extern RenderCommandStats gRenderCommandStats;
-    gRenderCommandStats.directWrites++;
 
     Rect logicalRect;
     Rect presenterRect;
@@ -1196,14 +1168,6 @@ void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect
     const int bytesPerPixel = gSdlTextureSurface->format->BytesPerPixel;
     unsigned char* destPixels = static_cast<unsigned char*>(gSdlTextureSurface->pixels);
 
-    const bool useScaledPresenter = isFullResPresenterActive();
-    const DisplayScalerScaleTable* scaleTable = nullptr;
-    const Rect* physicalViewport = nullptr;
-    if (useScaledPresenter) {
-        scaleTable = &displayScalerGetScaleTable();
-        physicalViewport = &displayScalerGetPhysicalViewport();
-    }
-
     const bool logBlitStats = diagnosticsWouldLog(DiagnosticsLevel::Trace) && gIndexedBlitLogBudget > 0;
     unsigned int srcMin = 255;
     unsigned int srcMax = 0;
@@ -1222,44 +1186,13 @@ void blitIndexedRectToTexture(const unsigned char* src, int srcPitch, const Rect
         const int logicalY = logicalRect.top + row;
         const unsigned char* srcRow = src + logicalY * srcPitch + logicalRect.left;
 
-        uint32_t* linearDestRow = nullptr;
-        int physicalRowStart = 0;
-        int physicalRowEnd = -1;
-
-        if (!useScaledPresenter) {
-            linearDestRow = reinterpret_cast<uint32_t*>(destPixels + (presenterRect.top + row) * gSdlTextureSurface->pitch + presenterRect.left * bytesPerPixel);
-        } else {
-            physicalRowStart = scaleTable->vertical.starts[logicalY] - physicalViewport->top;
-            physicalRowEnd = scaleTable->vertical.ends[logicalY] - physicalViewport->top;
-            physicalRowStart = std::max(physicalRowStart, presenterRect.top);
-            physicalRowEnd = std::min(physicalRowEnd, presenterRect.bottom);
-            if (physicalRowStart > physicalRowEnd) {
-                currentIndex += width;
-                continue;
-            }
-        }
+        uint32_t* linearDestRow = reinterpret_cast<uint32_t*>(destPixels + (presenterRect.top + row) * gSdlTextureSurface->pitch + presenterRect.left * bytesPerPixel);
 
         for (int column = 0; column < width; column++) {
             const unsigned int paletteIndex = srcRow[column];
             const uint32_t mappedColor = gTexturePalette[paletteIndex];
 
-            if (!useScaledPresenter) {
-                linearDestRow[column] = mappedColor;
-            } else {
-                const int logicalX = logicalRect.left + column;
-                int physicalColumnStart = scaleTable->horizontal.starts[logicalX] - physicalViewport->left;
-                int physicalColumnEnd = scaleTable->horizontal.ends[logicalX] - physicalViewport->left;
-                physicalColumnStart = std::max(physicalColumnStart, presenterRect.left);
-                physicalColumnEnd = std::min(physicalColumnEnd, presenterRect.right);
-                if (physicalColumnStart <= physicalColumnEnd) {
-                    for (int physicalRow = physicalRowStart; physicalRow <= physicalRowEnd; physicalRow++) {
-                        uint32_t* destRow = reinterpret_cast<uint32_t*>(destPixels + physicalRow * gSdlTextureSurface->pitch);
-                        for (int physicalColumn = physicalColumnStart; physicalColumn <= physicalColumnEnd; physicalColumn++) {
-                            destRow[physicalColumn] = mappedColor;
-                        }
-                    }
-                }
-            }
+            linearDestRow[column] = mappedColor;
 
             if (logBlitStats) {
                 srcMin = std::min(srcMin, paletteIndex);
@@ -1667,12 +1600,6 @@ void _GNW95_zero_vid_mem()
             Rect refreshRect = logicalBounds;
             // Repaint the entire GNW stack before presenting cleared memory.
             windowRefreshAll(&refreshRect);
-
-            renderCommandEmitViewportEvent(RenderViewportEventType::Blackout,
-                logicalBounds,
-                0,
-                0,
-                windowVirtualScreenGetDirtySequence());
         }
 
         return;
@@ -2404,12 +2331,6 @@ void handleWindowSizeChanged()
         } else {
             windowVirtualScreenInvalidateAll();
             windowPresentVirtualScreen();
-
-            renderCommandEmitViewportEvent(RenderViewportEventType::Resize,
-                logical,
-                0,
-                0,
-                windowVirtualScreenGetDirtySequence());
         }
     }
 
@@ -2454,9 +2375,7 @@ void renderPresent()
     
     syncPhysicalSizeWithRenderer();
     ensurePresenterSurfaceMatchesBounds();
-    renderTraceCommitFrame();
     windowPresentVirtualScreen();
-    renderCommandsBeforePresent();
     
     // ========================================================================
     // UPSCALER PROCESSING PIPELINE
@@ -2838,15 +2757,8 @@ void renderPresent()
         }
     }
     
-    virtualInputRenderOverlay(gSdlRenderer);
+    // virtualInputRenderOverlay(gSdlRenderer);
     SDL_RenderPresent(gSdlRenderer);
-
-    // Phase 6: Log frame metrics periodically (every 300 frames = ~5 seconds at 60fps)
-    static int frameCounter = 0;
-    if (++frameCounter >= 300) {
-        renderCommandLogFrameMetrics();
-        frameCounter = 0;
-    }
 }
 
 } // namespace fallout

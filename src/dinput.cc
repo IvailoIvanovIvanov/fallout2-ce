@@ -3,10 +3,9 @@
 #include <algorithm>
 #include <cmath>
 
-#include "display_scaler.h"
+#include "renderer/display_scaler.h"
 #include "diagnostics.h"
 #include "svga.h"
-#include "virtual_input.h"
 
 namespace fallout {
 
@@ -15,6 +14,9 @@ static double gMouseLogicalExactX = 0.0;
 static double gMouseLogicalExactY = 0.0;
 static double gMouseLogicalRemainderX = 0.0;
 static double gMouseLogicalRemainderY = 0.0;
+static int gWheelDeltaX = 0;
+static int gWheelDeltaY = 0;
+static bool gMouseButtonPressedSinceLastPoll[2] = { false, false };
 
 namespace {
 
@@ -142,7 +144,6 @@ bool mouseDeviceAcquire()
     gMouseLogicalRemainderY = 0.0;
     gHasMouseMetrics = false;
     gHasClampSnapshot = false;
-    virtualInputReset();
     return true;
 }
 
@@ -156,7 +157,6 @@ bool mouseDeviceUnacquire()
     gMouseLogicalRemainderY = 0.0;
     gHasMouseMetrics = false;
     gHasClampSnapshot = false;
-    virtualInputReset();
     return true;
 }
 
@@ -283,20 +283,16 @@ bool mouseDeviceGetData(MouseData* mouseState)
     };
     logMouseClampChange(clampSnapshot, logicalExactX, logicalExactY);
 
-    mouseState->buttons[0] = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
-    mouseState->buttons[1] = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
-    virtualInputConsumeWheelDeltas(&mouseState->wheelX, &mouseState->wheelY);
+    mouseState->buttons[0] = ((buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0) || gMouseButtonPressedSinceLastPoll[0];
+    mouseState->buttons[1] = ((buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0) || gMouseButtonPressedSinceLastPoll[1];
 
-    VirtualMouseMappingSample overlaySample = {};
-    overlaySample.windowX = clampedWindowX;
-    overlaySample.windowY = clampedWindowY;
-    overlaySample.physicalX = physicalX;
-    overlaySample.physicalY = physicalY;
-    overlaySample.virtualExactX = logicalExactX;
-    overlaySample.virtualExactY = logicalExactY;
-    overlaySample.insideViewport = mapping.insideViewport;
-    overlaySample.viewport = mapping.viewport;
-    virtualInputPublishMouseMapping(overlaySample);
+    gMouseButtonPressedSinceLastPoll[0] = false;
+    gMouseButtonPressedSinceLastPoll[1] = false;
+
+    mouseState->wheelX = gWheelDeltaX;
+    mouseState->wheelY = gWheelDeltaY;
+    gWheelDeltaX = 0;
+    gWheelDeltaY = 0;
 
     return true;
 }
@@ -372,6 +368,23 @@ void mouseDeviceFree()
 
     if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
         diagnosticsLog(DiagnosticsLevel::Info, "MOUSE", "mouseDeviceFree");
+    }
+}
+
+void mouseDeviceAccumulateWheelDelta(int x, int y)
+{
+    gWheelDeltaX += x;
+    gWheelDeltaY += y;
+}
+
+void mouseDeviceHandleEvent(const SDL_Event* event)
+{
+    if (event->type == SDL_MOUSEBUTTONDOWN) {
+        if (event->button.button == SDL_BUTTON_LEFT) {
+            gMouseButtonPressedSinceLastPoll[0] = true;
+        } else if (event->button.button == SDL_BUTTON_RIGHT) {
+            gMouseButtonPressedSinceLastPoll[1] = true;
+        }
     }
 }
 

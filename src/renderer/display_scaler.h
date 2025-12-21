@@ -3,7 +3,7 @@
 
 #include <vector>
 
-#include "geometry.h"
+#include "../geometry.h"
 
 namespace fallout {
 
@@ -28,24 +28,8 @@ struct DisplayScalerVirtualMapping {
     Rect viewport;
 };
 
-struct DisplayScalerAxisScaleTable {
-    std::vector<int> starts;
-    std::vector<int> ends;
-};
-
-struct DisplayScalerScaleTable {
-    DisplayScalerAxisScaleTable horizontal;
-    DisplayScalerAxisScaleTable vertical;
-    Rect viewport;
-    double scale;
-    bool valid;
-    bool hasFractionalScale;
-    bool isDownscale;
-};
-
 void displayScalerInit(int logicalWidth, int logicalHeight);
 void displayScalerSetLogicalSize(int logicalWidth, int logicalHeight);
-void displayScalerSetIntegerScaling(bool enabled);
 void displayScalerUpdatePhysicalSize(int physicalWidth, int physicalHeight);
 const Rect& displayScalerGetLogicalBounds();
 const Rect& displayScalerGetPhysicalViewport();
@@ -59,7 +43,6 @@ Point displayScalerPhysicalToLogical(const Point& physicalPoint);
 Rect displayScalerLogicalToPhysical(const Rect& logicalRect);
 Rect displayScalerPhysicalToLogical(const Rect& physicalRect);
 DisplayScalerVirtualMapping displayScalerMapPointToVirtual(int physicalX, int physicalY);
-const DisplayScalerScaleTable& displayScalerGetScaleTable();
 
 } // namespace fallout
 

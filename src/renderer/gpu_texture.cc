@@ -2,7 +2,7 @@
 
 #include <d3d12.h>
 #include <wrl/client.h>
-#include "diagnostics.h"
+#include "../diagnostics.h"
 #include "gpu_device.h"
 
 using Microsoft::WRL::ComPtr;

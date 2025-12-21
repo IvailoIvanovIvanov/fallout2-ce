@@ -12,7 +12,7 @@
 #include "color.h"
 #include "combat.h"
 #include "critter.h"
-#include "display_scaler.h"
+#include "renderer/display_scaler.h"
 #include "draw.h"
 #include "game.h"
 #include "game_sound.h"

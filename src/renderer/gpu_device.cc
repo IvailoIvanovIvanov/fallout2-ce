@@ -5,7 +5,7 @@
 #include <dxgi1_4.h>
 #include <wrl/client.h>
 #include <vector>
-#include "diagnostics.h"
+#include "../diagnostics.h"
 
 using Microsoft::WRL::ComPtr;
 

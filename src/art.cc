@@ -22,9 +22,6 @@
 #include "memory.h"
 #include "object.h"
 #include "proto.h"
-#include "render_trace.h"
-#include "render_commands.h"
-#include "render_asset_registry.h"
 #include "settings.h"
 #include "stb_image.h"
 #include "sfall_config.h"
@@ -503,7 +500,6 @@ int artInit()
 void artReset()
 {
     hdTrueColorRegistryClear();
-    renderAssetRegistryReset();
     gHdArtInfoCache.clear();
     gHdTrueColorActiveFids.clear();
 }
@@ -512,7 +508,6 @@ void artReset()
 void artExit()
 {
     hdTrueColorRegistryClear();
-    renderAssetRegistryReset();
     gHdArtInfoCache.clear();
     gHdTrueColorActiveFids.clear();
 
@@ -573,16 +568,6 @@ int artGetFidgetCount(int headFid)
 
 static void artTraceRenderOp(int fid, unsigned char* dest, int pitch, int width, int height)
 {
-    if (dest == nullptr || pitch <= 0 || width <= 0 || height <= 0) {
-        return;
-    }
-
-    Rect rect;
-    if (!windowResolveBufferRect(dest, pitch, width, height, &rect)) {
-        return;
-    }
-
-    renderTraceRecord(RenderTraceLayer::Ui, fid, 0, 0, rect, -1, rect.bottom);
 }
 
 static void artEmitUiRenderCommand(int fid,
@@ -595,60 +580,6 @@ static void artEmitUiRenderCommand(int fid,
     int width,
     int height)
 {
-    if (!renderCommandCaptureEnabled() || dest == nullptr || frameData == nullptr) {
-        return;
-    }
-
-    if (frameWidth <= 0 || frameHeight <= 0 || width <= 0 || height <= 0) {
-        return;
-    }
-
-    if (width != frameWidth || height != frameHeight) {
-        return;
-    }
-
-    Rect rect;
-    int windowId = -1;
-    if (!windowResolveBufferRect(dest, pitch, width, height, &rect, &windowId)) {
-        return;
-    }
-
-    if (windowId < 0) {
-        return;
-    }
-
-    RenderAssetHandle assetHandle {};
-    assetHandle.fid = fid;
-    assetHandle.frame = 0;
-    assetHandle.rotation = 0;
-    assetHandle.variant = 0;
-
-    const void* frameOwner = owner != nullptr ? static_cast<const void*>(owner) : static_cast<const void*>(frameData);
-
-    renderAssetRegistryTrackFrame(assetHandle,
-        frameOwner,
-        frameData,
-        static_cast<uint16_t>(std::clamp(frameWidth, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))),
-        static_cast<uint16_t>(std::clamp(frameHeight, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))));
-
-    RenderCommandTileBlitPayload payload {};
-    payload.asset = assetHandle;
-    payload.windowId = static_cast<int16_t>(std::clamp(windowId, -1, static_cast<int>(std::numeric_limits<int16_t>::max())));
-    payload.screenRect = rect;
-    payload.fid = fid;
-    payload.tileIndex = -1;
-    payload.depthBucket = static_cast<uint8_t>(RenderTraceLayer::Ui);
-    payload.paletteId = 0;
-    payload.flags = RenderCommandFlag_Masked | RenderCommandFlag_LightingFlat;
-    payload.lighting = 128;
-    payload.sourceOffsetX = 0;
-    payload.sourceOffsetY = 0;
-    payload.sourceWidth = static_cast<uint16_t>(std::clamp(width, 0, static_cast<int>(std::numeric_limits<uint16_t>::max())));
-    payload.sourceHeight = static_cast<uint16_t>(std::clamp(height, 0, static_cast<int>(std::numeric_limits<uint16_t>::max())));
-    payload.isoTileX = -1;
-    payload.isoTileY = -1;
-
-    renderCommandEmitTileBlit(RenderCommandOp::UiBlit, payload);
 }
 
 static void artBlitTrueColorUiSprite(const HdTrueColorFrameView& view,
@@ -1636,17 +1567,6 @@ static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* da
         return false;
     }
 
-    RenderAssetHandle assetHandle {};
-    assetHandle.fid = static_cast<uint32_t>(fid);
-    assetHandle.frame = 0;
-    assetHandle.rotation = 0;
-    assetHandle.variant = 0;
-    renderAssetRegistryTrackFrame(assetHandle,
-        art,
-        frameData,
-        static_cast<uint16_t>(std::clamp(logicalWidth, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))),
-        static_cast<uint16_t>(std::clamp(logicalHeight, 0, static_cast<int>(std::numeric_limits<uint16_t>::max()))));
-
     File* stream = fileOpen(info.path.c_str(), "rb");
     if (stream == nullptr) {
         if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
@@ -1964,7 +1884,6 @@ static void artCacheFreeImpl(void* ptr)
 {
     if (ptr != nullptr) {
         hdTrueColorReleaseFramesForArt(ptr);
-        renderAssetRegistryReleaseFramesForOwner(ptr);
     }
     internal_free(ptr);
 }
@@ -2295,9 +2214,6 @@ bool artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t*
     view.height = height;
     view.alphaMode = alphaMode;
 
-    // Delegate to render_asset_registry (the single source of truth for HD views)
-    renderAssetRegistryAttachHdView(indexed, view, false);
-
     if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
         diagnosticsLog(DiagnosticsLevel::Trace,
             "SCALER",
@@ -2319,7 +2235,6 @@ void artUnregisterTrueColorFrameData(const unsigned char* indexed)
 
     // Delegate to render_asset_registry (single source of truth)
     gHdTrueColorFrameStorage.erase(indexed);
-    renderAssetRegistryDetachHdView(indexed);
 
     if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
         diagnosticsLog(DiagnosticsLevel::Trace, "SCALER", "artUnregisterTrueColorFrameData indexed=%p", indexed);
@@ -2373,8 +2288,7 @@ bool artLookupRegisteredTrueColorFrame(const unsigned char* indexed, HdTrueColor
 
     gHdTrueColorCacheStats.requests++;
 
-    // Delegate to render_asset_registry
-    bool found = renderAssetRegistryGetHdViewByPointer(indexed, out, nullptr);
+    bool found = false;
     if (found && out.pixels != nullptr && out.width > 0 && out.height > 0) {
         gHdTrueColorCacheStats.hits++;
         return true;
