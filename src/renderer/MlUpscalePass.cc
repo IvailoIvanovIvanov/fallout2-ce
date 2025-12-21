@@ -56,9 +56,8 @@ bool MlUpscalePass::Init(D3D12Context& context, int inputWidth, int inputHeight,
     auto device = context.GetDevice();
 
     // 1. Init UpscalerML
-    // Note: UpscalerML expects model path. We assume it's in the same dir or known path.
-    if (!mUpscaler.init(device, "realesrgan-x4plus.onnx")) {
-        diagnosticsLog(DiagnosticsLevel::Error, "MlUpscalePass", "Failed to init UpscalerML");
+    if (!mUpscaler.init(device, mModelFile.c_str())) {
+        diagnosticsLog(DiagnosticsLevel::Info, "MlUpscalePass", "Failed to init UpscalerML");
         return false;
     }
 
@@ -129,7 +128,7 @@ bool MlUpscalePass::Init(D3D12Context& context, int inputWidth, int inputHeight,
     
     // RgbaToPlanar
     if (FAILED(D3DCompile(RGBA_TO_PLANAR_SHADER, strlen(RGBA_TO_PLANAR_SHADER), nullptr, nullptr, nullptr, "main", "cs_5_0", 0, 0, &csBlob, &errBlob))) {
-        if (errBlob) diagnosticsLog(DiagnosticsLevel::Error, "MlUpscalePass", "RgbaToPlanar Compile Error: %s", (char*)errBlob->GetBufferPointer());
+        if (errBlob) diagnosticsLog(DiagnosticsLevel::Info, "MlUpscalePass", "RgbaToPlanar Compile Error: %s", (char*)errBlob->GetBufferPointer());
         return false;
     }
     D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
@@ -139,7 +138,7 @@ bool MlUpscalePass::Init(D3D12Context& context, int inputWidth, int inputHeight,
 
     // PlanarToRgba
     if (FAILED(D3DCompile(PLANAR_TO_RGBA_SHADER, strlen(PLANAR_TO_RGBA_SHADER), nullptr, nullptr, nullptr, "main", "cs_5_0", 0, 0, &csBlob, &errBlob))) {
-        if (errBlob) diagnosticsLog(DiagnosticsLevel::Error, "MlUpscalePass", "PlanarToRgba Compile Error: %s", (char*)errBlob->GetBufferPointer());
+        if (errBlob) diagnosticsLog(DiagnosticsLevel::Info, "MlUpscalePass", "PlanarToRgba Compile Error: %s", (char*)errBlob->GetBufferPointer());
         return false;
     }
     psoDesc.CS = { csBlob->GetBufferPointer(), csBlob->GetBufferSize() };

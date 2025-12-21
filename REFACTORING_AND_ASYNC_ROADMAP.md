@@ -53,9 +53,12 @@ Transform the current monolithic `upscaler.cc` into a modular, readable, and hig
 
 ### Phase 5: Display Integration
 *   **Goal**: Ensure the game receives the frame efficiently.
-*   [ ] **Optimize `getOutputBuffer`**:
+*   [x] **Optimize `getOutputBuffer`**:
     *   It should return the mapped pointer of Frame N-1 (system memory).
     *   Ensure `svga.cc` handles the pointer correctly without unnecessary copies if possible.
+*   [x] **Integrate `RenderPipeline` into `UpscalerImpl`**:
+    *   Replaced legacy `UpscalerImpl` with `RenderPipeline` wrapper.
+    *   Verified `svga.cc` interaction.
 
 ## 4. Proposed Class Structure
 
@@ -97,5 +100,6 @@ public:
 
 ## 5. Checklist for Immediate Action
 1.  [x] Create `src/renderer/` directory to house new files.
-2.  [ ] Move `upscaler.cc` logic into `src/renderer/RenderPipeline.cc` incrementally.
+2.  [x] Move `upscaler.cc` logic into `src/renderer/RenderPipeline.cc` incrementally.
+3.  [x] Integrate `RenderPipeline` into `UpscalerImpl`.
 3.  [ ] Delete Integer Scaling code.

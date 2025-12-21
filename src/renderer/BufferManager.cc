@@ -202,7 +202,7 @@ bool BufferManager::UploadInput(D3D12Context& context, const void* data, size_t 
     src.PlacedFootprint.Footprint.Width = mInputWidth;
     src.PlacedFootprint.Footprint.Height = mInputHeight;
     src.PlacedFootprint.Footprint.Depth = 1;
-    src.PlacedFootprint.Footprint.RowPitch = rowPitch;
+    src.PlacedFootprint.Footprint.RowPitch = static_cast<UINT>(rowPitch);
     
     cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
 

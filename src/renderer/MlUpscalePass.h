@@ -18,8 +18,11 @@ public:
     void Execute(D3D12Context& context, BufferManager& buffers) override;
     void Shutdown() override;
 
+    void SetModelFile(const std::string& path) { mModelFile = path; }
+
 private:
     UpscalerML mUpscaler;
+    std::string mModelFile = "realesrgan-x4plus.onnx";
     
     // Intermediate resources for Tensor conversion
     Microsoft::WRL::ComPtr<ID3D12Resource> mInputTensor;

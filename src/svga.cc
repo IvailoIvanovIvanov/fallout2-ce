@@ -2742,6 +2742,18 @@ void renderPresent()
         destRect.h = texH;
         destRect.x = (physicalWidth - texW) / 2;
         destRect.y = (physicalHeight - texH) / 2;
+
+        // DEBUG: Log destination rect
+        static int destLogCount = 0;
+        if (destLogCount < 3) {
+            destLogCount++;
+            FILE* debugLog = fopen("C:\\Program Files (x86)\\Steam\\steamapps\\common\\Fallout 2\\upscale.log", "a");
+            if (debugLog) {
+                fprintf(debugLog, "[RENDER] DestRect: x=%d, y=%d, w=%d, h=%d (Physical: %dx%d)\n", 
+                    destRect.x, destRect.y, destRect.w, destRect.h, physicalWidth, physicalHeight);
+                fclose(debugLog);
+            }
+        }
     } else {
         // Normal rendering path - use display scaler viewport
         destRect.x = viewport.left;

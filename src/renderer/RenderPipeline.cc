@@ -23,12 +23,12 @@ bool RenderPipeline::Init(int inputWidth, int inputHeight, int outputWidth, int 
     mOutputHeight = outputHeight;
 
     if (!mContext.Init()) {
-        diagnosticsLog(DiagnosticsLevel::Error, "RenderPipeline", "Failed to initialize D3D12Context");
+        diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Failed to initialize D3D12Context");
         return false;
     }
 
     if (!mBuffers.Init(mContext, inputWidth, inputHeight, outputWidth, outputHeight)) {
-        diagnosticsLog(DiagnosticsLevel::Error, "RenderPipeline", "Failed to initialize BufferManager");
+        diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Failed to initialize BufferManager");
         return false;
     }
 
@@ -56,7 +56,7 @@ void RenderPipeline::Shutdown() {
     mInitialized = false;
 }
 
-void RenderPipeline::Dispatch(const void* inputPixels, int width, int height) {
+void RenderPipeline::Dispatch(const void* inputPixels) {
     if (!mInitialized) return;
 
     // 1. Swap Buffers (Move to next frame)
@@ -66,8 +66,8 @@ void RenderPipeline::Dispatch(const void* inputPixels, int width, int height) {
     mContext.BeginFrame();
 
     // 3. Upload Input
-    if (!mBuffers.UploadInput(mContext, inputPixels, width * height * 4)) {
-        diagnosticsLog(DiagnosticsLevel::Error, "RenderPipeline", "Failed to upload input");
+    if (!mBuffers.UploadInput(mContext, inputPixels, mInputWidth * mInputHeight * 4)) {
+        diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Failed to upload input");
     }
 
     // 4. Execute Passes
@@ -106,7 +106,7 @@ void RenderPipeline::Dispatch(const void* inputPixels, int width, int height) {
             // Scaling required but no passes?
             // We should probably have a default BlitPass.
             // For now, just skip copy (black screen) or log error.
-            diagnosticsLog(DiagnosticsLevel::Error, "RenderPipeline", "No passes and input/output size mismatch!");
+            diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "No passes and input/output size mismatch!");
         }
 
         // Restore states
@@ -169,6 +169,12 @@ const void* RenderPipeline::GetOutput() {
 }
 
 void RenderPipeline::AddPass(std::unique_ptr<ShaderPass> pass) {
+    if (mInitialized) {
+        if (!pass->Init(mContext, mInputWidth, mInputHeight, mOutputWidth, mOutputHeight)) {
+            diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Failed to initialize added pass");
+            return;
+        }
+    }
     mPasses.push_back(std::move(pass));
 }
 

@@ -132,7 +132,7 @@ bool PreprocessingPass::Init(D3D12Context& context, int inputWidth, int inputHei
     
     if (FAILED(hr)) {
         if (errorBlob) {
-            diagnosticsLog(DiagnosticsLevel::Error, "PreprocessingPass", "Shader Compile Error: %s", (char*)errorBlob->GetBufferPointer());
+            diagnosticsLog(DiagnosticsLevel::Info, "PreprocessingPass", "Shader Compile Error: %s", (char*)errorBlob->GetBufferPointer());
         }
         return false;
     }
