@@ -12,42 +12,42 @@ Transform the current monolithic `upscaler.cc` into a modular, readable, and hig
 
 ### Phase 1: Cleanup & Simplification (De-clutter)
 *   **Goal**: Remove dead weight to make refactoring easier.
-*   [ ] **Remove Integer Scaling**: Delete `dispatchIntegerScale`, `UpscalerMode::INTEGER_2X/3X/4X`.
-*   [ ] **Remove CPU Post-Processing**: Delete `filterApplyKuwahara` and other CPU-side filters.
-*   [ ] **Remove Legacy Options**: Remove unused configuration parameters (e.g., "Motion Vectors" if unused).
-*   [ ] **Consolidate Headers**: Clean up `upscaler.h` to expose only the high-level pipeline API.
+*   [x] **Remove Integer Scaling**: Delete `dispatchIntegerScale`, `UpscalerMode::INTEGER_2X/3X/4X`.
+*   [x] **Remove CPU Post-Processing**: Delete `filterApplyKuwahara` and other CPU-side filters.
+*   [x] **Remove Legacy Options**: Remove unused configuration parameters (e.g., "Motion Vectors" if unused).
+*   [x] **Consolidate Headers**: Clean up `upscaler.h` to expose only the high-level pipeline API.
 
 ### Phase 2: Modularization (SRP Extraction)
 *   **Goal**: Break `upscaler.cc` into manageable components.
-*   [ ] **Create `D3D12Context`**:
+*   [x] **Create `D3D12Context`**:
     *   Responsibilities: Device creation, Command Queue management, Fence synchronization, Descriptor Heap management.
     *   *Why*: `upscaler.cc` currently manages raw D3D12 pointers manually.
-*   [ ] **Create `BufferManager`**:
+*   [x] **Create `BufferManager`**:
     *   Responsibilities: Managing `InputBuffer`, `OutputBuffer`, `ReadbackBuffer`.
     *   *Key Feature*: Support for **Double Buffering** (Frame N / Frame N-1) internally.
-*   [ ] **Create `ShaderPass` Abstraction**:
+*   [x] **Create `ShaderPass` Abstraction**:
     *   Base class for any GPU operation.
     *   Subclasses: `PreprocessingPass` (Blur/HDR), `Anime4kPass`, `PostProcessPass` (Format conversion).
 
 ### Phase 3: Pipeline Unification
 *   **Goal**: Create a linear, configurable pipeline.
-*   [ ] **Define `RenderPipeline` Class**:
+*   [x] **Define `RenderPipeline` Class**:
     *   Orchestrates the flow: `Input -> Stage 1 -> Stage 2 -> Output`.
     *   Holds the state of the current mode (Anime4K vs ML).
-*   [ ] **Implement `PreprocessingPass`**:
+*   [x] **Implement `PreprocessingPass`**:
     *   Move the current "Blur + HDR" compute shader logic here.
-*   [ ] **Implement `MlUpscalePass`**:
+*   [x] **Implement `MlUpscalePass`**:
     *   Wrap the `UpscalerML` interaction.
     *   Ensure it accepts GPU resources directly (GPU-to-GPU).
 
 ### Phase 4: Asynchronous Pipelining (The "Async" Upgrade)
 *   **Goal**: Implement the "Frame N / Frame N-1" architecture to unblock the CPU.
-*   [ ] **Double Buffer Resources**:
+*   [x] **Double Buffer Resources**:
     *   Update `BufferManager` to allocate 2x resources for all GPU buffers.
-*   [ ] **Fence Synchronization**:
+*   [x] **Fence Synchronization**:
     *   Implement `WaitForPreviousFrame()` logic.
     *   CPU submits Frame N, then checks if Frame N-1 is ready.
-*   [ ] **Async Readback**:
+*   [x] **Async Readback**:
     *   Map the readback buffer for Frame N-1.
     *   If ready, copy to display. If not, wait (or skip).
 
@@ -96,6 +96,6 @@ public:
 ```
 
 ## 5. Checklist for Immediate Action
-1.  [ ] Create `src/renderer/` directory to house new files.
+1.  [x] Create `src/renderer/` directory to house new files.
 2.  [ ] Move `upscaler.cc` logic into `src/renderer/RenderPipeline.cc` incrementally.
 3.  [ ] Delete Integer Scaling code.
