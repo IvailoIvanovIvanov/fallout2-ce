@@ -21,10 +21,13 @@ public:
 
 private:
     struct PreprocessParams {
-        uint32_t resolution[2];
+        uint32_t outputResolution[2];
+        uint32_t inputResolution[2];
         float blurStrength;
         float hdrSaturation;
         float hdrContrast;
+        float scale;
+        float offset[2];
         float padding[2];
     };
 

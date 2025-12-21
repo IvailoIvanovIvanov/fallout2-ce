@@ -7,11 +7,14 @@ namespace renderer {
 
 const char* PREPROCESS_SHADER_SOURCE = R"(
 cbuffer PreprocessParams : register(b0) {
-    uint2 resolution;
+    uint2 outputResolution;
+    uint2 inputResolution;
     float blurStrength;
     float hdrSaturation;
     float hdrContrast;
-    float padding[2];
+    float scale;
+    float2 offset;
+    float2 padding;
 };
 
 Texture2D<float4> InputTexture : register(t0);
@@ -51,10 +54,42 @@ float3 hsv_to_rgb(float3 hsv) {
 
 [numthreads(8, 8, 1)]
 void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
-    if (dispatchThreadId.x >= resolution.x || dispatchThreadId.y >= resolution.y) return;
+    if (dispatchThreadId.x >= outputResolution.x || dispatchThreadId.y >= outputResolution.y) return;
 
-    float4 color = InputTexture[dispatchThreadId.xy];
+    float2 pixelPos = float2(dispatchThreadId.x, dispatchThreadId.y);
     
+    // 1. Aspect Ratio / Letterboxing
+    float2 contentSize = float2(inputResolution.x * scale, inputResolution.y * scale);
+    
+    // Check if inside the content area
+    if (pixelPos.x < offset.x || pixelPos.x >= offset.x + contentSize.x ||
+        pixelPos.y < offset.y || pixelPos.y >= offset.y + contentSize.y) {
+        // Black bar
+        OutputTexture[dispatchThreadId.xy] = float4(0, 0, 0, 1);
+        return;
+    }
+
+    // 2. Map to Input Coordinates
+    float2 localPos = pixelPos - offset;
+    int2 srcCoord = int2(localPos / scale);
+    
+    // Clamp to be safe
+    srcCoord = clamp(srcCoord, int2(0, 0), int2(inputResolution.x - 1, inputResolution.y - 1));
+
+    // 3. Blur (on original picture)
+    float4 color = InputTexture[srcCoord];
+    
+    if (blurStrength > 0.01) {
+        float4 l = InputTexture[clamp(srcCoord + int2(-1, 0), int2(0,0), int2(inputResolution.x-1, inputResolution.y-1))];
+        float4 r = InputTexture[clamp(srcCoord + int2(1, 0), int2(0,0), int2(inputResolution.x-1, inputResolution.y-1))];
+        float4 u = InputTexture[clamp(srcCoord + int2(0, -1), int2(0,0), int2(inputResolution.x-1, inputResolution.y-1))];
+        float4 d = InputTexture[clamp(srcCoord + int2(0, 1), int2(0,0), int2(inputResolution.x-1, inputResolution.y-1))];
+        
+        float4 avg = (color + l + r + u + d) * 0.2;
+        color = lerp(color, avg, blurStrength);
+    }
+
+    // 4. HDR / Color Correction
     float3 hsv = rgb_to_hsv(color.rgb);
     hsv.y *= hdrSaturation;
     float3 rgb = hsv_to_rgb(hsv);
@@ -87,7 +122,7 @@ bool PreprocessingPass::Init(D3D12Context& context, int inputWidth, int inputHei
         rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         rootParameters[0].Constants.ShaderRegister = 0;
         rootParameters[0].Constants.RegisterSpace = 0;
-        rootParameters[0].Constants.Num32BitValues = 7; // 2+1+1+1+2
+        rootParameters[0].Constants.Num32BitValues = 12; // Updated for new params
         rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
         // Param 1: Descriptor Table (t0, u0)
@@ -211,14 +246,29 @@ void PreprocessingPass::Execute(D3D12Context& context, BufferManager& buffers) {
     cmdList->SetComputeRootDescriptorTable(1, mDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
 
     // 3. Set Constants
-    mParams.resolution[0] = buffers.GetWidth();
-    mParams.resolution[1] = buffers.GetHeight();
-    cmdList->SetComputeRoot32BitConstants(0, 7, &mParams, 0);
+    float inW = (float)buffers.GetWidth();
+    float inH = (float)buffers.GetHeight();
+    float outW = (float)buffers.GetOutputWidth();
+    float outH = (float)buffers.GetOutputHeight();
+
+    float scaleX = outW / inW;
+    float scaleY = outH / inH;
+    float scale = (scaleX < scaleY) ? scaleX : scaleY;
+
+    mParams.outputResolution[0] = buffers.GetOutputWidth();
+    mParams.outputResolution[1] = buffers.GetOutputHeight();
+    mParams.inputResolution[0] = buffers.GetWidth();
+    mParams.inputResolution[1] = buffers.GetHeight();
+    mParams.scale = scale;
+    mParams.offset[0] = (outW - inW * scale) * 0.5f;
+    mParams.offset[1] = (outH - inH * scale) * 0.5f;
+
+    cmdList->SetComputeRoot32BitConstants(0, 12, &mParams, 0);
 
     // 4. Dispatch
     // 8x8 threads per group
-    int groupsX = (buffers.GetWidth() + 7) / 8;
-    int groupsY = (buffers.GetHeight() + 7) / 8;
+    int groupsX = (buffers.GetOutputWidth() + 7) / 8;
+    int groupsY = (buffers.GetOutputHeight() + 7) / 8;
     cmdList->Dispatch(groupsX, groupsY, 1);
 }
 

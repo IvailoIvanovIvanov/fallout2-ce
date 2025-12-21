@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <chrono>
 
 #include <SDL.h>
 
@@ -422,9 +423,28 @@ bool UpscalerImpl::setRgbaInput(const uint32_t* rgbaBuffer) {
 bool UpscalerImpl::dispatch() {
     if (mState != UpscalerState::STATE_READY) return false;
     
+    static int frameCounter = 0;
+    static double totalTime = 0;
+    
+    auto start = std::chrono::high_resolution_clock::now();
+
     if (mPipeline) {
         mPipeline->Dispatch(mInputBuffer);
     }
+    
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsed = end - start;
+    
+    totalTime += elapsed.count();
+    frameCounter++;
+    
+    if (frameCounter % 30 == 0) {
+        double avgTime = totalTime / 30.0;
+        logDiagnostic("Frame %d: Render Time: %.2f ms (Avg: %.2f ms) | Input: %dx%d | Output: %dx%d", 
+            frameCounter, elapsed.count(), avgTime, mInputWidth, mInputHeight, mOutputWidth, mOutputHeight);
+        totalTime = 0;
+    }
+
     return true;
 }
 
