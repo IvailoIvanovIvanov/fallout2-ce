@@ -114,12 +114,12 @@ private:
     float mSmoothingStrength = 0.6f;
     bool mEnableKuwahara = false;
     int mKuwaharaRadius = 2;
-    bool mEnableSoftHDR = false;
+    bool mEnableSoftHDR = true;  // ENABLED BY DEFAULT
     float mHdrStrength = 0.5f;
-    float mHdrSaturation = 1.2f;
-    float mHdrContrast = 1.1f;
-    float mBlackCrushThreshold = 0.03f;
-    float mBlackCrushStrength = 1.0f;
+    float mHdrSaturation = 1.5f;  // Increased saturation
+    float mHdrContrast = 1.3f;    // Increased contrast
+    float mBlackCrushThreshold = 0.05f;  // Higher threshold
+    float mBlackCrushStrength = 1.5f;    // Stronger crush
     
     bool mVerboseLogging = false;
     char mLastError[ERROR_MSG_SIZE] = {};
@@ -197,7 +197,7 @@ void UpscalerImpl::loadUpscalerConfig() {
         if (modeValue < 0 || modeValue > 5) modeValue = 0;
         mConfiguredMode = static_cast<UpscalerMode>(modeValue);
     } else {
-        mConfiguredMode = UpscalerMode::NONE;
+        mConfiguredMode = UpscalerMode::REAL_ESRGAN;  // Default to ML upscaler
     }
     
     int qualityValue = 1;
@@ -337,31 +337,38 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
 
     logDiagnostic("RenderPipeline initialized: %dx%d -> %dx%d", inputWidth, inputHeight, outputWidth, outputHeight);
 
-    // Add Passes
+    // Add Passes in order: Blur (pre-process) -> HDR (color enhance) -> ML Upscale
+    
+    // 1. Add Blur Pass if needed (Pre-processing)
+    if (mEnableEdgeSmoothing) {
+        logDiagnostic("[PASS 1] Adding BlurFilter (strength=%.2f)", mSmoothingStrength);
+        auto blurPass = std::make_unique<renderer::BlurFilter>();
+        blurPass->SetStrength(mSmoothingStrength);
+        mPipeline->AddPass(std::move(blurPass));
+    }
+
+    // 2. Add HDR Pass if needed (Color enhancement)
+    logDiagnostic("HDR Filter Check: mEnableSoftHDR=%d, sat=%.2f, contrast=%.2f, blackThresh=%.3f, blackStr=%.2f",
+                  mEnableSoftHDR, mHdrSaturation, mHdrContrast, mBlackCrushThreshold, mBlackCrushStrength);
+    if (mEnableSoftHDR) {
+        logDiagnostic("[PASS 2] Adding HdrFilter (sat=%.2f, contrast=%.2f, blackThresh=%.3f, blackStr=%.2f)",
+                      mHdrSaturation, mHdrContrast, mBlackCrushThreshold, mBlackCrushStrength);
+        auto hdrPass = std::make_unique<renderer::HdrFilter>();
+        hdrPass->SetParams(mHdrSaturation, mHdrContrast, mBlackCrushThreshold, mBlackCrushStrength);
+        mPipeline->AddPass(std::move(hdrPass));
+    } else {
+        logDiagnostic("HDR Filter DISABLED (config: upscaler_hdr_enable=0)");
+    }
+
+    // 3. Add ML Upscaler if mode is enabled (Final upscaling)
     if (mode == UpscalerMode::REAL_ESRGAN) {
-        logDiagnostic("Adding MlUpscalePass");
+        logDiagnostic("[PASS 3] Adding MlUpscalePass (model=%s)", mMlModelFile.c_str());
         auto mlPass = std::make_unique<renderer::MlUpscalePass>();
         mlPass->SetModelFile(mMlModelFile);
         mPipeline->AddPass(std::move(mlPass));
     } else if (mode == UpscalerMode::ANIME4K) {
         logDiagnostic("Anime4K not yet ported to new pipeline, using Preprocessing only");
         // Fallback or placeholder
-    }
-
-    // Add Blur Pass if needed
-    if (mEnableEdgeSmoothing) {
-        logDiagnostic("Adding BlurFilter");
-        auto blurPass = std::make_unique<renderer::BlurFilter>();
-        blurPass->SetStrength(mSmoothingStrength);
-        mPipeline->AddPass(std::move(blurPass));
-    }
-
-    // Add HDR Pass if needed
-    if (mEnableSoftHDR) {
-        logDiagnostic("Adding HdrFilter");
-        auto hdrPass = std::make_unique<renderer::HdrFilter>();
-        hdrPass->SetParams(mHdrSaturation, mHdrContrast, mBlackCrushThreshold, mBlackCrushStrength);
-        mPipeline->AddPass(std::move(hdrPass));
     }
 
     // Ensure at least one pass exists for scaling if input != output

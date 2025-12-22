@@ -72,6 +72,11 @@ The upscaling system is a major component, offering multiple modes from simple i
 - **Data Flow**: Game Surface (Indexed) -> `UpscalerImpl` -> `RenderPipeline` -> `BufferManager` (Upload) -> `ShaderPass` chain -> `BufferManager` (Readback/Output).
 - **Phantom Display**: The concept of "Phantom Display" refers to the internal 640x480 rendering target which is then processed and upscaled to the actual window resolution.
 - **Redundancy**: There seems to be some overlap between `gpu_device`/`gpu_texture` (C-style) and `d3d12_context`/`buffer_manager` (C++ class based). The `RenderPipeline` uses the C++ classes, while `gpu_device` might be legacy or used by other parts of the engine.
+- **Pass Order**: The rendering pipeline applies effects in this order:
+  1. **Blur Filter** (optional, pre-processing): Smooths edges at the 640x480 native resolution
+  2. **HDR Filter** (enabled by default): Enhances colors, contrast, and deepens blacks at 640x480
+  3. **ML Upscaler** (default mode): Uses Real-ESRGAN to upscale the processed 640x480 to target resolution
+  4. **Scaler Pass** (final): Stretches the result to the physical display size
 
 ## Usage
 
@@ -80,3 +85,36 @@ To use the renderer:
 2. Each frame, provide input data using `upscalerSetIndexedInput` or `upscalerSetRgbaInput`.
 3. Call `upscalerDispatch` to execute the pipeline.
 4. Retrieve the result with `upscalerGetOutputBuffer`.
+
+### Configuration
+
+The renderer is configured to use **Real-ESRGAN ML upscaling by default** with HDR enhancement.
+
+**Default Pipeline Order:**
+1. Blur Filter (if enabled via `upscaler_edge_smoothing=1`)
+2. HDR Filter (enabled by default)
+3. Real-ESRGAN ML Upscaler (default mode)
+4. Final scaler to display resolution
+
+**HDR Filter Settings** (enabled by default):
+- **Saturation**: 1.5 (vivid colors)
+- **Contrast**: 1.3 (enhanced contrast)
+- **Black Crush Threshold**: 0.05 (affects darker pixels)
+- **Black Crush Strength**: 1.5 (deep blacks)
+
+Override in `fallout2.cfg`:
+```ini
+# Upscaler mode: 0=NONE, 1=ANIME4K, 2=REAL_ESRGAN (default)
+upscaler_mode=2
+
+# HDR settings
+upscaler_hdr_enable=1
+upscaler_hdr_saturation=1.5
+upscaler_hdr_contrast=1.3
+upscaler_black_crush_threshold=0.05
+upscaler_black_crush_strength=1.5
+
+# Edge smoothing (optional pre-processing blur)
+upscaler_edge_smoothing=0
+upscaler_smoothing_strength=0.6
+```

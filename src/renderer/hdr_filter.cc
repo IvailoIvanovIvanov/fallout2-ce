@@ -102,7 +102,7 @@ bool HdrFilter::Init(D3D12Context& context, int inputWidth, int inputHeight, int
         params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         params[0].Constants.ShaderRegister = 0;
         params[0].Constants.RegisterSpace = 0;
-        params[0].Constants.Num32BitValues = 8; // inputRes(2) + outputRes(2) + saturation(1) + contrast(1) + padding(2)
+        params[0].Constants.Num32BitValues = 8; // inputRes(2) + outputRes(2) + saturation(1) + contrast(1) + blackCrush(2)
         params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
         // Param 1: Input Texture (SRV)
@@ -178,6 +178,8 @@ bool HdrFilter::Init(D3D12Context& context, int inputWidth, int inputHeight, int
 }
 
 void HdrFilter::Execute(D3D12Context& context, ID3D12Resource* input, ID3D12Resource* output) {
+    diagnosticsLog(DiagnosticsLevel::Info, "HdrFilter", "Executing HDR filter: sat=%.2f, contrast=%.2f, blackThresh=%.3f, blackStr=%.2f",
+                   mParams.saturation, mParams.contrast, mParams.blackCrushThreshold, mParams.blackCrushStrength);
     auto cmdList = context.GetCommandList();
     auto device = context.GetDevice();
 
@@ -214,7 +216,8 @@ void HdrFilter::Execute(D3D12Context& context, ID3D12Resource* input, ID3D12Reso
         uint32_t outputRes[2];
         float saturation;
         float contrast;
-        float padding[2];
+        float blackCrushThreshold;
+        float blackCrushStrength;
     } constants;
     
     constants.inputRes[0] = mInputWidth;
@@ -223,8 +226,8 @@ void HdrFilter::Execute(D3D12Context& context, ID3D12Resource* input, ID3D12Reso
     constants.outputRes[1] = mOutputHeight;
     constants.saturation = mParams.saturation;
     constants.contrast = mParams.contrast;
-    constants.padding[0] = 0.0f;
-    constants.padding[1] = 0.0f;
+    constants.blackCrushThreshold = mParams.blackCrushThreshold;
+    constants.blackCrushStrength = mParams.blackCrushStrength;
 
     cmdList->SetComputeRoot32BitConstants(0, 8, &constants, 0);
 

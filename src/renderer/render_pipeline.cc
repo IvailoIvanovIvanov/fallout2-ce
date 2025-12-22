@@ -126,7 +126,10 @@ void RenderPipeline::Dispatch(const PhantomDisplay& display) {
 
     // Ensure InputBuffer is in SRV state (BufferManager leaves it in PIXEL_SHADER_RESOURCE | NON_PIXEL_SHADER_RESOURCE)
     
+    diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Executing %zu passes", mPasses.size());
+    int passIndex = 0;
     for (auto& pass : mPasses) {
+        diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Executing pass %d", passIndex++);
         ID3D12Resource* currentOutput = mIntermediateBuffers[targetIndex].Get();
 
         // Transition Output to UAV
