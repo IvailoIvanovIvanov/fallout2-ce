@@ -197,7 +197,7 @@ void UpscalerImpl::loadUpscalerConfig() {
         if (modeValue < 0 || modeValue > 5) modeValue = 0;
         mConfiguredMode = static_cast<UpscalerMode>(modeValue);
     } else {
-        mConfiguredMode = UpscalerMode::REAL_ESRGAN;  // Default to ML upscaler
+        mConfiguredMode = UpscalerMode::ANIME4K;  // Default to ANIME4K (ML not yet fully implemented)
     }
     
     int qualityValue = 1;
