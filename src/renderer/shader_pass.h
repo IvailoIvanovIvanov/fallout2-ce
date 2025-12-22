@@ -12,7 +12,7 @@ public:
     virtual ~ShaderPass() = default;
 
     virtual bool Init(D3D12Context& context, int inputWidth, int inputHeight, int outputWidth, int outputHeight) = 0;
-    virtual void Execute(D3D12Context& context, BufferManager& buffers) = 0;
+    virtual void Execute(D3D12Context& context, ID3D12Resource* input, ID3D12Resource* output) = 0;
     virtual void Shutdown() = 0;
 };
 

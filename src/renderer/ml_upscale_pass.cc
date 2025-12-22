@@ -154,7 +154,7 @@ bool MlUpscalePass::Init(D3D12Context& context, int inputWidth, int inputHeight,
     return true;
 }
 
-void MlUpscalePass::Execute(D3D12Context& context, BufferManager& buffers) {
+void MlUpscalePass::Execute(D3D12Context& context, ID3D12Resource* input, ID3D12Resource* output) {
     auto cmdList = context.GetCommandList();
     auto device = context.GetDevice();
     
@@ -168,7 +168,7 @@ void MlUpscalePass::Execute(D3D12Context& context, BufferManager& buffers) {
     srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Texture2D.MipLevels = 1;
-    device->CreateShaderResourceView(buffers.GetInputBuffer(), &srvDesc, handle);
+    device->CreateShaderResourceView(input, &srvDesc, handle);
     
     handle.ptr += increment;
     D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
@@ -194,7 +194,7 @@ void MlUpscalePass::Execute(D3D12Context& context, BufferManager& buffers) {
     handle.ptr += increment;
     uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-    device->CreateUnorderedAccessView(buffers.GetOutputBuffer(), nullptr, &uavDesc, handle);
+    device->CreateUnorderedAccessView(output, nullptr, &uavDesc, handle);
 
     // 2. Execute RgbaToPlanar
     cmdList->SetPipelineState(mPsoRgbaToPlanar.Get());

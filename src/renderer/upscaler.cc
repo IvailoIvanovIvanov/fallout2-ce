@@ -14,6 +14,7 @@
 #include "ml_upscale_pass.h"
 #include "blur_filter.h"
 #include "hdr_filter.h"
+#include "phantom_display.h"
 
 #include "../diagnostics.h"
 #include "../game_config.h"
@@ -94,10 +95,9 @@ private:
     // New Renderer Pipeline
     std::unique_ptr<renderer::RenderPipeline> mPipeline;
 
-    // CPU Input Buffer (for format conversion)
-    uint32_t* mInputBuffer = nullptr;
-    int mInputWidth = 0;
-    int mInputHeight = 0;
+    // Phantom Display
+    std::unique_ptr<renderer::PhantomDisplay> mPhantomDisplay;
+
     int mOutputWidth = 0;
     int mOutputHeight = 0;
 
@@ -290,28 +290,12 @@ void UpscalerImpl::reloadConfig() {
 }
 
 bool UpscalerImpl::allocateInputBuffer(int width, int height) {
-    if (width <= 0 || height <= 0 || width > MAX_RESOLUTION || height > MAX_RESOLUTION) {
-        setError("Invalid input dimensions: %dx%d", width, height);
-        return false;
-    }
-
-    deallocateBuffers();
-    mInputWidth = width;
-    mInputHeight = height;
-
-    size_t bufferSize = static_cast<size_t>(width) * static_cast<size_t>(height) * sizeof(uint32_t);
-    mInputBuffer = static_cast<uint32_t*>(internal_malloc(bufferSize));
-
-    if (mInputBuffer == nullptr) {
-        setError("Failed to allocate input buffer");
-        return false;
-    }
+    // Deprecated: Handled by PhantomDisplay
     return true;
 }
 
 void UpscalerImpl::deallocateBuffers() {
-    if (mInputBuffer) { internal_free(mInputBuffer); mInputBuffer = nullptr; }
-    mInputWidth = 0; mInputHeight = 0;
+    // Deprecated: Handled by PhantomDisplay
 }
 
 bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int outputHeight, UpscalerMode mode) {
@@ -331,10 +315,7 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
     mOutputWidth = outputWidth;
     mOutputHeight = outputHeight;
 
-    if (!allocateInputBuffer(inputWidth, inputHeight)) {
-        mState = UpscalerState::STATE_ERROR;
-        return false;
-    }
+    mPhantomDisplay = std::make_unique<renderer::PhantomDisplay>(inputWidth, inputHeight);
 
     if (mode == UpscalerMode::NONE) {
         mState = UpscalerState::STATE_READY;
@@ -407,8 +388,16 @@ bool UpscalerImpl::reconfigureOutput(int outputWidth, int outputHeight) {
     
     // Shutdown and re-init
     UpscalerMode currentMode = mMode;
+    int inputWidth = mPhantomDisplay ? mPhantomDisplay->GetWidth() : 0;
+    int inputHeight = mPhantomDisplay ? mPhantomDisplay->GetHeight() : 0;
+
+    if (inputWidth == 0 || inputHeight == 0) {
+        setError("Cannot reconfigure: Input dimensions unknown");
+        return false;
+    }
+
     shutdown();
-    return init(mInputWidth, mInputHeight, outputWidth, outputHeight, currentMode);
+    return init(inputWidth, inputHeight, outputWidth, outputHeight, currentMode);
 }
 
 void UpscalerImpl::shutdown() {
@@ -417,7 +406,7 @@ void UpscalerImpl::shutdown() {
         mPipeline->Shutdown();
         mPipeline.reset();
     }
-    deallocateBuffers();
+    mPhantomDisplay.reset();
     mState = UpscalerState::STATE_UNINITIALIZED;
     mIsAvailable = false;
     if (mUpscaleLog) {
@@ -427,18 +416,14 @@ void UpscalerImpl::shutdown() {
 }
 
 bool UpscalerImpl::setIndexedInput(const unsigned char* indexedBuffer, const uint32_t* palette) {
-    if (mState != UpscalerState::STATE_READY || !mInputBuffer || !indexedBuffer || !palette) return false;
-
-    for (int i = 0; i < mInputWidth * mInputHeight; ++i) {
-        uint32_t paletteEntry = palette[indexedBuffer[i]];
-        mInputBuffer[i] = (paletteEntry & 0xFFFFFF) | 0xFF000000;
-    }
+    if (mState != UpscalerState::STATE_READY || !mPhantomDisplay || !indexedBuffer || !palette) return false;
+    mPhantomDisplay->SetData(indexedBuffer, palette);
     return true;
 }
 
 bool UpscalerImpl::setRgbaInput(const uint32_t* rgbaBuffer) {
-    if (mState != UpscalerState::STATE_READY || !mInputBuffer || !rgbaBuffer) return false;
-    std::memcpy(mInputBuffer, rgbaBuffer, mInputWidth * mInputHeight * sizeof(uint32_t));
+    if (mState != UpscalerState::STATE_READY || !mPhantomDisplay || !rgbaBuffer) return false;
+    mPhantomDisplay->SetData(rgbaBuffer);
     return true;
 }
 
@@ -450,8 +435,8 @@ bool UpscalerImpl::dispatch() {
     
     auto start = std::chrono::high_resolution_clock::now();
 
-    if (mPipeline) {
-        mPipeline->Dispatch(mInputBuffer);
+    if (mPipeline && mPhantomDisplay) {
+        mPipeline->Dispatch(*mPhantomDisplay);
     }
     
     auto end = std::chrono::high_resolution_clock::now();
@@ -462,8 +447,10 @@ bool UpscalerImpl::dispatch() {
     
     if (frameCounter % 30 == 0) {
         double avgTime = totalTime / 30.0;
+        int inputW = mPhantomDisplay ? mPhantomDisplay->GetWidth() : 0;
+        int inputH = mPhantomDisplay ? mPhantomDisplay->GetHeight() : 0;
         logDiagnostic("Frame %d: Render Time: %.2f ms (Avg: %.2f ms) | Input: %dx%d | Output: %dx%d", 
-            frameCounter, elapsed.count(), avgTime, mInputWidth, mInputHeight, mOutputWidth, mOutputHeight);
+            frameCounter, elapsed.count(), avgTime, inputW, inputH, mOutputWidth, mOutputHeight);
         totalTime = 0;
     }
 

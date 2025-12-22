@@ -167,13 +167,11 @@ bool HdrFilter::Init(D3D12Context& context, int inputWidth, int inputHeight, int
     return true;
 }
 
-void HdrFilter::Execute(D3D12Context& context, BufferManager& buffers) {
+void HdrFilter::Execute(D3D12Context& context, ID3D12Resource* input, ID3D12Resource* output) {
     auto cmdList = context.GetCommandList();
     auto device = context.GetDevice();
 
     // 1. Create Descriptors
-    auto inputBuffer = buffers.GetInputBuffer();
-    auto outputBuffer = buffers.GetOutputBuffer();
     
     D3D12_CPU_DESCRIPTOR_HANDLE handle = mDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
     UINT handleSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -184,26 +182,14 @@ void HdrFilter::Execute(D3D12Context& context, BufferManager& buffers) {
     srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Texture2D.MipLevels = 1;
-    device->CreateShaderResourceView(inputBuffer, &srvDesc, handle);
+    device->CreateShaderResourceView(input, &srvDesc, handle);
 
     // UAV for Output
     handle.ptr += handleSize;
     D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
     uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-    device->CreateUnorderedAccessView(outputBuffer, nullptr, &uavDesc, handle);
-
-    // 2. Resource Barriers
-    D3D12_RESOURCE_BARRIER barriers[1] = {};
-    
-    // Output: Transition to UAV
-    barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barriers[0].Transition.pResource = outputBuffer;
-    barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-    barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    
-    cmdList->ResourceBarrier(1, barriers);
+    device->CreateUnorderedAccessView(output, nullptr, &uavDesc, handle);
 
     // 3. Dispatch
     cmdList->SetPipelineState(mPipelineState.Get());

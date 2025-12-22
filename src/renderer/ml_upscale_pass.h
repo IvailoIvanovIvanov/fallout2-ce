@@ -15,7 +15,7 @@ public:
     ~MlUpscalePass() override;
 
     bool Init(D3D12Context& context, int inputWidth, int inputHeight, int outputWidth, int outputHeight) override;
-    void Execute(D3D12Context& context, BufferManager& buffers) override;
+    void Execute(D3D12Context& context, ID3D12Resource* input, ID3D12Resource* output) override;
     void Shutdown() override;
 
     void SetModelFile(const std::string& path) { mModelFile = path; }

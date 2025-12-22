@@ -1,16 +1,17 @@
-#include "blur_filter.h"
+#include "scaler_pass.h"
 #include "../diagnostics.h"
 #include <d3dcompiler.h>
+#include <algorithm>
 
 namespace fallout {
 namespace renderer {
 
-const char* BLUR_SHADER_SOURCE = R"(
-cbuffer BlurParams : register(b0) {
+const char* SCALER_SHADER_SOURCE = R"(
+cbuffer ScalerParams : register(b0) {
     uint2 inputResolution;
     uint2 outputResolution;
-    float strength;
-    float padding;
+    float2 offset;
+    float2 scale;
 };
 
 Texture2D<float4> InputTexture : register(t0);
@@ -20,35 +21,37 @@ RWTexture2D<float4> OutputTexture : register(u0);
 void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
     if (dispatchThreadId.x >= outputResolution.x || dispatchThreadId.y >= outputResolution.y) return;
 
-    // Nearest Neighbor Scaling
-    int2 inputCoord;
-    inputCoord.x = (dispatchThreadId.x * inputResolution.x) / outputResolution.x;
-    inputCoord.y = (dispatchThreadId.y * inputResolution.y) / outputResolution.y;
-
-    // Clamp to input bounds
-    inputCoord = clamp(inputCoord, int2(0, 0), int2(inputResolution.x - 1, inputResolution.y - 1));
-
-    float4 color = InputTexture[inputCoord];
+    // Calculate normalized coordinates in output space
+    float2 uv = (float2(dispatchThreadId.xy) + 0.5) / float2(outputResolution);
     
-    if (strength > 0.01) {
-        // Sample neighbors in Input Space
-        float4 l = InputTexture[clamp(inputCoord + int2(-1, 0), int2(0,0), int2(inputResolution.x-1, inputResolution.y-1))];
-        float4 r = InputTexture[clamp(inputCoord + int2(1, 0), int2(0,0), int2(inputResolution.x-1, inputResolution.y-1))];
-        float4 u = InputTexture[clamp(inputCoord + int2(0, -1), int2(0,0), int2(inputResolution.x-1, inputResolution.y-1))];
-        float4 d = InputTexture[clamp(inputCoord + int2(0, 1), int2(0,0), int2(inputResolution.x-1, inputResolution.y-1))];
+    // Apply inverse transform to get input UV
+    // Output = Input * Scale + Offset
+    // Input = (Output - Offset) / Scale
+    
+    // We want to map [0,1] output to [0,1] input, but with letterboxing.
+    // Actually, simpler:
+    // Screen Coord -> Input Coord
+    
+    float2 screenCoord = float2(dispatchThreadId.xy);
+    float2 inputCoord = (screenCoord - offset) / scale;
+    
+    float4 color = float4(0, 0, 0, 1); // Black bars
+    
+    if (inputCoord.x >= 0 && inputCoord.x < inputResolution.x &&
+        inputCoord.y >= 0 && inputCoord.y < inputResolution.y) {
         
-        float4 avg = (color + l + r + u + d) * 0.2;
-        color = lerp(color, avg, strength);
+        // Nearest Neighbor Sampling
+        color = InputTexture[int2(inputCoord)];
     }
     
     OutputTexture[dispatchThreadId.xy] = color;
 }
 )";
 
-BlurFilter::BlurFilter() {}
-BlurFilter::~BlurFilter() { Shutdown(); }
+ScalerPass::ScalerPass() {}
+ScalerPass::~ScalerPass() { Shutdown(); }
 
-bool BlurFilter::Init(D3D12Context& context, int inputWidth, int inputHeight, int outputWidth, int outputHeight) {
+bool ScalerPass::Init(D3D12Context& context, int inputWidth, int inputHeight, int outputWidth, int outputHeight) {
     mInputWidth = inputWidth;
     mInputHeight = inputHeight;
     mOutputWidth = outputWidth;
@@ -64,7 +67,7 @@ bool BlurFilter::Init(D3D12Context& context, int inputWidth, int inputHeight, in
         params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         params[0].Constants.ShaderRegister = 0;
         params[0].Constants.RegisterSpace = 0;
-        params[0].Constants.Num32BitValues = 6; // inputRes(2) + outputRes(2) + strength(1) + padding(1)
+        params[0].Constants.Num32BitValues = 8; // inputRes(2) + outputRes(2) + offset(2) + scale(2)
         params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
         // Param 1: Input Texture (SRV)
@@ -101,7 +104,7 @@ bool BlurFilter::Init(D3D12Context& context, int inputWidth, int inputHeight, in
         Microsoft::WRL::ComPtr<ID3DBlob> signature;
         Microsoft::WRL::ComPtr<ID3DBlob> error;
         if (FAILED(D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error))) {
-            if (error) diagnosticsLog(DiagnosticsLevel::Info, "BlurFilter", "RootSig Serialize Error: %s", (char*)error->GetBufferPointer());
+            if (error) diagnosticsLog(DiagnosticsLevel::Info, "ScalerPass", "RootSig Serialize Error: %s", (char*)error->GetBufferPointer());
             return false;
         }
         if (FAILED(device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&mRootSignature)))) {
@@ -112,8 +115,8 @@ bool BlurFilter::Init(D3D12Context& context, int inputWidth, int inputHeight, in
     // 2. Compile Shader
     Microsoft::WRL::ComPtr<ID3DBlob> shaderBlob;
     Microsoft::WRL::ComPtr<ID3DBlob> errorBlob;
-    if (FAILED(D3DCompile(BLUR_SHADER_SOURCE, strlen(BLUR_SHADER_SOURCE), nullptr, nullptr, nullptr, "main", "cs_5_0", 0, 0, &shaderBlob, &errorBlob))) {
-        if (errorBlob) diagnosticsLog(DiagnosticsLevel::Info, "BlurFilter", "Shader Compile Error: %s", (char*)errorBlob->GetBufferPointer());
+    if (FAILED(D3DCompile(SCALER_SHADER_SOURCE, strlen(SCALER_SHADER_SOURCE), nullptr, nullptr, nullptr, "main", "cs_5_0", 0, 0, &shaderBlob, &errorBlob))) {
+        if (errorBlob) diagnosticsLog(DiagnosticsLevel::Info, "ScalerPass", "Shader Compile Error: %s", (char*)errorBlob->GetBufferPointer());
         return false;
     }
 
@@ -136,15 +139,14 @@ bool BlurFilter::Init(D3D12Context& context, int inputWidth, int inputHeight, in
         return false;
     }
 
-    return true; 
+    return true;
 }
 
-void BlurFilter::Execute(D3D12Context& context, ID3D12Resource* input, ID3D12Resource* output) {
+void ScalerPass::Execute(D3D12Context& context, ID3D12Resource* input, ID3D12Resource* output) {
     auto cmdList = context.GetCommandList();
     auto device = context.GetDevice();
 
-    // 1. Create Descriptors (every frame, as buffers might change due to double buffering)
-    
+    // 1. Create Descriptors
     D3D12_CPU_DESCRIPTOR_HANDLE handle = mDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
     UINT handleSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
@@ -163,6 +165,23 @@ void BlurFilter::Execute(D3D12Context& context, ID3D12Resource* input, ID3D12Res
     uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
     device->CreateUnorderedAccessView(output, nullptr, &uavDesc, handle);
 
+    // 2. Calculate Scale and Offset (Letterboxing)
+    // We need to know the actual dimensions of the input resource, not just mInputWidth.
+    // But Init gave us mInputWidth. Let's assume input resource matches mInputWidth/Height.
+    // Wait, if we upscale, input might be larger than mInputWidth (if ML pass ran).
+    // We should probably get dimensions from resource desc, but for now let's trust Init or update mInputWidth dynamically?
+    // Actually, ScalerPass is initialized with the *expected* input size (e.g. 2560x1920 or 640x480).
+    
+    float scaleX = (float)mOutputWidth / mInputWidth;
+    float scaleY = (float)mOutputHeight / mInputHeight;
+    float scale = std::min(scaleX, scaleY);
+    
+    float finalWidth = mInputWidth * scale;
+    float finalHeight = mInputHeight * scale;
+    
+    float offsetX = (mOutputWidth - finalWidth) * 0.5f;
+    float offsetY = (mOutputHeight - finalHeight) * 0.5f;
+
     // 3. Dispatch
     cmdList->SetPipelineState(mPipelineState.Get());
     cmdList->SetComputeRootSignature(mRootSignature.Get());
@@ -170,24 +189,24 @@ void BlurFilter::Execute(D3D12Context& context, ID3D12Resource* input, ID3D12Res
     ID3D12DescriptorHeap* heaps[] = { mDescriptorHeap.Get() };
     cmdList->SetDescriptorHeaps(1, heaps);
 
-    // Set Constants
-    struct ShaderConstants {
+    struct Constants {
         uint32_t inputRes[2];
         uint32_t outputRes[2];
-        float strength;
-        float padding;
+        float offset[2];
+        float scale[2];
     } constants;
     
     constants.inputRes[0] = mInputWidth;
     constants.inputRes[1] = mInputHeight;
     constants.outputRes[0] = mOutputWidth;
     constants.outputRes[1] = mOutputHeight;
-    constants.strength = mParams.strength;
-    constants.padding = 0.0f;
+    constants.offset[0] = offsetX;
+    constants.offset[1] = offsetY;
+    constants.scale[0] = scale;
+    constants.scale[1] = scale;
 
-    cmdList->SetComputeRoot32BitConstants(0, 6, &constants, 0);
+    cmdList->SetComputeRoot32BitConstants(0, 8, &constants, 0);
 
-    // Set Descriptor Tables
     D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = mDescriptorHeap->GetGPUDescriptorHandleForHeapStart();
     cmdList->SetComputeRootDescriptorTable(1, gpuHandle); // SRV
     
@@ -197,13 +216,10 @@ void BlurFilter::Execute(D3D12Context& context, ID3D12Resource* input, ID3D12Res
     cmdList->Dispatch((mOutputWidth + 7) / 8, (mOutputHeight + 7) / 8, 1);
 }
 
-void BlurFilter::Shutdown() {
+void ScalerPass::Shutdown() {
     mRootSignature.Reset();
     mPipelineState.Reset();
-}
-
-void BlurFilter::SetStrength(float strength) {
-    mParams.strength = strength;
+    mDescriptorHeap.Reset();
 }
 
 } // namespace renderer
