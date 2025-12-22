@@ -17,22 +17,22 @@ RenderPipeline::~RenderPipeline() {
     Shutdown();
 }
 
-bool RenderPipeline::Init(int inputWidth, int inputHeight, int outputWidth, int outputHeight) {
+bool RenderPipeline::Init(int inputWidth, int inputHeight, const RealDisplay& outputDisplay) {
     if (mInitialized) {
         return true;
     }
 
     mInputWidth = inputWidth;
     mInputHeight = inputHeight;
-    mOutputWidth = outputWidth;
-    mOutputHeight = outputHeight;
+    mOutputWidth = outputDisplay.GetWidth();
+    mOutputHeight = outputDisplay.GetHeight();
 
     if (!mContext.Init()) {
         diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Failed to initialize D3D12Context");
         return false;
     }
 
-    if (!mBuffers.Init(mContext, inputWidth, inputHeight, outputWidth, outputHeight)) {
+    if (!mBuffers.Init(mContext, inputWidth, inputHeight, mOutputWidth, mOutputHeight)) {
         diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Failed to initialize BufferManager");
         return false;
     }
@@ -50,7 +50,7 @@ bool RenderPipeline::Init(int inputWidth, int inputHeight, int outputWidth, int 
     }
 
     // Initialize Scaler Pass (640x480 -> WindowSize)
-    if (!mScalerPass->Init(mContext, inputWidth, inputHeight, outputWidth, outputHeight)) {
+    if (!mScalerPass->Init(mContext, inputWidth, inputHeight, mOutputWidth, mOutputHeight)) {
         diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Failed to initialize ScalerPass");
         return false;
     }

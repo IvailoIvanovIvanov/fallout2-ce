@@ -11,7 +11,8 @@ cbuffer HdrParams : register(b0) {
     uint2 outputResolution;
     float saturation;
     float contrast;
-    float2 padding;
+    float blackCrushThreshold;
+    float blackCrushStrength;
 };
 
 Texture2D<float4> InputTexture : register(t0);
@@ -63,10 +64,19 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
 
     float4 color = InputTexture[inputCoord];
     
+    // 1. Black Crush (Pre-processing)
+    float luminance = dot(color.rgb, float3(0.299, 0.587, 0.114));
+    if (luminance < blackCrushThreshold) {
+        float factor = 1.0 - (blackCrushThreshold - luminance) / blackCrushThreshold * blackCrushStrength;
+        color.rgb *= max(0.0, factor);
+    }
+
+    // 2. Saturation
     float3 hsv = rgb_to_hsv(color.rgb);
     hsv.y *= saturation;
     float3 rgb = hsv_to_rgb(hsv);
     
+    // 3. Contrast (Pivot around 0.5)
     rgb = (rgb - 0.5) * contrast + 0.5;
     
     OutputTexture[dispatchThreadId.xy] = float4(rgb, color.a);
@@ -233,9 +243,11 @@ void HdrFilter::Shutdown() {
     mPipelineState.Reset();
 }
 
-void HdrFilter::SetParams(float saturation, float contrast) {
+void HdrFilter::SetParams(float saturation, float contrast, float blackCrushThreshold, float blackCrushStrength) {
     mParams.saturation = saturation;
     mParams.contrast = contrast;
+    mParams.blackCrushThreshold = blackCrushThreshold;
+    mParams.blackCrushStrength = blackCrushStrength;
 }
 
 } // namespace renderer

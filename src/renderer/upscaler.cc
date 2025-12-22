@@ -15,6 +15,7 @@
 #include "blur_filter.h"
 #include "hdr_filter.h"
 #include "phantom_display.h"
+#include "real_display.h"
 
 #include "../diagnostics.h"
 #include "../game_config.h"
@@ -52,10 +53,15 @@ public:
         return nullptr;
     }
 
-    int getOutputPitch() const { return mOutputWidth * 4; }
+    int getOutputPitch() const { return mRealDisplay ? mRealDisplay->GetWidth() * 4 : 0; }
     void getOutputDimensions(int& width, int& height) const {
-        width = mOutputWidth;
-        height = mOutputHeight;
+        if (mRealDisplay) {
+            width = mRealDisplay->GetWidth();
+            height = mRealDisplay->GetHeight();
+        } else {
+            width = 0;
+            height = 0;
+        }
     }
 
     bool setQuality(UpscalerQuality quality) { mQuality = quality; return true; }
@@ -97,9 +103,8 @@ private:
 
     // Phantom Display
     std::unique_ptr<renderer::PhantomDisplay> mPhantomDisplay;
-
-    int mOutputWidth = 0;
-    int mOutputHeight = 0;
+    // Real Display
+    std::unique_ptr<renderer::RealDisplay> mRealDisplay;
 
     // Config
     float mSharpness = 0.5f;
@@ -312,10 +317,9 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
 
     mState = UpscalerState::STATE_INITIALIZING;
     mMode = mode;
-    mOutputWidth = outputWidth;
-    mOutputHeight = outputHeight;
-
+    
     mPhantomDisplay = std::make_unique<renderer::PhantomDisplay>(inputWidth, inputHeight);
+    mRealDisplay = std::make_unique<renderer::RealDisplay>(outputWidth, outputHeight);
 
     if (mode == UpscalerMode::NONE) {
         mState = UpscalerState::STATE_READY;
@@ -325,7 +329,7 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
 
     // Initialize RenderPipeline
     mPipeline = std::make_unique<renderer::RenderPipeline>();
-    if (!mPipeline->Init(inputWidth, inputHeight, outputWidth, outputHeight)) {
+    if (!mPipeline->Init(inputWidth, inputHeight, *mRealDisplay)) {
         setError("Failed to initialize RenderPipeline");
         mState = UpscalerState::STATE_ERROR;
         return false;
@@ -356,7 +360,7 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
     if (mEnableSoftHDR) {
         logDiagnostic("Adding HdrFilter");
         auto hdrPass = std::make_unique<renderer::HdrFilter>();
-        hdrPass->SetParams(mHdrSaturation, mHdrContrast);
+        hdrPass->SetParams(mHdrSaturation, mHdrContrast, mBlackCrushThreshold, mBlackCrushStrength);
         mPipeline->AddPass(std::move(hdrPass));
     }
 
@@ -382,9 +386,12 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
 }
 
 bool UpscalerImpl::reconfigureOutput(int outputWidth, int outputHeight) {
-    if (outputWidth == mOutputWidth && outputHeight == mOutputHeight) return true;
+    if (mRealDisplay && mRealDisplay->GetWidth() == outputWidth && mRealDisplay->GetHeight() == outputHeight) return true;
     
-    logDiagnostic("Reconfiguring output: %dx%d -> %dx%d", mOutputWidth, mOutputHeight, outputWidth, outputHeight);
+    logDiagnostic("Reconfiguring output: %dx%d -> %dx%d", 
+        mRealDisplay ? mRealDisplay->GetWidth() : 0, 
+        mRealDisplay ? mRealDisplay->GetHeight() : 0, 
+        outputWidth, outputHeight);
     
     // Shutdown and re-init
     UpscalerMode currentMode = mMode;
@@ -407,6 +414,7 @@ void UpscalerImpl::shutdown() {
         mPipeline.reset();
     }
     mPhantomDisplay.reset();
+    mRealDisplay.reset();
     mState = UpscalerState::STATE_UNINITIALIZED;
     mIsAvailable = false;
     if (mUpscaleLog) {
@@ -449,8 +457,10 @@ bool UpscalerImpl::dispatch() {
         double avgTime = totalTime / 30.0;
         int inputW = mPhantomDisplay ? mPhantomDisplay->GetWidth() : 0;
         int inputH = mPhantomDisplay ? mPhantomDisplay->GetHeight() : 0;
+        int outputW = mRealDisplay ? mRealDisplay->GetWidth() : 0;
+        int outputH = mRealDisplay ? mRealDisplay->GetHeight() : 0;
         logDiagnostic("Frame %d: Render Time: %.2f ms (Avg: %.2f ms) | Input: %dx%d | Output: %dx%d", 
-            frameCounter, elapsed.count(), avgTime, inputW, inputH, mOutputWidth, mOutputHeight);
+            frameCounter, elapsed.count(), avgTime, inputW, inputH, outputW, outputH);
         totalTime = 0;
     }
 

@@ -6,6 +6,7 @@
 #include "shader_pass.h"
 #include "scaler_pass.h"
 #include "phantom_display.h"
+#include "real_display.h"
 
 #include <vector>
 #include <memory>
@@ -18,7 +19,7 @@ public:
     RenderPipeline();
     ~RenderPipeline();
 
-    bool Init(int inputWidth, int inputHeight, int outputWidth, int outputHeight);
+    bool Init(int inputWidth, int inputHeight, const RealDisplay& outputDisplay);
     void Shutdown();
 
     // Main entry point for the frame

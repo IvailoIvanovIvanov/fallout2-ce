@@ -17,14 +17,15 @@ public:
     void Execute(D3D12Context& context, ID3D12Resource* input, ID3D12Resource* output) override;
     void Shutdown() override;
 
-    void SetParams(float saturation, float contrast);
+    void SetParams(float saturation, float contrast, float blackCrushThreshold, float blackCrushStrength);
 
 private:
     struct HdrParams {
         uint32_t resolution[2];
         float saturation;
         float contrast;
-        float padding[2];
+        float blackCrushThreshold;
+        float blackCrushStrength;
     };
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> mRootSignature;
