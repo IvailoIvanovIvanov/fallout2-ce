@@ -128,7 +128,6 @@ private:
     
     // ML Config
     std::string mMlModelFile;
-    int mMlFrameSkip = 3;
 };
 
 UpscalerImpl* upscalerGetImpl() {
@@ -193,7 +192,7 @@ void UpscalerImpl::loadConfiguration() {
 
 void UpscalerImpl::loadUpscalerConfig() {
     int modeValue = 0;
-    if (configGetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_MODE_KEY, &modeValue)) {
+    if (configGetInt(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, GAME_CONFIG_UPSCALER_MODE_KEY, &modeValue)) {
         if (modeValue < 0 || modeValue > 5) modeValue = 0;
         mConfiguredMode = static_cast<UpscalerMode>(modeValue);
     } else {
@@ -201,27 +200,22 @@ void UpscalerImpl::loadUpscalerConfig() {
     }
     
     int qualityValue = 1;
-    if (configGetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_QUALITY_KEY, &qualityValue)) {
+    if (configGetInt(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, GAME_CONFIG_UPSCALER_QUALITY_KEY, &qualityValue)) {
         mQuality = static_cast<UpscalerQuality>(qualityValue);
     }
     
     double sharpnessValue = 0.5;
-    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_SHARPNESS_KEY, &sharpnessValue)) {
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, GAME_CONFIG_UPSCALER_SHARPNESS_KEY, &sharpnessValue)) {
         mSharpness = static_cast<float>(sharpnessValue);
     }
     
     bool verboseValue = false;
-    if (configGetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_VERBOSE_LOG_KEY, &verboseValue)) {
+    if (configGetBool(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, GAME_CONFIG_UPSCALER_VERBOSE_LOG_KEY, &verboseValue)) {
         mVerboseLogging = verboseValue;
     }
     
-    int frameSkip = 3;
-    if (configGetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_ml_frame_skip", &frameSkip)) {
-        mMlFrameSkip = std::clamp(frameSkip, 1, 10);
-    }
-
     char* modelFile = nullptr;
-    if (configGetString(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_model_file", &modelFile)) {
+    if (configGetString(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, "model_file", &modelFile)) {
         mMlModelFile = std::string(modelFile);
     } else {
         mMlModelFile = "RealESRGAN_x4plus_anime_6B.onnx";
@@ -229,43 +223,43 @@ void UpscalerImpl::loadUpscalerConfig() {
 }
 
 void UpscalerImpl::loadFilterConfig() {
-    configGetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_DEBANDING_KEY, &mEnableDebanding);
+    configGetBool(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, GAME_CONFIG_UPSCALER_DEBANDING_KEY, &mEnableDebanding);
     double debandingStr = 0.5;
-    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_DEBANDING_STRENGTH_KEY, &debandingStr)) {
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, GAME_CONFIG_UPSCALER_DEBANDING_STRENGTH_KEY, &debandingStr)) {
         mDebandingStrength = static_cast<float>(debandingStr);
     }
     
-    configGetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_EDGE_SMOOTHING_KEY, &mEnableEdgeSmoothing);
+    configGetBool(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, GAME_CONFIG_UPSCALER_EDGE_SMOOTHING_KEY, &mEnableEdgeSmoothing);
     double smoothingStr = 0.6;
-    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_SMOOTHING_STRENGTH_KEY, &smoothingStr)) {
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, GAME_CONFIG_UPSCALER_SMOOTHING_STRENGTH_KEY, &smoothingStr)) {
         mSmoothingStrength = static_cast<float>(smoothingStr);
     }
     
-    configGetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_kuwahara_enable", &mEnableKuwahara);
+    configGetBool(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, "kuwahara_enable", &mEnableKuwahara);
     int radius = 2;
-    if (configGetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_kuwahara_radius", &radius)) {
+    if (configGetInt(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, "kuwahara_radius", &radius)) {
         mKuwaharaRadius = std::clamp(radius, 1, 5);
     }
     
-    configGetBool(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_hdr_enable", &mEnableSoftHDR);
+    configGetBool(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, "hdr_enable", &mEnableSoftHDR);
     double hdrStr = 0.5;
-    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_hdr_strength", &hdrStr)) {
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, "hdr_strength", &hdrStr)) {
         mHdrStrength = static_cast<float>(std::clamp(hdrStr, 0.0, 1.0));
     }
     double hdrSat = 1.2;
-    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_hdr_saturation", &hdrSat)) {
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, "hdr_saturation", &hdrSat)) {
         mHdrSaturation = static_cast<float>(std::clamp(hdrSat, 0.0, 2.0));
     }
     double hdrCon = 1.1;
-    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_hdr_contrast", &hdrCon)) {
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, "hdr_contrast", &hdrCon)) {
         mHdrContrast = static_cast<float>(std::clamp(hdrCon, 0.0, 2.0));
     }
     double blackThresh = 0.03;
-    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_black_crush_threshold", &blackThresh)) {
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, "black_crush_threshold", &blackThresh)) {
         mBlackCrushThreshold = static_cast<float>(std::clamp(blackThresh, 0.0, 0.15));
     }
     double blackStr = 1.0;
-    if (configGetDouble(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, "upscaler_black_crush_strength", &blackStr)) {
+    if (configGetDouble(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, "black_crush_strength", &blackStr)) {
         mBlackCrushStrength = static_cast<float>(std::clamp(blackStr, 0.0, 2.0));
     }
 }
