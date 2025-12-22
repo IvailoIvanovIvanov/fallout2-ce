@@ -150,6 +150,7 @@ bool HdrFilter::Init(D3D12Context& context, int inputWidth, int inputHeight, int
     // 2. Compile Shader
     Microsoft::WRL::ComPtr<ID3DBlob> shaderBlob;
     Microsoft::WRL::ComPtr<ID3DBlob> errorBlob;
+
     if (FAILED(D3DCompile(HDR_SHADER_SOURCE, strlen(HDR_SHADER_SOURCE), nullptr, nullptr, nullptr, "main", "cs_5_0", 0, 0, &shaderBlob, &errorBlob))) {
         if (errorBlob) diagnosticsLog(DiagnosticsLevel::Info, "HdrFilter", "Shader Compile Error: %s", (char*)errorBlob->GetBufferPointer());
         return false;

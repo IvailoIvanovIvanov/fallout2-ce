@@ -9,6 +9,7 @@ namespace renderer {
 
 const char* ANIME4K_SHADER_SOURCE = R"(
 // Anime4K v3.2 Upscale Original x2 (Ported to HLSL)
+// Ported from: https://github.com/bloc97/Anime4K/blob/master/glsl/Upscale/Anime4K_Upscale_Original_x2.glsl
 
 #define REFINE_STRENGTH 0.5
 #define REFINE_BIAS 0.0
@@ -108,17 +109,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
     // Interpolate between xval and yval based on gradient ratio
     float abs_gx = abs(gx);
     float abs_gy = abs(gy);
-    float sum_g = abs_gx + abs_gy;
+    float xy_ratio = abs_gx / (abs_gx + abs_gy + 0.0001);
     
-    float4 grad_sample;
-    if (sum_g < 0.001) {
-        grad_sample = cc;
-    } else {
-        grad_sample = (xval * abs_gx + yval * abs_gy) / sum_g;
-    }
+    float4 avg = xval * xy_ratio + yval * (1.0 - xy_ratio);
     
-    // Blend original and gradient sample based on strength
-    OutputTexture[DTid.xy] = lerp(cc, grad_sample, dval * strength);
+    // Blend original and refined
+    float4 result = avg * dval + cc * (1.0 - dval);
+    
+    OutputTexture[DTid.xy] = result;
 }
 )";
 

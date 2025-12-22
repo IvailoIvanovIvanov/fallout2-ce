@@ -112,6 +112,7 @@ bool BlurFilter::Init(D3D12Context& context, int inputWidth, int inputHeight, in
     // 2. Compile Shader
     Microsoft::WRL::ComPtr<ID3DBlob> shaderBlob;
     Microsoft::WRL::ComPtr<ID3DBlob> errorBlob;
+
     if (FAILED(D3DCompile(BLUR_SHADER_SOURCE, strlen(BLUR_SHADER_SOURCE), nullptr, nullptr, nullptr, "main", "cs_5_0", 0, 0, &shaderBlob, &errorBlob))) {
         if (errorBlob) diagnosticsLog(DiagnosticsLevel::Info, "BlurFilter", "Shader Compile Error: %s", (char*)errorBlob->GetBufferPointer());
         return false;
