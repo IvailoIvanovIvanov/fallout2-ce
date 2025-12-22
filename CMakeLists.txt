@@ -208,6 +208,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/renderer/d3d12_context.h"
     "src/renderer/ml_upscale_pass.cc"
     "src/renderer/ml_upscale_pass.h"
+    "src/renderer/anime4k_pass.cc"
+    "src/renderer/anime4k_pass.h"
     "src/renderer/blur_filter.cc"
     "src/renderer/blur_filter.h"
     "src/renderer/hdr_filter.cc"

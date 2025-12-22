@@ -12,6 +12,7 @@
 
 #include "render_pipeline.h"
 #include "ml_upscale_pass.h"
+#include "anime4k_pass.h"
 #include "blur_filter.h"
 #include "hdr_filter.h"
 #include "phantom_display.h"
@@ -361,8 +362,10 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
         mlPass->SetModelFile(mMlModelFile);
         mPipeline->AddPass(std::move(mlPass));
     } else if (mode == UpscalerMode::ANIME4K) {
-        logDiagnostic("Anime4K not yet ported to new pipeline, using Preprocessing only");
-        // Fallback or placeholder
+        logDiagnostic("[SCALER] Using Anime4K Scaler (strength=%.2f)", mSharpness);
+        auto anime4k = std::make_unique<renderer::Anime4kPass>();
+        anime4k->SetStrength(mSharpness);
+        mPipeline->SetScalerPass(std::move(anime4k));
     }
 
     // Ensure at least one pass exists for scaling if input != output

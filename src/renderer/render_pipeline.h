@@ -29,6 +29,7 @@ public:
     const void* GetOutput();
 
     void AddPass(std::unique_ptr<ShaderPass> pass);
+    void SetScalerPass(std::unique_ptr<ShaderPass> pass);
 
 private:
     bool CreateIntermediateBuffers();
@@ -36,7 +37,7 @@ private:
     D3D12Context mContext;
     BufferManager mBuffers;
     std::vector<std::unique_ptr<ShaderPass>> mPasses;
-    std::unique_ptr<ScalerPass> mScalerPass;
+    std::unique_ptr<ShaderPass> mScalerPass;
 
     // Phantom buffers for 640x480 processing
     Microsoft::WRL::ComPtr<ID3D12Resource> mIntermediateBuffers[2];

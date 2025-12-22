@@ -269,5 +269,14 @@ void RenderPipeline::AddPass(std::unique_ptr<ShaderPass> pass) {
     mPasses.push_back(std::move(pass));
 }
 
+void RenderPipeline::SetScalerPass(std::unique_ptr<ShaderPass> pass) {
+    mScalerPass = std::move(pass);
+    if (mInitialized && mScalerPass) {
+        if (!mScalerPass->Init(mContext, mInputWidth, mInputHeight, mOutputWidth, mOutputHeight)) {
+            diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Failed to initialize scaler pass");
+        }
+    }
+}
+
 } // namespace renderer
 } // namespace fallout

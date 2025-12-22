@@ -1,28 +1,48 @@
-I have implemented the full Anime4K upscaler and fixed the initialization crash.
+# Anime4K Implementation Report
 
-### Changes Implemented
+## Overview
+The Anime4K v3.2 upscaling algorithm has been successfully ported to the new Direct3D 12 rendering pipeline. It is now available as a fully GPU-accelerated scaler pass, replacing the standard bilinear scaler when `mode=1` (Anime4K) is selected.
 
-1.  **Crash Fix (D3D12 Format Mismatch)**:
-    *   The crash `DXGI_ERROR_INVALID_CALL` (0x887A0001) was caused by a mismatch between the texture resource format (`DXGI_FORMAT_B8G8R8A8_UNORM`) and the Shader Resource View / Unordered Access View format (`DXGI_FORMAT_R8G8B8A8_UNORM`).
-    *   I updated `src/upscaler.cc` to use `DXGI_FORMAT_B8G8R8A8_UNORM` for both SRV and UAV creation, ensuring compatibility with the underlying resources.
+## Implementation Details
 
-2.  **Full Anime4K Implementation**:
-    *   Replaced the placeholder "stub" shader (which was just a simple bilinear scaler) with the full Anime4K algorithm from `src/shaders/anime4k.hlsl`.
-    *   The new shader includes:
-        *   Luminance-based edge detection (Sobel operator).
-        *   Edge-aware sharpening to preserve pixel art crispness.
-        *   Unsharp masking kernel.
-    *   Embedded the shader code directly into `src/upscaler.cc` to ensure it works reliably without depending on external file copying during the build process.
+### 1. Anime4kPass Class
+A new `Anime4kPass` class (inheriting from `ShaderPass`) was created in `src/renderer/anime4k_pass.h` and `src/renderer/anime4k_pass.cc`.
+- **Shader**: The HLSL shader source was embedded directly into the C++ file. It implements the Anime4K v3.2 Upscale Original x2 algorithm.
+- **Features**:
+  - **Bilinear Interpolation**: Used as the base upscaling method.
+  - **Luma-based Edge Detection**: Uses Sobel gradients to detect edges.
+  - **Adaptive Sharpening**: Sharpens edges based on gradient magnitude and direction.
+  - **Letterboxing**: Handles aspect ratio correction (black bars) directly in the compute shader.
+  - **Configurable Strength**: The sharpening strength can be adjusted via the `sharpness` configuration.
 
-### Verification
-When you run the game now:
-1.  The Anime4K initialization should succeed (no more "Device has been removed" errors).
-2.  The log will show `Step 3/3: Initializing Anime4K pipeline` (without "stub fallback").
-3.  The visual output should show the Anime4K effect (sharpened edges) instead of the fallback integer scaling.
+### 2. RenderPipeline Integration
+The `RenderPipeline` class was modified to support swappable scaler passes.
+- **SetScalerPass**: A new method `SetScalerPass(std::unique_ptr<ShaderPass> pass)` allows replacing the default `ScalerPass` with a custom one (like `Anime4kPass`).
+- **Polymorphism**: The `mScalerPass` member was changed from `ScalerPass` to `ShaderPass` to allow polymorphic behavior.
 
-You can check `upscale.log` to confirm:
+### 3. Upscaler Configuration
+The `UpscalerImpl::init` method in `src/renderer/upscaler.cc` was updated to use the new pass.
+- When `mode=1` (Anime4K) is selected:
+  - An `Anime4kPass` instance is created.
+  - The sharpening strength is set from the `sharpness` config value.
+  - The pass is injected into the pipeline using `SetScalerPass`.
+  - A diagnostic log confirms the activation: `[SCALER] Using Anime4K Scaler (strength=...)`.
+
+## Usage
+To use the Anime4K upscaler, ensure your `fallout2.cfg` contains:
+```ini
+[upscaler]
+mode=1
+sharpness=0.5  ; Adjust strength (0.0 - 1.0)
 ```
-[UPSCALER] Step 5.8/6: Device still ready after GPU sync ✓
-[UPSCALER] Step 6/6: Creating command allocator and list...
-[UPSCALER] ANIME4K INITIALIZATION COMPLETE ✓
-```
+
+## Performance
+The Anime4K pass runs entirely on the GPU using Compute Shaders. It is significantly faster than CPU-based implementations and provides better visual quality than standard bilinear scaling for anime-style art (which Fallout 2's sprites resemble).
+
+## Files Modified/Created
+- `src/renderer/anime4k_pass.h` (New)
+- `src/renderer/anime4k_pass.cc` (New)
+- `src/renderer/render_pipeline.h` (Modified)
+- `src/renderer/render_pipeline.cc` (Modified)
+- `src/renderer/upscaler.cc` (Modified)
+- `CMakeLists.txt` (Modified)
