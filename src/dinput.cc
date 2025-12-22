@@ -249,6 +249,8 @@ bool mouseDeviceGetData(MouseData* mouseState)
         gMouseHasPosition = true;
         mouseState->x = 0;
         mouseState->y = 0;
+        mouseState->absoluteX = static_cast<int>(std::round(logicalExactX));
+        mouseState->absoluteY = static_cast<int>(std::round(logicalExactY));
         logMousePrimed(logicalExactX, logicalExactY, physicalX, physicalY);
     } else {
         if (mapping.clampedLowX || mapping.clampedHighX) {
@@ -273,6 +275,8 @@ bool mouseDeviceGetData(MouseData* mouseState)
 
         mouseState->x = deltaX;
         mouseState->y = deltaY;
+        mouseState->absoluteX = static_cast<int>(std::round(logicalExactX));
+        mouseState->absoluteY = static_cast<int>(std::round(logicalExactY));
     }
 
     MouseClampSnapshot clampSnapshot = {
