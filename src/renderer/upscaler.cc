@@ -382,20 +382,20 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
     // 4. Add Post-Processing Passes
     if (mEnablePostBlur) {
         logDiagnostic("[POST] Adding Blur Pass");
-        mPipeline->AddPostPass(std::make_unique<renderer::GenericShaderPass>("data/shaders/postprocess/pp_blur_h.glsl"));
-        mPipeline->AddPostPass(std::make_unique<renderer::GenericShaderPass>("data/shaders/postprocess/pp_blur_v.glsl"));
+        mPipeline->AddPostPass(std::make_unique<renderer::GenericShaderPass>("data/shaders/pp_blur_h.glsl"));
+        mPipeline->AddPostPass(std::make_unique<renderer::GenericShaderPass>("data/shaders/pp_blur_v.glsl"));
     }
     if (mEnablePostBloom) {
         logDiagnostic("[POST] Adding Tone Map Pass (HDR)");
-        mPipeline->AddPostPass(std::make_unique<renderer::GenericShaderPass>("data/shaders/postprocess/pp_tonemap.glsl"));
+        mPipeline->AddPostPass(std::make_unique<renderer::GenericShaderPass>("data/shaders/pp_tonemap.glsl"));
     }
     if (mEnablePostSharpen) {
         logDiagnostic("[POST] Adding Sharpen Pass");
-        mPipeline->AddPostPass(std::make_unique<renderer::GenericShaderPass>("data/shaders/postprocess/pp_sharpen.glsl"));
+        mPipeline->AddPostPass(std::make_unique<renderer::GenericShaderPass>("data/shaders/pp_sharpen.glsl"));
     }
     if (mEnablePostDenoise) {
         logDiagnostic("[POST] Adding Denoise Pass");
-        mPipeline->AddPostPass(std::make_unique<renderer::GenericShaderPass>("data/shaders/postprocess/pp_denoise.glsl"));
+        mPipeline->AddPostPass(std::make_unique<renderer::GenericShaderPass>("data/shaders/pp_denoise.glsl"));
     }
 
     mState = UpscalerState::STATE_READY;
