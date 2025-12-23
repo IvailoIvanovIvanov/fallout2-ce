@@ -1,314 +1,321 @@
 #include "anime4k_pass.h"
 #include "../diagnostics.h"
-#include <d3dcompiler.h>
-#include <algorithm>
-#include <cmath>
+#include <fstream>
+#include <sstream>
+#include <iostream>
+#include <regex>
+#include <map>
 
 namespace fallout {
 namespace renderer {
 
-const char* ANIME4K_SHADER_SOURCE = R"(
-// Anime4K v3.2 Upscale Original x2 (Ported to HLSL)
-// Ported from: https://github.com/bloc97/Anime4K/blob/master/glsl/Upscale/Anime4K_Upscale_Original_x2.glsl
-
-#define REFINE_STRENGTH 0.5
-#define REFINE_BIAS 0.0
-
-// Polynomial coefficients
-#define P5 ( 11.68129591)
-#define P4 (-42.46906057)
-#define P3 ( 60.28286266)
-#define P2 (-41.84451327)
-#define P1 ( 14.05517353)
-#define P0 (-1.081521930)
-
-cbuffer UpscaleParams : register(b0)
-{
-    uint2 inputSize;    // Source resolution (640, 480)
-    uint2 outputSize;   // Target resolution (2560, 1440)
-    uint2 effectiveSize; // Scaled resolution (e.g. 1920, 1440)
-    uint2 offset;        // Letterbox offset (e.g. 320, 0)
-    float2 rcpInput;    // 1.0 / inputSize
-    float2 rcpEffectiveOutput; // 1.0 / effectiveSize
-    float strength;     // Enhancement strength (0.0-1.0)
-    float3 padding;
-};
-
-Texture2D<float4> InputTexture : register(t0);
-RWTexture2D<float4> OutputTexture : register(u0);
-SamplerState LinearSampler : register(s0);
-
-float get_luma(float4 c)
-{
-    return dot(c.rgb, float3(0.299, 0.587, 0.114));
-}
-
-float power_function(float x)
-{
-    float x2 = x * x;
-    float x3 = x2 * x;
-    float x4 = x2 * x2;
-    float x5 = x2 * x3;
-    return P5 * x5 + P4 * x4 + P3 * x3 + P2 * x2 + P1 * x + P0;
-}
-
-[numthreads(8, 8, 1)]
-void main(uint3 DTid : SV_DispatchThreadID)
-{
-    if (DTid.x >= outputSize.x || DTid.y >= outputSize.y)
-        return;
-
-    // Letterboxing check
-    if (DTid.x < offset.x || DTid.x >= offset.x + effectiveSize.x ||
-        DTid.y < offset.y || DTid.y >= offset.y + effectiveSize.y)
-    {
-        OutputTexture[DTid.xy] = float4(0, 0, 0, 1); // Black bars
-        return;
-    }
-
-    // Map to UV space of the effective area
-    float2 pixelPos = float2(DTid.xy) - float2(offset);
-    float2 uv = (pixelPos + 0.5f) * rcpEffectiveOutput;
-    
-    float2 d = rcpEffectiveOutput; // Use effective pixel size for sampling offsets
-
-    // Sample center pixel (bilinear interpolation from input)
-    float4 cc = InputTexture.SampleLevel(LinearSampler, uv, 0);
-
-    // Calculate Luma of neighbors
-    // We sample at offsets corresponding to the OUTPUT pixel size
-    float t = get_luma(InputTexture.SampleLevel(LinearSampler, uv + float2(0, -d.y), 0));
-    float b = get_luma(InputTexture.SampleLevel(LinearSampler, uv + float2(0, d.y), 0));
-    float l = get_luma(InputTexture.SampleLevel(LinearSampler, uv + float2(-d.x, 0), 0));
-    float r = get_luma(InputTexture.SampleLevel(LinearSampler, uv + float2(d.x, 0), 0));
-    
-    float tl = get_luma(InputTexture.SampleLevel(LinearSampler, uv + float2(-d.x, -d.y), 0));
-    float tr = get_luma(InputTexture.SampleLevel(LinearSampler, uv + float2(d.x, -d.y), 0));
-    float bl = get_luma(InputTexture.SampleLevel(LinearSampler, uv + float2(-d.x, d.y), 0));
-    float br = get_luma(InputTexture.SampleLevel(LinearSampler, uv + float2(d.x, d.y), 0));
-    
-    // Sobel Gradients
-    float gx = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
-    float gy = (bl + 2.0 * b + br) - (tl + 2.0 * t + tr);
-
-    // Gradient Magnitude (Normalized by 4.0 to keep in 0-1 range for power function)
-    float sobel_norm = sqrt(gx * gx + gy * gy) / 4.0;
-    
-    // Refinement Strength
-    float dval = power_function(saturate(sobel_norm));
-    dval = saturate(dval * REFINE_STRENGTH + REFINE_BIAS);
-
-    // Determine edge direction
-    float xpos = (gx > 0.0) ? 1.0 : -1.0;
-    float ypos = (gy > 0.0) ? 1.0 : -1.0;
-    
-    // Sample pixels along the gradient direction
-    float4 xval = InputTexture.SampleLevel(LinearSampler, uv + float2(d.x * xpos, 0), 0);
-    float4 yval = InputTexture.SampleLevel(LinearSampler, uv + float2(0, d.y * ypos), 0);
-    
-    // Interpolate between xval and yval based on gradient ratio
-    float abs_gx = abs(gx);
-    float abs_gy = abs(gy);
-    float xy_ratio = abs_gx / (abs_gx + abs_gy + 0.0001);
-    
-    float4 avg = xval * xy_ratio + yval * (1.0 - xy_ratio);
-    
-    // Blend original and refined
-    float4 result = avg * dval + cc * (1.0 - dval);
-    
-    OutputTexture[DTid.xy] = result;
-}
-)";
-
 Anime4kPass::Anime4kPass() {}
-Anime4kPass::~Anime4kPass() { Shutdown(); }
+Anime4kPass::~Anime4kPass() {}
 
-bool Anime4kPass::Init(D3D12Context& context, int inputWidth, int inputHeight, int outputWidth, int outputHeight) {
+bool Anime4kPass::Init(GpuContext& context, int inputWidth, int inputHeight, int outputWidth, int outputHeight) {
     mInputWidth = inputWidth;
     mInputHeight = inputHeight;
     mOutputWidth = outputWidth;
     mOutputHeight = outputHeight;
-    
-    auto device = context.GetDevice();
 
-    // 1. Create Root Signature
-    {
-        D3D12_ROOT_PARAMETER params[3];
-        
-        // Param 0: Constants
-        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[0].Constants.ShaderRegister = 0;
-        params[0].Constants.RegisterSpace = 0;
-        params[0].Constants.Num32BitValues = 16; // 4 * uint2 + 2 * float2 + 1 * float + 3 * padding = 8 + 4 + 1 + 3 = 16 floats/uints
-        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    return LoadShader(context);
+}
 
-        // Param 1: Input Texture (SRV)
-        D3D12_DESCRIPTOR_RANGE srvRange = {};
-        srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        srvRange.NumDescriptors = 1;
-        srvRange.BaseShaderRegister = 0;
-        srvRange.RegisterSpace = 0;
-        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[1].DescriptorTable.NumDescriptorRanges = 1;
-        params[1].DescriptorTable.pDescriptorRanges = &srvRange;
-        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-        // Param 2: Output Texture (UAV)
-        D3D12_DESCRIPTOR_RANGE uavRange = {};
-        uavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-        uavRange.NumDescriptors = 1;
-        uavRange.BaseShaderRegister = 0;
-        uavRange.RegisterSpace = 0;
-        uavRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[2].DescriptorTable.NumDescriptorRanges = 1;
-        params[2].DescriptorTable.pDescriptorRanges = &uavRange;
-        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-        // Static Sampler
-        D3D12_STATIC_SAMPLER_DESC sampler = {};
-        sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-        sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-        sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-        sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-        sampler.MipLODBias = 0;
-        sampler.MaxAnisotropy = 0;
-        sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-        sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
-        sampler.MinLOD = 0.0f;
-        sampler.MaxLOD = D3D12_FLOAT32_MAX;
-        sampler.ShaderRegister = 0;
-        sampler.RegisterSpace = 0;
-        sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-        D3D12_ROOT_SIGNATURE_DESC rootDesc = {};
-        rootDesc.NumParameters = 3;
-        rootDesc.pParameters = params;
-        rootDesc.NumStaticSamplers = 1;
-        rootDesc.pStaticSamplers = &sampler;
-        rootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
-
-        Microsoft::WRL::ComPtr<ID3DBlob> signature;
-        Microsoft::WRL::ComPtr<ID3DBlob> error;
-        if (FAILED(D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error))) {
-            if (error) diagnosticsLog(DiagnosticsLevel::Info, "Anime4kPass", "Root Signature Error: %s", (char*)error->GetBufferPointer());
-            return false;
+void Anime4kPass::Shutdown(GpuContext& context) {
+    for (auto& pair : mTextures) {
+        if (pair.first != "MAIN" && pair.first != "INPUT" && pair.first != "HOOKED") {
+             context.DestroyTexture(pair.second);
         }
-        if (FAILED(device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&mRootSignature)))) return false;
+    }
+    mTextures.clear();
+    mPasses.clear();
+}
+
+void Anime4kPass::SetVersion(Version version) {
+    if (mVersion != version) {
+        mVersion = version;
+        mDirty = true;
+    }
+}
+
+void* Anime4kPass::GetTexture(const std::string& name) {
+    auto it = mTextures.find(name);
+    if (it != mTextures.end()) {
+        return it->second;
+    }
+    return nullptr;
+}
+
+void Anime4kPass::CreateTexture(GpuContext& context, const std::string& name, int width, int height) {
+    if (mTextures.find(name) != mTextures.end()) return;
+
+    TextureDesc desc;
+    desc.width = width;
+    desc.height = height;
+    desc.format = TextureFormat::RGBA16F; 
+    
+    void* tex = context.CreateTexture(desc);
+    mTextures[name] = tex;
+}
+
+bool Anime4kPass::LoadShader(GpuContext& context) {
+    std::string filename = "data/shaders/Anime4K_Upscale_GAN_x4_UUL.glsl";
+    if (mVersion == Version::V3_2) {
+        filename = "data/shaders/anime4k.glsl";
     }
 
-    // 2. Compile Shader
-    Microsoft::WRL::ComPtr<ID3DBlob> computeShader;
-    Microsoft::WRL::ComPtr<ID3DBlob> errorBlob;
-    UINT compileFlags = 0; // D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-    
-    HRESULT hr = D3DCompile(ANIME4K_SHADER_SOURCE, strlen(ANIME4K_SHADER_SOURCE), "Anime4K", nullptr, nullptr, "main", "cs_5_0", compileFlags, 0, &computeShader, &errorBlob);
-    if (FAILED(hr)) {
-        if (errorBlob) diagnosticsLog(DiagnosticsLevel::Info, "Anime4kPass", "Shader Compile Error: %s", (char*)errorBlob->GetBufferPointer());
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        diagnosticsLog(DiagnosticsLevel::Error, "Anime4kPass", "Failed to open shader file: %s", filename.c_str());
         return false;
     }
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    std::string source = buffer.str();
 
-    // 3. Create PSO
-    D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
-    psoDesc.pRootSignature = mRootSignature.Get();
-    psoDesc.CS = { computeShader->GetBufferPointer(), computeShader->GetBufferSize() };
-    
-    if (FAILED(device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&mPipelineState)))) return false;
-
-    // 4. Create Descriptor Heap
-    D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
-    heapDesc.NumDescriptors = 2; // 1 SRV + 1 UAV
-    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    if (FAILED(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&mDescriptorHeap)))) return false;
-
-    return true;
+    if (mVersion == Version::GAN_X4_UUL || filename.find("GAN") != std::string::npos) {
+        return ParseMPVShader(context, source);
+    } else {
+        void* shader = nullptr;
+        if (!context.CreateComputeShader(source, &shader)) return false;
+        
+        Pass pass;
+        pass.shader = shader;
+        pass.width = mOutputWidth;
+        pass.height = mOutputHeight;
+        mPasses.push_back(pass);
+        return true;
+    }
 }
 
-void Anime4kPass::Execute(D3D12Context& context, ID3D12Resource* input, ID3D12Resource* output) {
-    auto cmdList = context.GetCommandList();
-    auto device = context.GetDevice();
-
-    // 1. Update Descriptors
-    D3D12_CPU_DESCRIPTOR_HANDLE handle = mDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
-    UINT increment = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    // SRV (Input)
-    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    srvDesc.Texture2D.MipLevels = 1;
-    device->CreateShaderResourceView(input, &srvDesc, handle);
-
-    // UAV (Output)
-    handle.ptr += increment;
-    D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-    uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-    device->CreateUnorderedAccessView(output, nullptr, &uavDesc, handle);
-
-    // 2. Calculate Constants
-    float scaleX = (float)mOutputWidth / mInputWidth;
-    float scaleY = (float)mOutputHeight / mInputHeight;
-    float scale = std::min(scaleX, scaleY);
+bool Anime4kPass::ParseMPVShader(GpuContext& context, const std::string& source) {
+    std::stringstream ss(source);
+    std::string line;
     
-    int effectiveW = (int)(mInputWidth * scale);
-    int effectiveH = (int)(mInputHeight * scale);
+    Pass currentPass;
+    std::string currentSource;
+    bool inPass = false;
     
-    int offsetX = (mOutputWidth - effectiveW) / 2;
-    int offsetY = (mOutputHeight - effectiveH) / 2;
+    std::map<std::string, std::pair<int, int>> textureSizes;
+    textureSizes["MAIN"] = {mInputWidth, mInputHeight};
+    textureSizes["INPUT"] = {mInputWidth, mInputHeight};
+    textureSizes["HOOKED"] = {mInputWidth, mInputHeight};
+    textureSizes["OUTPUT"] = {mOutputWidth, mOutputHeight};
 
-    struct {
-        uint32_t inputSize[2];
-        uint32_t outputSize[2];
-        uint32_t effectiveSize[2];
-        uint32_t offset[2];
-        float rcpInput[2];
-        float rcpEffectiveOutput[2];
-        float strength;
-        float padding[3];
-    } constants;
+    auto FinishPass = [&]() {
+        if (!inPass) return;
+        
+        std::stringstream shaderSrc;
+        shaderSrc << "#version 430\n";
+        shaderSrc << "layout(local_size_x = 8, local_size_y = 8) in;\n";
+        shaderSrc << "layout(rgba16f, binding = 0) writeonly uniform image2D outputImage;\n";
+        
+        int binding = 1;
+        for (const auto& texName : currentPass.inputTextures) {
+            shaderSrc << "layout(binding = " << binding << ") uniform sampler2D " << texName << ";\n";
+            shaderSrc << "layout(std140, binding = " << binding << ") uniform " << texName << "_Constants {\n";
+            shaderSrc << "    vec2 " << texName << "_size;\n";
+            shaderSrc << "    vec2 " << texName << "_pt;\n";
+            shaderSrc << "};\n";
+            
+            shaderSrc << "vec4 " << texName << "_tex(vec2 pos) { return texture(" << texName << ", pos); }\n";
+            shaderSrc << "vec4 " << texName << "_texOff(vec2 off) { return texture(" << texName << ", (vec2(gl_GlobalInvocationID.xy) + off + 0.5) * " << texName << "_pt); }\n";
+            shaderSrc << "vec2 " << texName << "_pos;\n";
+            binding++;
+        }
 
-    constants.inputSize[0] = mInputWidth;
-    constants.inputSize[1] = mInputHeight;
-    constants.outputSize[0] = mOutputWidth;
-    constants.outputSize[1] = mOutputHeight;
-    constants.effectiveSize[0] = effectiveW;
-    constants.effectiveSize[1] = effectiveH;
-    constants.offset[0] = offsetX;
-    constants.offset[1] = offsetY;
-    constants.rcpInput[0] = 1.0f / mInputWidth;
-    constants.rcpInput[1] = 1.0f / mInputHeight;
-    constants.rcpEffectiveOutput[0] = 1.0f / effectiveW;
-    constants.rcpEffectiveOutput[1] = 1.0f / effectiveH;
-    constants.strength = mStrength;
-    constants.padding[0] = 0; constants.padding[1] = 0; constants.padding[2] = 0;
+        shaderSrc << currentSource << "\n";
 
-    // 3. Dispatch
-    cmdList->SetPipelineState(mPipelineState.Get());
-    cmdList->SetComputeRootSignature(mRootSignature.Get());
+        shaderSrc << "void main() {\n";
+        shaderSrc << "    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);\n";
+        shaderSrc << "    vec2 size = vec2(imageSize(outputImage));\n"; 
+        shaderSrc << "    if (pos.x >= size.x || pos.y >= size.y) return;\n";
+        for (const auto& texName : currentPass.inputTextures) {
+            shaderSrc << "    " << texName << "_pos = (vec2(pos) + 0.5) * " << texName << "_pt;\n";
+        }
+        shaderSrc << "    vec4 color = hook();\n";
+        shaderSrc << "    imageStore(outputImage, pos, color);\n";
+        shaderSrc << "}\n";
+
+        void* shader = nullptr;
+        if (context.CreateComputeShader(shaderSrc.str(), &shader)) {
+            currentPass.shader = shader;
+            mPasses.push_back(currentPass);
+            
+            // Update texture sizes for the output of this pass
+            if (!currentPass.outputTexture.empty()) {
+                textureSizes[currentPass.outputTexture] = {currentPass.width, currentPass.height};
+                // If output is MAIN, update MAIN/HOOKED for next passes?
+                // In MPV, saving to MAIN updates the chain.
+                if (currentPass.outputTexture == "MAIN") {
+                    textureSizes["HOOKED"] = {currentPass.width, currentPass.height};
+                    textureSizes["MAIN"] = {currentPass.width, currentPass.height};
+                }
+            }
+        } else {
+            diagnosticsLog(DiagnosticsLevel::Error, "Anime4kPass", "Failed to compile pass");
+        }
+
+        currentPass = Pass();
+        currentSource = "";
+        inPass = false;
+    };
+
+    auto ParseDimension = [&](const std::string& line, int defaultVal, bool isWidth) -> int {
+        std::regex reName("([\\w]+)\\.[wh]");
+        std::smatch match;
+        int baseVal = defaultVal;
+        
+        if (std::regex_search(line, match, reName)) {
+            std::string refName = match[1];
+            if (textureSizes.count(refName)) {
+                baseVal = isWidth ? textureSizes[refName].first : textureSizes[refName].second;
+            }
+        }
+        
+        float mult = 1.0f;
+        std::regex reMult("([0-9.]+)\\s*\\*");
+        if (std::regex_search(line, match, reMult)) {
+            mult = std::stof(match[1]);
+        } else {
+            std::regex reMult2("\\*\\s*([0-9.]+)");
+            if (std::regex_search(line, match, reMult2)) {
+                mult = std::stof(match[1]);
+            }
+        }
+        
+        return (int)(baseVal * mult);
+    };
+
+    while (std::getline(ss, line)) {
+        if (line.find("//!HOOK MAIN") != std::string::npos) {
+            FinishPass();
+            inPass = true;
+            // Default to input size (or current chain size?)
+            // Usually defaults to HOOKED size.
+            currentPass.width = textureSizes["HOOKED"].first;
+            currentPass.height = textureSizes["HOOKED"].second;
+            continue;
+        }
+
+        if (!inPass) continue;
+
+        if (line.find("//!BIND") != std::string::npos) {
+            std::regex re("//!BIND\\s+(\\w+)");
+            std::smatch match;
+            if (std::regex_search(line, match, re)) {
+                std::string name = match[1];
+                // Do not rename MAIN to INPUT. Keep it as MAIN.
+                currentPass.inputTextures.push_back(name);
+            }
+        } else if (line.find("//!SAVE") != std::string::npos) {
+            std::regex re("//!SAVE\\s+(\\w+)");
+            std::smatch match;
+            if (std::regex_search(line, match, re)) {
+                currentPass.outputTexture = match[1];
+            }
+        } else if (line.find("//!WIDTH") != std::string::npos) {
+             currentPass.width = ParseDimension(line, mInputWidth, true);
+        } else if (line.find("//!HEIGHT") != std::string::npos) {
+             currentPass.height = ParseDimension(line, mInputHeight, false);
+        } else if (line.find("//!") == 0) {
+            // Ignore
+        } else {
+            currentSource += line + "\n";
+        }
+    }
+    FinishPass();
     
-    ID3D12DescriptorHeap* heaps[] = { mDescriptorHeap.Get() };
-    cmdList->SetDescriptorHeaps(1, heaps);
-    
-    cmdList->SetComputeRoot32BitConstants(0, 16, &constants, 0);
-    cmdList->SetComputeRootDescriptorTable(1, mDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
-    
-    D3D12_GPU_DESCRIPTOR_HANDLE uavHandle = mDescriptorHeap->GetGPUDescriptorHandleForHeapStart();
-    uavHandle.ptr += increment;
-    cmdList->SetComputeRootDescriptorTable(2, uavHandle);
+    for (const auto& pass : mPasses) {
+        if (!pass.outputTexture.empty() && pass.outputTexture != "MAIN") {
+            CreateTexture(context, pass.outputTexture, pass.width, pass.height);
+        }
+    }
 
-    cmdList->Dispatch((mOutputWidth + 7) / 8, (mOutputHeight + 7) / 8, 1);
+    return !mPasses.empty();
 }
 
-void Anime4kPass::Shutdown() {
-    mRootSignature.Reset();
-    mPipelineState.Reset();
-    mDescriptorHeap.Reset();
+void Anime4kPass::Execute(GpuContext& context, void* input, void* output) {
+    if (mDirty) {
+        Shutdown(context);
+        LoadShader(context);
+        mDirty = false;
+    }
+
+    mTextures["INPUT"] = input;
+    mTextures["HOOKED"] = input; 
+    mTextures["MAIN"] = input; 
+
+    void* currentHooked = input;
+    
+    std::map<std::string, std::pair<int, int>> sizes;
+    sizes["INPUT"] = {mInputWidth, mInputHeight};
+    sizes["HOOKED"] = {mInputWidth, mInputHeight};
+    sizes["MAIN"] = {mInputWidth, mInputHeight};
+
+    for (const auto& pass : mPasses) {
+        if (!pass.shader) continue;
+
+        void* passOutput = nullptr;
+        if (pass.outputTexture == "MAIN" || pass.outputTexture.empty()) {
+            passOutput = output;
+        } else {
+            passOutput = GetTexture(pass.outputTexture);
+            if (!passOutput) {
+                CreateTexture(context, pass.outputTexture, pass.width, pass.height);
+                passOutput = GetTexture(pass.outputTexture);
+            }
+        }
+
+        context.BindUnorderedAccessView(0, passOutput);
+
+        int slot = 1;
+        for (const auto& texName : pass.inputTextures) {
+            void* tex = nullptr;
+            
+            if (texName == "HOOKED") {
+                tex = currentHooked;
+            } else if (texName == "INPUT") {
+                tex = input;
+            } else {
+                tex = GetTexture(texName);
+            }
+            
+            if (!tex) tex = input; 
+            context.BindTexture(slot, tex);
+            
+            float w = (float)mInputWidth;
+            float h = (float)mInputHeight;
+            
+            if (sizes.count(texName)) {
+                w = (float)sizes[texName].first;
+                h = (float)sizes[texName].second;
+            } else if (tex == output) {
+                 w = (float)mOutputWidth;
+                 h = (float)mOutputHeight;
+            }
+            
+            float pt[2] = { 1.0f / w, 1.0f / h };
+            struct { float w, h; float ptx, pty; } constants = { w, h, pt[0], pt[1] };
+            context.SetConstants(slot, &constants, sizeof(constants));
+            
+            slot++;
+        }
+
+        int groupX = (pass.width + 7) / 8;
+        int groupY = (pass.height + 7) / 8;
+        context.Dispatch(pass.shader, groupX, groupY, 1);
+        
+        if (!pass.outputTexture.empty()) {
+            sizes[pass.outputTexture] = {pass.width, pass.height};
+        }
+        
+        if (pass.outputTexture == "MAIN") {
+            currentHooked = output;
+            sizes["HOOKED"] = {pass.width, pass.height};
+            sizes["MAIN"] = {pass.width, pass.height};
+        }
+    }
 }
 
 } // namespace renderer

@@ -123,6 +123,9 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/graph_lib.h"
     "src/renderer/gpu_device.cc"
     "src/renderer/gpu_device.h"
+    "src/renderer/gpu_context.h"
+    "src/renderer/opengl_context.cc"
+    "src/renderer/opengl_context.h"
     "src/renderer/gpu_texture.cc"
     "src/renderer/gpu_texture.h"
     "src/heap.cc"
@@ -416,7 +419,14 @@ if(WIN32)
         dxgi.lib
         dxguid.lib
         d3dcompiler.lib
+        opengl32.lib
     )
+endif()
+
+# OpenGL Support
+if(NOT WIN32)
+    find_package(OpenGL REQUIRED)
+    target_link_libraries(${EXECUTABLE_NAME} OpenGL::GL)
 endif()
 
 if(APPLE)
@@ -448,4 +458,12 @@ if(EXISTS "${ONNXRUNTIME_ROOT}")
     )
     target_compile_definitions(${EXECUTABLE_NAME} PRIVATE HAS_ONNX_RUNTIME)
 endif()
+
+# Copy Shaders
+add_custom_command(TARGET ${EXECUTABLE_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_SOURCE_DIR}/data/shaders"
+    "$<TARGET_FILE_DIR:${EXECUTABLE_NAME}>/data/shaders"
+)
+
 

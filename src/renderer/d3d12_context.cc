@@ -3,6 +3,9 @@
 #include "../diagnostics.h"
 #include <d3d12.h>
 
+// OBSOLETE: This file is part of the Direct3D 12 backend which is being replaced by OpenGL.
+// See OPENGL_MIGRATION_PLAN.md
+
 namespace fallout {
 namespace renderer {
 

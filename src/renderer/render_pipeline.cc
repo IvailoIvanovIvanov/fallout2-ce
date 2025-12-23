@@ -1,6 +1,6 @@
 #include "render_pipeline.h"
+#include "opengl_context.h"
 #include "../diagnostics.h"
-#include <d3d12.h>
 
 #include "blur_filter.h"
 #include "hdr_filter.h"
@@ -17,7 +17,7 @@ RenderPipeline::~RenderPipeline() {
     Shutdown();
 }
 
-bool RenderPipeline::Init(int inputWidth, int inputHeight, const RealDisplay& outputDisplay) {
+bool RenderPipeline::Init(int inputWidth, int inputHeight, const RealDisplay& outputDisplay, SDL_Window* window) {
     if (mInitialized) {
         return true;
     }
@@ -27,12 +27,16 @@ bool RenderPipeline::Init(int inputWidth, int inputHeight, const RealDisplay& ou
     mOutputWidth = outputDisplay.GetWidth();
     mOutputHeight = outputDisplay.GetHeight();
 
-    if (!mContext.Init()) {
-        diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Failed to initialize D3D12Context");
+    // Instantiate OpenGL Context
+    // TODO: Make this configurable via fallout2.cfg
+    mContext = std::make_unique<OpenGLContext>(window);
+
+    if (!mContext->Init()) {
+        diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Failed to initialize GpuContext");
         return false;
     }
 
-    if (!mBuffers.Init(mContext, inputWidth, inputHeight, mOutputWidth, mOutputHeight)) {
+    if (!mBuffers.Init(*mContext, inputWidth, inputHeight, mOutputWidth, mOutputHeight)) {
         diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Failed to initialize BufferManager");
         return false;
     }
@@ -44,13 +48,13 @@ bool RenderPipeline::Init(int inputWidth, int inputHeight, const RealDisplay& ou
 
     // Initialize passes (Phantom Screen: 640x480 -> 640x480)
     for (auto& pass : mPasses) {
-        if (!pass->Init(mContext, inputWidth, inputHeight, inputWidth, inputHeight)) {
+        if (!pass->Init(*mContext, inputWidth, inputHeight, inputWidth, inputHeight)) {
             return false;
         }
     }
 
     // Initialize Scaler Pass (640x480 -> WindowSize)
-    if (!mScalerPass->Init(mContext, inputWidth, inputHeight, mOutputWidth, mOutputHeight)) {
+    if (!mScalerPass->Init(*mContext, inputWidth, inputHeight, mOutputWidth, mOutputHeight)) {
         diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Failed to initialize ScalerPass");
         return false;
     }
@@ -60,47 +64,34 @@ bool RenderPipeline::Init(int inputWidth, int inputHeight, const RealDisplay& ou
 }
 
 bool RenderPipeline::CreateIntermediateBuffers() {
-    auto device = mContext.GetDevice();
-    D3D12_HEAP_PROPERTIES defaultHeap = {};
-    defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
-
-    D3D12_RESOURCE_DESC desc = {};
-    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    desc.Width = mInputWidth;
-    desc.Height = mInputHeight;
-    desc.DepthOrArraySize = 1;
-    desc.MipLevels = 1;
-    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    desc.SampleDesc.Count = 1;
-    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    TextureDesc desc = { mInputWidth, mInputHeight, TextureFormat::RGBA8 };
 
     for (int i = 0; i < 2; ++i) {
-        if (FAILED(device->CreateCommittedResource(
-            &defaultHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &desc,
-            D3D12_RESOURCE_STATE_COMMON,
-            nullptr,
-            IID_PPV_ARGS(&mIntermediateBuffers[i])))) {
-            return false;
-        }
+        mIntermediateBuffers[i] = mContext->CreateTexture(desc);
+        if (!mIntermediateBuffers[i]) return false;
     }
     return true;
 }
 
 void RenderPipeline::Shutdown() {
+    if (!mContext) return;
+
     for (auto& pass : mPasses) {
-        pass->Shutdown();
+        pass->Shutdown(*mContext);
     }
     mPasses.clear();
     
-    if (mScalerPass) mScalerPass->Shutdown();
+    if (mScalerPass) mScalerPass->Shutdown(*mContext);
 
-    mIntermediateBuffers[0].Reset();
-    mIntermediateBuffers[1].Reset();
+    for (int i = 0; i < 2; ++i) {
+        if (mIntermediateBuffers[i]) {
+            mContext->DestroyTexture(mIntermediateBuffers[i]);
+            mIntermediateBuffers[i] = nullptr;
+        }
+    }
 
-    mBuffers.Shutdown();
-    mContext.Shutdown();
+    mBuffers.Shutdown(*mContext);
+    mContext->Shutdown();
     mInitialized = false;
 }
 
@@ -111,157 +102,46 @@ void RenderPipeline::Dispatch(const PhantomDisplay& display) {
     mBuffers.SwapBuffers();
 
     // 2. Begin Frame
-    mContext.BeginFrame();
+    mContext->BeginFrame();
 
     // 3. Upload Input
-    if (!mBuffers.UploadInput(mContext, display.GetPixels(), display.GetWidth() * display.GetHeight() * 4)) {
+    if (!mBuffers.UploadInput(*mContext, display.GetPixels(), display.GetWidth() * display.GetHeight() * 4)) {
         diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Failed to upload input");
     }
 
-    auto cmdList = mContext.GetCommandList();
-    
     // 4. Execute Filter Chain
-    ID3D12Resource* currentInput = mBuffers.GetInputBuffer();
+    void* currentInput = mBuffers.GetInputBuffer();
     int targetIndex = 0;
 
-    // Ensure InputBuffer is in SRV state (BufferManager leaves it in PIXEL_SHADER_RESOURCE | NON_PIXEL_SHADER_RESOURCE)
-    
     diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Executing %zu passes", mPasses.size());
     int passIndex = 0;
     for (auto& pass : mPasses) {
         diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Executing pass %d", passIndex++);
-        ID3D12Resource* currentOutput = mIntermediateBuffers[targetIndex].Get();
+        void* currentOutput = mIntermediateBuffers[targetIndex];
 
-        // Transition Output to UAV
-        D3D12_RESOURCE_BARRIER barrier = {};
-        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Transition.pResource = currentOutput;
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON; // Or previous state
-        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        cmdList->ResourceBarrier(1, &barrier);
-
-        // Transition Input to SRV (if it's an intermediate buffer)
-        if (currentInput != mBuffers.GetInputBuffer()) {
-            barrier.Transition.pResource = currentInput;
-            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS; // It was output of previous pass
-            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-            cmdList->ResourceBarrier(1, &barrier);
-        }
-
-        pass->Execute(mContext, currentInput, currentOutput);
-
-        // Transition Output to Common (or SRV for next pass)
-        barrier.Transition.pResource = currentOutput;
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON; // Reset to Common
-        cmdList->ResourceBarrier(1, &barrier);
-        
-        // If input was intermediate, transition it back to Common too?
-        if (currentInput != mBuffers.GetInputBuffer()) {
-             barrier.Transition.pResource = currentInput;
-             barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-             barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
-             cmdList->ResourceBarrier(1, &barrier);
-        }
+        pass->Execute(*mContext, currentInput, currentOutput);
 
         currentInput = currentOutput; // Output becomes input for next pass
         targetIndex = 1 - targetIndex;
     }
 
     // 5. Execute Scaler Pass
-    // Input: currentInput (Could be InputBuffer or an Intermediate Buffer)
-    // Output: BufferManager::OutputBuffer
+    void* outputBuffer = mBuffers.GetOutputBuffer();
+    mScalerPass->Execute(*mContext, currentInput, outputBuffer);
 
-    auto outputBuffer = mBuffers.GetOutputBuffer();
-
-    // Transition Input to SRV
-    D3D12_RESOURCE_BARRIER barriers[2] = {};
-    int barrierCount = 0;
-
-    if (currentInput != mBuffers.GetInputBuffer()) {
-        // It's an intermediate buffer in COMMON state (because we reset it above)
-        barriers[barrierCount].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barriers[barrierCount].Transition.pResource = currentInput;
-        barriers[barrierCount].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-        barriers[barrierCount].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-        barriers[barrierCount].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        barrierCount++;
-    }
-
-    // Transition Output to UAV
-    barriers[barrierCount].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barriers[barrierCount].Transition.pResource = outputBuffer;
-    barriers[barrierCount].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-    barriers[barrierCount].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    barriers[barrierCount].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    barrierCount++;
-
-    cmdList->ResourceBarrier(barrierCount, barriers);
-
-    mScalerPass->Execute(mContext, currentInput, outputBuffer);
-
-    // Reset Input to COMMON if it was intermediate
-    if (currentInput != mBuffers.GetInputBuffer()) {
-        D3D12_RESOURCE_BARRIER b = {};
-        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = currentInput;
-        b.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-        b.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        cmdList->ResourceBarrier(1, &b);
-    }
-
-    // 6. Copy Output to Readback
-    {
-        auto readbackBuffer = mBuffers.GetCurrentReadbackBuffer();
-
-        // Transition Output to COPY_SOURCE
-        D3D12_RESOURCE_BARRIER barrier = {};
-        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Transition.pResource = outputBuffer;
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        cmdList->ResourceBarrier(1, &barrier);
-
-        // Copy Texture to Buffer
-        D3D12_TEXTURE_COPY_LOCATION dst = {};
-        dst.pResource = readbackBuffer;
-        dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-        dst.PlacedFootprint.Offset = 0;
-        dst.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        dst.PlacedFootprint.Footprint.Width = mOutputWidth;
-        dst.PlacedFootprint.Footprint.Height = mOutputHeight;
-        dst.PlacedFootprint.Footprint.Depth = 1;
-        dst.PlacedFootprint.Footprint.RowPitch = (mOutputWidth * 4 + 255) & ~255;
-
-        D3D12_TEXTURE_COPY_LOCATION src = {};
-        src.pResource = outputBuffer;
-        src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        src.SubresourceIndex = 0;
-
-        cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-
-        // Transition Output back to COMMON
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
-        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
-        cmdList->ResourceBarrier(1, &barrier);
-    }
-
-    // 7. End Frame
-    mContext.EndFrame();
+    // 6. End Frame (Readback happens on demand via GetOutput)
+    mContext->EndFrame();
 }
 
 const void* RenderPipeline::GetOutput() {
     if (!mInitialized) return nullptr;
-    return mBuffers.MapReadback();
+    return mBuffers.ReadbackOutput(*mContext);
 }
 
 void RenderPipeline::AddPass(std::unique_ptr<ShaderPass> pass) {
     if (mInitialized) {
         // Initialize with Phantom Resolution (640x480)
-        if (!pass->Init(mContext, mInputWidth, mInputHeight, mInputWidth, mInputHeight)) {
+        if (!pass->Init(*mContext, mInputWidth, mInputHeight, mInputWidth, mInputHeight)) {
             diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Failed to initialize added pass");
             return;
         }
@@ -272,7 +152,7 @@ void RenderPipeline::AddPass(std::unique_ptr<ShaderPass> pass) {
 void RenderPipeline::SetScalerPass(std::unique_ptr<ShaderPass> pass) {
     mScalerPass = std::move(pass);
     if (mInitialized && mScalerPass) {
-        if (!mScalerPass->Init(mContext, mInputWidth, mInputHeight, mOutputWidth, mOutputHeight)) {
+        if (!mScalerPass->Init(*mContext, mInputWidth, mInputHeight, mOutputWidth, mOutputHeight)) {
             diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Failed to initialize scaler pass");
         }
     }

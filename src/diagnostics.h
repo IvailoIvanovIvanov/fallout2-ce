@@ -7,8 +7,9 @@ namespace fallout {
 
 enum class DiagnosticsLevel {
     Off = 0,
-    Info = 1,
-    Trace = 2,
+    Error = 1,
+    Info = 2,
+    Trace = 3,
 };
 
 void diagnosticsInit(bool enabled, DiagnosticsLevel level, const char* logFilePath = nullptr);

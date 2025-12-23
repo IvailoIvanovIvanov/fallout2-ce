@@ -1,6 +1,9 @@
 #ifndef FALLOUT_RENDERER_D3D12_CONTEXT_H
 #define FALLOUT_RENDERER_D3D12_CONTEXT_H
 
+// OBSOLETE: This file is part of the Direct3D 12 backend which is being replaced by OpenGL.
+// See OPENGL_MIGRATION_PLAN.md
+
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <cstdint>

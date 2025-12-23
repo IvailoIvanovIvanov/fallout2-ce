@@ -878,7 +878,7 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
         
         diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Initializing upscaler: 640x480 -> %dx%d (mode=%d)", 
                       physicalWidth, physicalHeight, static_cast<int>(configuredMode));
-        if (upscalerInit(640, 480, physicalWidth, physicalHeight, configuredMode) != 0) {
+        if (upscalerInit(640, 480, physicalWidth, physicalHeight, configuredMode, gSdlWindow) != 0) {
             diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Upscaler initialization failed, continuing without upscaling");
         } else {
             // Upscaler initialized successfully!

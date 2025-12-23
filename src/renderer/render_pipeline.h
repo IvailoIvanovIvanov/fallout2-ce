@@ -1,7 +1,7 @@
 #ifndef FALLOUT_RENDERER_RENDER_PIPELINE_H
 #define FALLOUT_RENDERER_RENDER_PIPELINE_H
 
-#include "d3d12_context.h"
+#include "gpu_context.h"
 #include "buffer_manager.h"
 #include "shader_pass.h"
 #include "scaler_pass.h"
@@ -11,6 +11,8 @@
 #include <vector>
 #include <memory>
 
+struct SDL_Window;
+
 namespace fallout {
 namespace renderer {
 
@@ -19,7 +21,7 @@ public:
     RenderPipeline();
     ~RenderPipeline();
 
-    bool Init(int inputWidth, int inputHeight, const RealDisplay& outputDisplay);
+    bool Init(int inputWidth, int inputHeight, const RealDisplay& outputDisplay, SDL_Window* window);
     void Shutdown();
 
     // Main entry point for the frame
@@ -34,14 +36,13 @@ public:
 private:
     bool CreateIntermediateBuffers();
 
-    D3D12Context mContext;
+    std::unique_ptr<GpuContext> mContext;
     BufferManager mBuffers;
     std::vector<std::unique_ptr<ShaderPass>> mPasses;
     std::unique_ptr<ShaderPass> mScalerPass;
 
     // Phantom buffers for 640x480 processing
-    Microsoft::WRL::ComPtr<ID3D12Resource> mIntermediateBuffers[2];
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> mIntermediateHeap; // For clearing/copying if needed
+    void* mIntermediateBuffers[2] = { nullptr, nullptr };
 
     int mInputWidth = 0;
     int mInputHeight = 0;

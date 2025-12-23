@@ -2,44 +2,26 @@
 #define FALLOUT_RENDERER_ML_UPSCALE_PASS_H
 
 #include "shader_pass.h"
-#include "upscaler_ml.h"
-#include <d3d12.h>
-#include <wrl/client.h>
 
 namespace fallout {
 namespace renderer {
 
-class MlUpscalePass : public ShaderPass {
+class MLUpscalePass : public ShaderPass {
 public:
-    MlUpscalePass();
-    ~MlUpscalePass() override;
+    MLUpscalePass();
+    ~MLUpscalePass() override;
 
-    bool Init(D3D12Context& context, int inputWidth, int inputHeight, int outputWidth, int outputHeight) override;
-    void Execute(D3D12Context& context, ID3D12Resource* input, ID3D12Resource* output) override;
-    void Shutdown() override;
+    bool Init(GpuContext& context, int inputWidth, int inputHeight, int outputWidth, int outputHeight) override;
+    void Execute(GpuContext& context, void* input, void* output) override;
+    void Shutdown(GpuContext& context) override;
 
-    void SetModelFile(const std::string& path) { mModelFile = path; }
+    void SetModelFile(const std::string& modelFile);
 
 private:
-    UpscalerML mUpscaler;
-    std::string mModelFile = "realesrgan-x4plus.onnx";
-    
-    // Intermediate resources for Tensor conversion
-    Microsoft::WRL::ComPtr<ID3D12Resource> mInputTensor;
-    Microsoft::WRL::ComPtr<ID3D12Resource> mOutputTensor;
-    
-    // Compute Shaders for conversion
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> mRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> mPsoRgbaToPlanar;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> mPsoPlanarToRgba;
-    
-    // Descriptor Heap for conversion shaders
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> mDescriptorHeap;
-    
-    int mWidth = 0;
-    int mHeight = 0;
-    int mOutputWidth = 0;
-    int mOutputHeight = 0;
+    void* mShader = nullptr;
+    int mInputWidth = 0;
+    int mInputHeight = 0;
+    std::string mModelFile;
 };
 
 } // namespace renderer

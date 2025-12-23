@@ -39,7 +39,7 @@ public:
 
     UpscalerState getState() const { return mState; }
 
-    bool init(int inputWidth, int inputHeight, int outputWidth, int outputHeight, UpscalerMode mode);
+    bool init(int inputWidth, int inputHeight, int outputWidth, int outputHeight, UpscalerMode mode, SDL_Window* window);
     bool reconfigureOutput(int outputWidth, int outputHeight);
     void shutdown();
 
@@ -98,6 +98,7 @@ private:
     UpscalerMode mConfiguredMode = UpscalerMode::NONE;
     UpscalerQuality mQuality = UpscalerQuality::BALANCED;
     bool mIsAvailable = false;
+    SDL_Window* mWindow = nullptr;
 
     // New Renderer Pipeline
     std::unique_ptr<renderer::RenderPipeline> mPipeline;
@@ -298,7 +299,7 @@ void UpscalerImpl::deallocateBuffers() {
     // Deprecated: Handled by PhantomDisplay
 }
 
-bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int outputHeight, UpscalerMode mode) {
+bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int outputHeight, UpscalerMode mode, SDL_Window* window) {
     logDiagnostic("=== INIT: %dx%d -> %dx%d, requested_mode=%d ===", 
                   inputWidth, inputHeight, outputWidth, outputHeight, static_cast<int>(mode));
     
@@ -312,19 +313,14 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
 
     mState = UpscalerState::STATE_INITIALIZING;
     mMode = mode;
+    mWindow = window;
     
     mPhantomDisplay = std::make_unique<renderer::PhantomDisplay>(inputWidth, inputHeight);
     mRealDisplay = std::make_unique<renderer::RealDisplay>(outputWidth, outputHeight);
-
-    if (mode == UpscalerMode::NONE) {
-        mState = UpscalerState::STATE_READY;
-        mIsAvailable = false;
-        return true;
-    }
-
-    // Initialize RenderPipeline
+    
+    // Initialize Pipeline
     mPipeline = std::make_unique<renderer::RenderPipeline>();
-    if (!mPipeline->Init(inputWidth, inputHeight, *mRealDisplay)) {
+    if (!mPipeline->Init(inputWidth, inputHeight, *mRealDisplay, window)) {
         setError("Failed to initialize RenderPipeline");
         mState = UpscalerState::STATE_ERROR;
         return false;
@@ -348,7 +344,7 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
     if (mEnableSoftHDR) {
         logDiagnostic("[PASS 2] Adding HdrFilter (sat=%.2f, contrast=%.2f, blackThresh=%.3f, blackStr=%.2f)",
                       mHdrSaturation, mHdrContrast, mBlackCrushThreshold, mBlackCrushStrength);
-        auto hdrPass = std::make_unique<renderer::HdrFilter>();
+        auto hdrPass = std::make_unique<renderer::HDRFilter>();
         hdrPass->SetParams(mHdrSaturation, mHdrContrast, mBlackCrushThreshold, mBlackCrushStrength);
         mPipeline->AddPass(std::move(hdrPass));
     } else {
@@ -358,13 +354,17 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
     // 3. Add ML Upscaler if mode is enabled (Final upscaling)
     if (mode == UpscalerMode::REAL_ESRGAN) {
         logDiagnostic("[PASS 3] Adding MlUpscalePass (model=%s)", mMlModelFile.c_str());
-        auto mlPass = std::make_unique<renderer::MlUpscalePass>();
+        auto mlPass = std::make_unique<renderer::MLUpscalePass>();
         mlPass->SetModelFile(mMlModelFile);
         mPipeline->AddPass(std::move(mlPass));
     } else if (mode == UpscalerMode::ANIME4K) {
-        logDiagnostic("[SCALER] Using Anime4K Scaler (strength=%.2f)", mSharpness);
+        int anime4kVersion = 0;
+        configGetInt(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, "anime4k_version", &anime4kVersion);
+        
+        logDiagnostic("[SCALER] Using Anime4K Scaler (strength=%.2f, version=%d)", mSharpness, anime4kVersion);
         auto anime4k = std::make_unique<renderer::Anime4kPass>();
         anime4k->SetStrength(mSharpness);
+        anime4k->SetVersion(static_cast<renderer::Anime4kPass::Version>(anime4kVersion));
         mPipeline->SetScalerPass(std::move(anime4k));
     }
 
@@ -408,7 +408,7 @@ bool UpscalerImpl::reconfigureOutput(int outputWidth, int outputHeight) {
     }
 
     shutdown();
-    return init(inputWidth, inputHeight, outputWidth, outputHeight, currentMode);
+    return init(inputWidth, inputHeight, outputWidth, outputHeight, currentMode, mWindow);
 }
 
 void UpscalerImpl::shutdown() {
@@ -472,8 +472,8 @@ bool UpscalerImpl::dispatch() {
 }
 
 // C-style wrappers
-int upscalerInit(int inputWidth, int inputHeight, int outputWidth, int outputHeight, UpscalerMode mode) {
-    return UpscalerImpl::getInstance()->init(inputWidth, inputHeight, outputWidth, outputHeight, mode) ? 0 : -1;
+int upscalerInit(int inputWidth, int inputHeight, int outputWidth, int outputHeight, UpscalerMode mode, void* window) {
+    return UpscalerImpl::getInstance()->init(inputWidth, inputHeight, outputWidth, outputHeight, mode, static_cast<SDL_Window*>(window)) ? 0 : -1;
 }
 
 int upscalerReconfigureOutput(int outputWidth, int outputHeight) {

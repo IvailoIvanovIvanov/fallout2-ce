@@ -2,41 +2,30 @@
 #define FALLOUT_RENDERER_HDR_FILTER_H
 
 #include "shader_pass.h"
-#include <d3d12.h>
-#include <wrl/client.h>
 
 namespace fallout {
 namespace renderer {
 
-class HdrFilter : public ShaderPass {
+class HDRFilter : public ShaderPass {
 public:
-    HdrFilter();
-    ~HdrFilter() override;
+    HDRFilter();
+    ~HDRFilter() override;
 
-    bool Init(D3D12Context& context, int inputWidth, int inputHeight, int outputWidth, int outputHeight) override;
-    void Execute(D3D12Context& context, ID3D12Resource* input, ID3D12Resource* output) override;
-    void Shutdown() override;
+    bool Init(GpuContext& context, int inputWidth, int inputHeight, int outputWidth, int outputHeight) override;
+    void Execute(GpuContext& context, void* input, void* output) override;
+    void Shutdown(GpuContext& context) override;
 
     void SetParams(float saturation, float contrast, float blackCrushThreshold, float blackCrushStrength);
 
 private:
-    struct HdrParams {
-        uint32_t resolution[2];
-        float saturation;
-        float contrast;
-        float blackCrushThreshold;
-        float blackCrushStrength;
-    };
-
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> mRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> mPipelineState;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> mDescriptorHeap;
-    
-    HdrParams mParams = {};
+    void* mShader = nullptr;
     int mInputWidth = 0;
     int mInputHeight = 0;
-    int mOutputWidth = 0;
-    int mOutputHeight = 0;
+
+    float mSaturation = 1.0f;
+    float mContrast = 1.0f;
+    float mBlackCrushThreshold = 0.0f;
+    float mBlackCrushStrength = 0.0f;
 };
 
 } // namespace renderer

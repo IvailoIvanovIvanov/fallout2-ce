@@ -2,8 +2,6 @@
 #define FALLOUT_RENDERER_BLUR_FILTER_H
 
 #include "shader_pass.h"
-#include <d3d12.h>
-#include <wrl/client.h>
 
 namespace fallout {
 namespace renderer {
@@ -13,9 +11,9 @@ public:
     BlurFilter();
     ~BlurFilter() override;
 
-    bool Init(D3D12Context& context, int inputWidth, int inputHeight, int outputWidth, int outputHeight) override;
-    void Execute(D3D12Context& context, ID3D12Resource* input, ID3D12Resource* output) override;
-    void Shutdown() override;
+    bool Init(GpuContext& context, int inputWidth, int inputHeight, int outputWidth, int outputHeight) override;
+    void Execute(GpuContext& context, void* input, void* output) override;
+    void Shutdown(GpuContext& context) override;
 
     void SetStrength(float strength);
 
@@ -26,9 +24,7 @@ private:
         float padding;
     };
 
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> mRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> mPipelineState;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> mDescriptorHeap;
+    void* mShader = nullptr;
     
     BlurParams mParams = {};
     int mInputWidth = 0;

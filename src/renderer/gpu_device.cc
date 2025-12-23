@@ -1,5 +1,8 @@
 #include "gpu_device.h"
 
+// OBSOLETE: This file is part of the Direct3D 12 backend which is being replaced by OpenGL.
+// See OPENGL_MIGRATION_PLAN.md
+
 #include <SDL.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>

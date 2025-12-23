@@ -1,6 +1,9 @@
 #ifndef FALLOUT_GPU_DEVICE_H_
 #define FALLOUT_GPU_DEVICE_H_
 
+// OBSOLETE: This file is part of the Direct3D 12 backend which is being replaced by OpenGL.
+// See OPENGL_MIGRATION_PLAN.md
+
 #include <cstdint>
 #include <memory>
 

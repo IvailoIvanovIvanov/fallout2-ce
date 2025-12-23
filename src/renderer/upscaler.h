@@ -92,9 +92,10 @@ UpscalerImpl* upscalerGetImpl();
  * @param outputWidth Physical display width (e.g., 2560)
  * @param outputHeight Physical display height (e.g., 1440)
  * @param mode Initial upscaler mode (can be overridden by config)
+ * @param window SDL Window handle (required for OpenGL context)
  * @return 0 on success, non-zero on failure
  */
-int upscalerInit(int inputWidth, int inputHeight, int outputWidth, int outputHeight, UpscalerMode mode);
+int upscalerInit(int inputWidth, int inputHeight, int outputWidth, int outputHeight, UpscalerMode mode, void* window);
 
 /**
  * Reconfigure output resolution (e.g., on window resize)
