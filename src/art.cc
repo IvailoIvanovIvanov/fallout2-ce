@@ -1,21 +1,10 @@
 #include "art.h"
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-#include <algorithm>
-#include <array>
-#include <assert.h>
-#include <cmath>
-#include <limits>
-#include <memory>
-#include <string>
-#include <unordered_map>
-#include <unordered_set>
-#include <vector>
-
 #include "animation.h"
-#include "color.h"
-#include "diagnostics.h"
 #include "debug.h"
 #include "draw.h"
 #include "game.h"
@@ -23,9 +12,7 @@
 #include "object.h"
 #include "proto.h"
 #include "settings.h"
-#include "stb_image.h"
 #include "sfall_config.h"
-#include "window_manager.h"
 
 namespace fallout {
 
@@ -51,168 +38,6 @@ static int artReadFrameData(unsigned char* data, File* stream, int count, int* p
 static int artReadHeader(Art* art, File* stream);
 static int artGetDataSize(Art* art);
 static int paddingForSize(int size);
-static void artTraceRenderOp(int fid, unsigned char* dest, int pitch, int width, int height);
-static void artEmitUiRenderCommand(int fid,
-    CacheEntry* owner,
-    const unsigned char* frameData,
-    int frameWidth,
-    int frameHeight,
-    unsigned char* dest,
-    int pitch,
-    int width,
-    int height);
-static void hdTrueColorRegistryClear();
-static void hdTrueColorReleaseFramesForArt(const void* owner);
-static void hdTrueColorTrackFrameOwner(const void* owner, const unsigned char* indexed);
-
-struct HdArtInfo {
-    std::string path;
-    int width;
-    int height;
-};
-
-struct HdPngStream {
-    File* stream;
-};
-
-static std::unordered_map<int, HdArtInfo> gHdArtInfoCache;
-// Note: HD frame registry moved to render_asset_registry.cc.
-// artRegisterTrueColorFrameData now delegates to renderAssetRegistryAttachHdView.
-static std::unordered_map<const unsigned char*, std::unique_ptr<uint32_t[]>> gHdTrueColorFrameStorage;
-static std::unordered_map<const void*, std::vector<const unsigned char*>> gHdTrueColorArtFrameOwners;
-struct HdTrueColorCacheStats {
-    int requests = 0;
-    int hits = 0;
-};
-static HdTrueColorCacheStats gHdTrueColorCacheStats;
-static std::unordered_set<int> gHdTrueColorActiveFids;
-
-// Phase 8: Auto-detected HD asset scale
-// The first loaded HD asset sets the expected scale, subsequent assets should match
-static double gDetectedHdAssetScale = 0.0;  // 0 = not yet detected
-static int gHdAssetScaleDetectionCount = 0;
-static int gHdAssetScaleMismatchCount = 0;
-
-static void hdTrueColorRegistryClear()
-{
-    // gHdTrueColorFrameRegistry removed - render_asset_registry owns HD views
-    gHdTrueColorFrameStorage.clear();
-    gHdTrueColorArtFrameOwners.clear();
-    
-    // Reset scale detection for new session/map
-    gDetectedHdAssetScale = 0.0;
-    gHdAssetScaleDetectionCount = 0;
-    gHdAssetScaleMismatchCount = 0;
-}
-
-static const char* hdAlphaModeToString(HdAlphaMode mode)
-{
-    switch (mode) {
-    case HdAlphaMode::Straight:
-        return "straight";
-    case HdAlphaMode::Premultiplied:
-        return "premult";
-    }
-
-    return "unknown";
-}
-
-static bool hdArtSupportedType(int type);
-static bool hdArtBuildPngFilePath(int fid, char* path, size_t size);
-static bool hdArtProbe(int fid, HdArtInfo& info);
-static int hdArtComputeDataSize(int width, int height);
-static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* data, int* sizePtr);
-static bool hdArtDownsampleRgbaToPalette(const stbi_uc* rgba, int srcWidth, int srcHeight, int dstWidth, int dstHeight, unsigned char* dest);
-static void hdArtSampleBilinear(const stbi_uc* rgba,
-    int width,
-    int height,
-    double sampleX,
-    double sampleY,
-    double& outR,
-    double& outG,
-    double& outB,
-    double& outA);
-static unsigned char hdArtFindNearestPaletteColor(const unsigned char* palette, int r, int g, int b, std::unordered_map<int, unsigned char>& cache);
-static int hdArtPngRead(void* user, char* data, int size);
-static void hdArtPngSkip(void* user, int n);
-static int hdArtPngEof(void* user);
-static bool hdArtValidateDimensions(int fid, int width, int height);
-static bool hdTrueColorConformToFrame(int fid, int frameWidth, int frameHeight, HdTrueColorFrameView& view)
-{
-    if (view.pixels == nullptr || frameWidth <= 0 || frameHeight <= 0 || view.width <= 0 || view.height <= 0) {
-        return false;
-    }
-
-    const double logicalWidth = static_cast<double>(frameWidth);
-    const double logicalHeight = static_cast<double>(frameHeight);
-    const double widthRatio = static_cast<double>(view.width) / std::max(1.0, logicalWidth);
-    const double heightRatio = static_cast<double>(view.height) / std::max(1.0, logicalHeight);
-
-    if (widthRatio <= 0.0 || heightRatio <= 0.0 || std::fabs(widthRatio - heightRatio) > 0.001) {
-        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-            diagnosticsLog(DiagnosticsLevel::Info,
-                "SCALER",
-                "artConformTrueColorFrame fid=%d rejected HD frame non-uniform scale indexed=%dx%d hd=%dx%d scale=%.3fx%.3f",
-                fid,
-                frameWidth,
-                frameHeight,
-                view.width,
-                view.height,
-                widthRatio,
-                heightRatio);
-        }
-        return false;
-    }
-
-    if (view.texelsPerLogicalX <= 0.0) {
-        view.texelsPerLogicalX = widthRatio;
-    }
-    if (view.texelsPerLogicalY <= 0.0) {
-        view.texelsPerLogicalY = heightRatio;
-    }
-
-    const double spanWidth = view.texelsPerLogicalX * logicalWidth;
-    const double spanHeight = view.texelsPerLogicalY * logicalHeight;
-    const double maxWidth = static_cast<double>(view.width);
-    const double maxHeight = static_cast<double>(view.height);
-    if (spanWidth <= 0.0 || spanHeight <= 0.0 || view.texelOriginX < 0.0 || view.texelOriginY < 0.0 || view.texelOriginX + spanWidth > maxWidth + 0.01 || view.texelOriginY + spanHeight > maxHeight + 0.01) {
-        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-            diagnosticsLog(DiagnosticsLevel::Info,
-                "SCALER",
-                "artConformTrueColorFrame fid=%d rejected HD frame span mismatch origin=(%.2f,%.2f) span=(%.2f,%.2f) texture=%dx%d logical=%dx%d",
-                fid,
-                view.texelOriginX,
-                view.texelOriginY,
-                spanWidth,
-                spanHeight,
-                view.width,
-                view.height,
-                frameWidth,
-                frameHeight);
-        }
-        return false;
-    }
-
-    view.texelOriginX = std::clamp(view.texelOriginX, 0.0, std::max(0.0, maxWidth - 1.0));
-    view.texelOriginY = std::clamp(view.texelOriginY, 0.0, std::max(0.0, maxHeight - 1.0));
-    view.logicalWidth = frameWidth;
-    view.logicalHeight = frameHeight;
-    view.scaleX = std::max(1, static_cast<int>(std::floor(view.texelsPerLogicalX)));
-    view.scaleY = std::max(1, static_cast<int>(std::floor(view.texelsPerLogicalY)));
-
-    if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
-        diagnosticsLog(DiagnosticsLevel::Trace,
-            "SCALER",
-            "artConformTrueColorFrame fid=%d accepted scale=%.3fx%.3f origin=(%.2f,%.2f)",
-            fid,
-            view.texelsPerLogicalX,
-            view.texelsPerLogicalY,
-            view.texelOriginX,
-            view.texelOriginY);
-    }
-
-    return true;
-}
 
 // 0x5002D8
 static char gDefaultJumpsuitMaleFileName[] = "hmjmps";
@@ -499,18 +324,11 @@ int artInit()
 // 0x418EB8
 void artReset()
 {
-    hdTrueColorRegistryClear();
-    gHdArtInfoCache.clear();
-    gHdTrueColorActiveFids.clear();
 }
 
 // 0x418EBC
 void artExit()
 {
-    hdTrueColorRegistryClear();
-    gHdArtInfoCache.clear();
-    gHdTrueColorActiveFids.clear();
-
     cacheFree(&gArtCache);
 
     internal_free(_anon_alias);
@@ -566,77 +384,6 @@ int artGetFidgetCount(int headFid)
     return 0;
 }
 
-static void artTraceRenderOp(int fid, unsigned char* dest, int pitch, int width, int height)
-{
-}
-
-static void artEmitUiRenderCommand(int fid,
-    CacheEntry* owner,
-    const unsigned char* frameData,
-    int frameWidth,
-    int frameHeight,
-    unsigned char* dest,
-    int pitch,
-    int width,
-    int height)
-{
-}
-
-static void artBlitTrueColorUiSprite(const HdTrueColorFrameView& view,
-    const unsigned char* indexed,
-    uint32_t* overlay,
-    unsigned char* mask,
-    int overlayPitch,
-    int width,
-    int height)
-{
-    if (view.pixels == nullptr || overlay == nullptr || mask == nullptr) {
-        return;
-    }
-
-    const int intensityIndex = 128;
-
-    const int srcStride = view.width;
-    const int stepX = std::max(1, view.scaleX);
-    const int stepY = std::max(1, view.scaleY);
-    const int rowAdvance = srcStride * stepY;
-    const int sampleOffsetX = stepX > 1 ? std::min(stepX / 2, stepX - 1) : 0;
-    const int sampleOffsetY = stepY > 1 ? std::min(stepY / 2, stepY - 1) : 0;
-    const int sampleYOffset = sampleOffsetY * srcStride;
-
-    const unsigned char* indexedRow = indexed;
-    uint32_t* overlayRow = overlay;
-    unsigned char* maskRow = mask;
-    const uint32_t* trueColorBaseRow = view.pixels;
-
-    for (int row = 0; row < height; row++) {
-        const unsigned char* indexedPixel = indexedRow;
-        uint32_t* overlayPixel = overlayRow;
-        unsigned char* maskPixel = maskRow;
-        const uint32_t* trueColorPixel = trueColorBaseRow + sampleYOffset + sampleOffsetX;
-
-        for (int column = 0; column < width; column++) {
-            if (*indexedPixel != 0) {
-                *overlayPixel = colorApplyLightingToArgb(*trueColorPixel, intensityIndex);
-                *maskPixel = 1;
-            } else {
-                *overlayPixel = 0;
-                *maskPixel = 0;
-            }
-
-            indexedPixel++;
-            trueColorPixel += stepX;
-            overlayPixel++;
-            maskPixel++;
-        }
-
-        indexedRow += view.logicalWidth > 0 ? view.logicalWidth : view.width;
-        overlayRow += overlayPitch;
-        maskRow += overlayPitch;
-        trueColorBaseRow += rowAdvance;
-    }
-}
-
 // 0x418FFC
 void artRender(int fid, unsigned char* dest, int width, int height, int pitch)
 {
@@ -661,96 +408,31 @@ void artRender(int fid, unsigned char* dest, int width, int height, int pitch)
     int remainingHeight = height - frameHeight;
     if (remainingWidth < 0 || remainingHeight < 0) {
         if (height * frameWidth >= width * frameHeight) {
-            int scaledHeight = width * frameHeight / frameWidth;
-            unsigned char* target = dest + pitch * ((height - scaledHeight) / 2);
             blitBufferToBufferStretchTrans(frameData,
                 frameWidth,
                 frameHeight,
                 frameWidth,
-                target,
+                dest + pitch * ((height - width * frameHeight / frameWidth) / 2),
                 width,
-                scaledHeight,
+                width * frameHeight / frameWidth,
                 pitch);
-            artTraceRenderOp(fid, target, pitch, width, scaledHeight);
-            artEmitUiRenderCommand(fid,
-                handle,
-                frameData,
-                frameWidth,
-                frameHeight,
-                target,
-                pitch,
-                width,
-                scaledHeight);
         } else {
-            int scaledWidth = height * frameWidth / frameHeight;
-            unsigned char* target = dest + (width - scaledWidth) / 2;
             blitBufferToBufferStretchTrans(frameData,
                 frameWidth,
                 frameHeight,
                 frameWidth,
-                target,
-                scaledWidth,
+                dest + (width - height * frameWidth / frameHeight) / 2,
+                height * frameWidth / frameHeight,
                 height,
                 pitch);
-            artTraceRenderOp(fid, target, pitch, scaledWidth, height);
-            artEmitUiRenderCommand(fid,
-                handle,
-                frameData,
-                frameWidth,
-                frameHeight,
-                target,
-                pitch,
-                scaledWidth,
-                height);
         }
     } else {
-        unsigned char* target = dest + pitch * (remainingHeight / 2) + remainingWidth / 2;
         blitBufferToBufferTrans(frameData,
             frameWidth,
             frameHeight,
             frameWidth,
-            target,
+            dest + pitch * (remainingHeight / 2) + remainingWidth / 2,
             pitch);
-        artTraceRenderOp(fid, target, pitch, frameWidth, frameHeight);
-        artEmitUiRenderCommand(fid,
-            handle,
-            frameData,
-            frameWidth,
-            frameHeight,
-            target,
-            pitch,
-            frameWidth,
-            frameHeight);
-
-        HdTrueColorFrameView trueColorView;
-        if (artLookupRegisteredTrueColorFrame(frameData, trueColorView)) {
-            if (artConformTrueColorFrame(fid, frameWidth, frameHeight, trueColorView)) {
-                if (trueColorView.alphaMode != HdAlphaMode::Straight) {
-                    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-                        diagnosticsLog(DiagnosticsLevel::Info,
-                            "SCALER",
-                            "artRender fid=%d rejected HD frame due to alphaMode=%d",
-                            fid,
-                            static_cast<int>(trueColorView.alphaMode));
-                    }
-                } else {
-                    assert(trueColorView.logicalWidth == frameWidth && trueColorView.logicalHeight == frameHeight);
-                    Rect overlayRect;
-                    uint32_t* overlayPixels = nullptr;
-                    unsigned char* overlayMask = nullptr;
-                    int overlayPitch = 0;
-                    if (windowResolveTrueColorRegion(target, pitch, frameWidth, frameHeight, &overlayRect, &overlayPixels, &overlayMask, &overlayPitch)) {
-                        artBlitTrueColorUiSprite(trueColorView,
-                            frameData,
-                            overlayPixels,
-                            overlayMask,
-                            overlayPitch,
-                            frameWidth,
-                            frameHeight);
-                    }
-                }
-            }
-        }
     }
 
     artUnlock(handle);
@@ -835,7 +517,6 @@ int artUnlock(CacheEntry* handle)
 // 0x41927C
 int artCacheFlush()
 {
-    hdTrueColorRegistryClear();
     return cacheFlush(&gArtCache);
 }
 
@@ -1243,546 +924,14 @@ int artAliasFid(int fid)
     return -1;
 }
 
-static bool hdArtSupportedType(int type)
-{
-    return type == OBJ_TYPE_ITEM || type == OBJ_TYPE_TILE;
-}
-
-static bool hdArtBuildPngFilePath(int fid, char* path, size_t size)
-{
-    int type = FID_TYPE(fid);
-    if (!hdArtSupportedType(type)) {
-        return false;
-    }
-
-    if (type < 0 || type >= OBJ_TYPE_COUNT) {
-        return false;
-    }
-
-    int fileIndex = fid & 0xFFF;
-    if (fileIndex < 0 || fileIndex >= gArtListDescriptions[type].fileNamesLength) {
-        return false;
-    }
-
-    if (gArtListDescriptions[type].fileNames == nullptr) {
-        return false;
-    }
-
-    const char* fileName = gArtListDescriptions[type].fileNames + fileIndex * 13;
-    if (fileName == nullptr || fileName[0] == '\0') {
-        return false;
-    }
-
-    char baseName[16];
-    strncpy(baseName, fileName, sizeof(baseName) - 1);
-    baseName[sizeof(baseName) - 1] = '\0';
-
-    char* ext = strrchr(baseName, '.');
-    if (ext != nullptr) {
-        *ext = '\0';
-    }
-
-    std::string root = settings.system.hd_art_path;
-    if (root.empty()) {
-        root = "art";
-    }
-    std::replace(root.begin(), root.end(), '/', '\\');
-
-    bool isAbsolute = false;
-    if (root.size() > 1) {
-        if (root[1] == ':') {
-            isAbsolute = true;
-        } else if (root.size() > 2 && root[0] == '\\' && root[1] == '\\') {
-            isAbsolute = true;
-        }
-    }
-
-    while (root.size() > 1 && (root.back() == '\\' || root.back() == '/')) {
-        root.pop_back();
-    }
-
-    const char* prefix = isAbsolute ? "" : _cd_path_base;
-    if (snprintf(path, size, "%s%s\\%s\\%s.png", prefix, root.c_str(), gArtListDescriptions[type].name, baseName) >= (int)size) {
-        return false;
-    }
-
-    return true;
-}
-
-static int hdArtPngRead(void* user, char* data, int size)
-{
-    HdPngStream* context = reinterpret_cast<HdPngStream*>(user);
-    return (int)fileRead(data, 1, size, context->stream);
-}
-
-static void hdArtPngSkip(void* user, int n)
-{
-    HdPngStream* context = reinterpret_cast<HdPngStream*>(user);
-    fileSeek(context->stream, n, SEEK_CUR);
-}
-
-static int hdArtPngEof(void* user)
-{
-    HdPngStream* context = reinterpret_cast<HdPngStream*>(user);
-    return fileEof(context->stream);
-}
-
-static bool hdArtProbe(int fid, HdArtInfo& info)
-{
-    // HD art disabled - using upscaler instead
-    return false;
-    
-    // Original code preserved but unreachable:
-    /*
-    char path[MAX_PATH];
-    artBuildFilePath(path, fid, ".png");
-
-    if (!gArtLanguageInitialized) {
-        return false;
-    }
-
-    File* stream = fileOpen(artGetHdFolder(), path, "rb");
-    if (stream == nullptr) {
-        return false;
-    }
-
-    HdPngStream pngStream = { stream };
-    stbi_io_callbacks callbacks;
-    callbacks.read = hdArtPngRead;
-    callbacks.skip = hdArtPngSkip;
-    callbacks.eof = hdArtPngEof;
-
-    int width;
-    int height;
-    int components;
-    int status = stbi_info_from_callbacks(&callbacks, &pngStream, &width, &height, &components);
-    fileClose(stream);
-
-    if (status == 0) {
-        return false;
-    }
-
-    if (!hdArtValidateDimensions(fid, width, height)) {
-        return false;
-    }
-
-    info.path = path;
-    info.width = width;
-    info.height = height;
-    gHdArtInfoCache[fid] = info;
-    return true;
-    */
-}
-
-static int hdArtComputeDataSize(int width, int height)
-{
-    Art temp = {};
-    temp.frameCount = 1;
-    temp.dataOffsets[0] = 0;
-    temp.dataSize = sizeof(ArtFrame) + width * height;
-    return artGetDataSize(&temp);
-}
-
-static inline int hdArtPaletteComponentToRgb(unsigned char component)
-{
-    // Palette components are stored in 6-bit precision (0-63). Scale them to
-    // 0-255 range so distance calculations match PNG RGB data.
-    return (component << 2) | (component >> 4);
-}
-
-static void hdArtSampleBilinear(const stbi_uc* rgba,
-    int width,
-    int height,
-    double sampleX,
-    double sampleY,
-    double& outR,
-    double& outG,
-    double& outB,
-    double& outA)
-{
-    if (rgba == nullptr || width <= 0 || height <= 0) {
-        outR = 0.0;
-        outG = 0.0;
-        outB = 0.0;
-        outA = 0.0;
-        return;
-    }
-
-    const double clampedX = std::clamp(sampleX, 0.0, static_cast<double>(width - 1));
-    const double clampedY = std::clamp(sampleY, 0.0, static_cast<double>(height - 1));
-
-    const int x0 = static_cast<int>(std::floor(clampedX));
-    const int y0 = static_cast<int>(std::floor(clampedY));
-    const int x1 = std::min(x0 + 1, width - 1);
-    const int y1 = std::min(y0 + 1, height - 1);
-    const double fx = clampedX - static_cast<double>(x0);
-    const double fy = clampedY - static_cast<double>(y0);
-
-    auto sample = [rgba, width](int x, int y) {
-        const stbi_uc* pixel = rgba + (y * width + x) * 4;
-        return std::array<double, 4> {
-            static_cast<double>(pixel[0]),
-            static_cast<double>(pixel[1]),
-            static_cast<double>(pixel[2]),
-            static_cast<double>(pixel[3]) };
-    };
-
-    const auto c00 = sample(x0, y0);
-    const auto c10 = sample(x1, y0);
-    const auto c01 = sample(x0, y1);
-    const auto c11 = sample(x1, y1);
-
-    const auto lerp = [](double a, double b, double t) {
-        return a + (b - a) * t;
-    };
-
-    const double rTop = lerp(c00[0], c10[0], fx);
-    const double rBottom = lerp(c01[0], c11[0], fx);
-    const double gTop = lerp(c00[1], c10[1], fx);
-    const double gBottom = lerp(c01[1], c11[1], fx);
-    const double bTop = lerp(c00[2], c10[2], fx);
-    const double bBottom = lerp(c01[2], c11[2], fx);
-    const double aTop = lerp(c00[3], c10[3], fx);
-    const double aBottom = lerp(c01[3], c11[3], fx);
-
-    outR = lerp(rTop, rBottom, fy);
-    outG = lerp(gTop, gBottom, fy);
-    outB = lerp(bTop, bBottom, fy);
-    outA = lerp(aTop, aBottom, fy);
-}
-
-static unsigned char hdArtFindNearestPaletteColor(const unsigned char* palette, int r, int g, int b, std::unordered_map<int, unsigned char>& cache)
-{
-    int key = (r << 16) | (g << 8) | b;
-    auto it = cache.find(key);
-    if (it != cache.end()) {
-        return it->second;
-    }
-
-    int bestIndex = 0;
-    int bestDistance = std::numeric_limits<int>::max();
-
-    for (int index = 0; index < 256; index++) {
-        int pr = hdArtPaletteComponentToRgb(palette[index * 3]);
-        int pg = hdArtPaletteComponentToRgb(palette[index * 3 + 1]);
-        int pb = hdArtPaletteComponentToRgb(palette[index * 3 + 2]);
-
-        int dr = pr - r;
-        int dg = pg - g;
-        int db = pb - b;
-        int distance = dr * dr + dg * dg + db * db;
-        if (distance < bestDistance) {
-            bestDistance = distance;
-            bestIndex = index;
-            if (distance == 0) {
-                break;
-            }
-        }
-    }
-
-    unsigned char result = static_cast<unsigned char>(bestIndex);
-    cache.emplace(key, result);
-    return result;
-}
-
-static bool hdArtDownsampleRgbaToPalette(const stbi_uc* rgba, int srcWidth, int srcHeight, int dstWidth, int dstHeight, unsigned char* dest)
-{
-    if (rgba == nullptr || dest == nullptr || srcWidth <= 0 || srcHeight <= 0 || dstWidth <= 0 || dstHeight <= 0) {
-        return false;
-    }
-
-    const double scaleX = static_cast<double>(srcWidth) / static_cast<double>(dstWidth);
-    const double scaleY = static_cast<double>(srcHeight) / static_cast<double>(dstHeight);
-    if (scaleX <= 0.0 || scaleY <= 0.0) {
-        return false;
-    }
-
-    const unsigned char* palette = _getSystemPalette();
-    std::unordered_map<int, unsigned char> colorCache;
-    colorCache.reserve(256);
-
-    for (int y = 0; y < dstHeight; y++) {
-        const double sampleY = (static_cast<double>(y) + 0.5) * scaleY - 0.5;
-        for (int x = 0; x < dstWidth; x++) {
-            const double sampleX = (static_cast<double>(x) + 0.5) * scaleX - 0.5;
-
-            double r = 0.0;
-            double g = 0.0;
-            double b = 0.0;
-            double a = 0.0;
-            hdArtSampleBilinear(rgba, srcWidth, srcHeight, sampleX, sampleY, r, g, b, a);
-            unsigned char value = 0;
-            if (a >= 16.0) {
-                value = hdArtFindNearestPaletteColor(palette,
-                    static_cast<int>(std::lround(r)),
-                    static_cast<int>(std::lround(g)),
-                    static_cast<int>(std::lround(b)),
-                    colorCache);
-            }
-
-            dest[y * dstWidth + x] = value;
-        }
-    }
-
-    return true;
-}
-
-static bool hdArtLoadIntoCache(int fid, const HdArtInfo& info, unsigned char* data, int* sizePtr)
-{
-    char* artFilePath = artBuildFilePath(fid);
-    if (artFilePath == nullptr) {
-        return false;
-    }
-
-    bool baseLoaded = false;
-    if (gArtLanguageInitialized) {
-        char* pch = strchr(artFilePath, '\\');
-        if (pch == nullptr) {
-            pch = artFilePath;
-        }
-
-        char localizedPath[COMPAT_MAX_PATH];
-        snprintf(localizedPath, sizeof(localizedPath), "art\\%s\\%s", gArtLanguage, pch);
-        if (artRead(localizedPath, data) == 0) {
-            baseLoaded = true;
-        }
-    }
-
-    if (!baseLoaded) {
-        if (artRead(artFilePath, data) != 0) {
-            return false;
-        }
-    }
-
-    Art* art = reinterpret_cast<Art*>(data);
-    unsigned char* frameData = artGetFrameData(art, 0, 0);
-    ArtFrame* frame = artGetFrame(art, 0, 0);
-    if (frameData == nullptr || frame == nullptr) {
-        return false;
-    }
-
-    const int logicalWidth = frame->width;
-    const int logicalHeight = frame->height;
-    if (logicalWidth <= 0 || logicalHeight <= 0) {
-        return false;
-    }
-
-    File* stream = fileOpen(info.path.c_str(), "rb");
-    if (stream == nullptr) {
-        if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
-            diagnosticsLog(DiagnosticsLevel::Trace, "ART", "Unable to open HD PNG '%s' for fid %08X", info.path.c_str(), fid);
-        }
-        return false;
-    }
-
-    HdPngStream pngStream = { stream };
-    stbi_io_callbacks callbacks;
-    callbacks.read = hdArtPngRead;
-    callbacks.skip = hdArtPngSkip;
-    callbacks.eof = hdArtPngEof;
-
-    int width;
-    int height;
-    int components;
-    stbi_uc* pixels = stbi_load_from_callbacks(&callbacks, &pngStream, &width, &height, &components, STBI_rgb_alpha);
-    fileClose(stream);
-
-    if (pixels == nullptr) {
-        if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
-            diagnosticsLog(
-                DiagnosticsLevel::Trace,
-                "ART",
-                "Failed to decode HD PNG '%s' for fid %08X: %s",
-                info.path.c_str(),
-                fid,
-                stbi_failure_reason());
-        }
-        return false;
-    }
-
-    if (!hdArtValidateDimensions(fid, width, height)) {
-        stbi_image_free(pixels);
-        return false;
-    }
-
-    if (width < logicalWidth || height < logicalHeight) {
-        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-            diagnosticsLog(
-                DiagnosticsLevel::Info,
-                "ART",
-                "Ignoring HD PNG '%s' for fid %08X because dimensions (%dx%d) are smaller than logical size %dx%d",
-                info.path.c_str(),
-                fid,
-                width,
-                height,
-                logicalWidth,
-                logicalHeight);
-        }
-        stbi_image_free(pixels);
-        gHdArtInfoCache.erase(fid);
-        return true;
-    }
-
-    const double scaleX = static_cast<double>(width) / std::max(1, logicalWidth);
-    const double scaleY = static_cast<double>(height) / std::max(1, logicalHeight);
-    if (scaleX <= 0.0 || scaleY <= 0.0 || std::fabs(scaleX - scaleY) > 0.001) {
-        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-            diagnosticsLog(
-                DiagnosticsLevel::Info,
-                "ART",
-                "Ignoring HD PNG '%s' for fid %08X because scales differ (scaleX=%.3f scaleY=%.3f)",
-                info.path.c_str(),
-                fid,
-                scaleX,
-                scaleY);
-        }
-        stbi_image_free(pixels);
-        gHdArtInfoCache.erase(fid);
-        return true;
-    }
-
-    // Phase 8: Track detected HD asset scale for auto-detection
-    const double detectedScale = scaleX;  // scaleX == scaleY at this point
-    gHdAssetScaleDetectionCount++;
-    
-    if (gDetectedHdAssetScale == 0.0) {
-        // First HD asset - set the expected scale
-        gDetectedHdAssetScale = detectedScale;
-        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-            diagnosticsLog(DiagnosticsLevel::Info,
-                "ART",
-                "Auto-detected HD asset scale: %.1fx (from fid %08X, %dx%d -> %dx%d)",
-                detectedScale,
-                fid,
-                logicalWidth, logicalHeight,
-                width, height);
-        }
-    } else if (std::fabs(detectedScale - gDetectedHdAssetScale) > 0.001) {
-        // Scale mismatch - log warning
-        gHdAssetScaleMismatchCount++;
-        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-            diagnosticsLog(DiagnosticsLevel::Info,
-                "ART",
-                "HD asset scale mismatch: fid %08X is %.1fx, expected %.1fx (mismatch #%d)",
-                fid,
-                detectedScale,
-                gDetectedHdAssetScale,
-                gHdAssetScaleMismatchCount);
-        }
-    }
-
-    const long long pixelCount = 1LL * width * height;
-    std::unique_ptr<uint32_t[]> hdPixels;
-    if (pixelCount > 0) {
-        hdPixels = std::make_unique<uint32_t[]>(pixelCount);
-        for (int index = 0; index < pixelCount; index++) {
-            const stbi_uc* pixel = pixels + index * 4;
-            uint32_t argb = (static_cast<uint32_t>(pixel[3]) << 24)
-                | (static_cast<uint32_t>(pixel[0]) << 16)
-                | (static_cast<uint32_t>(pixel[1]) << 8)
-                | static_cast<uint32_t>(pixel[2]);
-            hdPixels[index] = argb;
-        }
-    }
-
-    if (!hdArtDownsampleRgbaToPalette(pixels, width, height, logicalWidth, logicalHeight, frameData)) {
-        stbi_image_free(pixels);
-        return false;
-    }
-
-    int framePadding = paddingForSize(frame->size);
-    if (framePadding > 0) {
-        memset(frameData + frame->size, 0, framePadding);
-    }
-
-    stbi_image_free(pixels);
-
-    if (hdPixels != nullptr) {
-        if (artRegisterTrueColorFrameData(frameData, hdPixels.get(), width, height, HdAlphaMode::Straight)) {
-            gHdTrueColorFrameStorage[frameData] = std::move(hdPixels);
-            hdTrueColorTrackFrameOwner(art, frameData);
-        }
-    }
-
-    if (sizePtr != nullptr) {
-        *sizePtr = artGetDataSize(art);
-    }
-
-    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-        diagnosticsLog(
-            DiagnosticsLevel::Info,
-            "ART",
-            "Loaded HD PNG override '%s' (%dx%d -> %dx%d) for fid %08X",
-            info.path.c_str(),
-            width,
-            height,
-            logicalWidth,
-            logicalHeight,
-            fid);
-    }
-
-    return true;
-}
-
-static bool hdArtValidateDimensions(int fid, int width, int height)
-{
-    if (width <= 0 || height <= 0) {
-        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-            diagnosticsLog(
-                DiagnosticsLevel::Info,
-                "ART",
-                "Ignoring HD PNG for fid %08X due to non-positive dimensions %dx%d",
-                fid,
-                width,
-                height);
-        }
-        return false;
-    }
-
-    if (width > std::numeric_limits<short>::max() || height > std::numeric_limits<short>::max()) {
-        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-            diagnosticsLog(
-                DiagnosticsLevel::Info,
-                "ART",
-                "Ignoring HD PNG for fid %08X because dimensions exceed 16-bit limit (%dx%d)",
-                fid,
-                width,
-                height);
-        }
-        return false;
-    }
-
-    long long pixelCount = 1LL * width * height;
-    if (pixelCount <= 0 || pixelCount > std::numeric_limits<int>::max()) {
-        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-            diagnosticsLog(
-                DiagnosticsLevel::Info,
-                "ART",
-                "Ignoring HD PNG for fid %08X because total pixel count %lld exceeds engine limits",
-                fid,
-                pixelCount);
-        }
-        return false;
-    }
-
-    return true;
-}
-
 // 0x419A78
 static int artCacheGetFileSizeImpl(int fid, int* sizePtr)
 {
     int result = -1;
 
-    if (sizePtr == nullptr) {
-        return result;
-    }
-
-    // First, try to get the actual FRM file size - we need this even for HD assets
-    // because the FRM might have multiple rotations/frames that require more space
-    // than the HD-computed size (which assumes a single frame).
-    int frmSize = 0;
     char* artFilePath = artBuildFilePath(fid);
     if (artFilePath != nullptr) {
+        bool loaded = false;
         File* stream = nullptr;
 
         if (gArtLanguageInitialized) {
@@ -1804,28 +953,11 @@ static int artCacheGetFileSizeImpl(int fid, int* sizePtr)
         if (stream != nullptr) {
             Art art;
             if (artReadHeader(&art, stream) == 0) {
-                frmSize = artGetDataSize(&art);
+                *sizePtr = artGetDataSize(&art);
                 result = 0;
             }
             fileClose(stream);
         }
-    }
-
-    // Check for HD asset - if present, compute HD size and use the maximum
-    // of FRM size and HD size to ensure buffer is large enough for both.
-    HdArtInfo hdInfo;
-    if (hdArtProbe(fid, hdInfo)) {
-        int hdSize = hdArtComputeDataSize(hdInfo.width, hdInfo.height);
-        // Use the larger of the two sizes to ensure the buffer can hold
-        // both the FRM structure (with all rotations/frames) and has
-        // enough space for HD data operations.
-        *sizePtr = std::max(frmSize, hdSize);
-        return 0;
-    }
-
-    // No HD asset - use FRM size if we got it
-    if (result == 0) {
-        *sizePtr = frmSize;
     }
 
     return result;
@@ -1835,17 +967,6 @@ static int artCacheGetFileSizeImpl(int fid, int* sizePtr)
 static int artCacheReadDataImpl(int fid, int* sizePtr, unsigned char* data)
 {
     int result = -1;
-
-    if (sizePtr != nullptr && data != nullptr) {
-        HdArtInfo hdInfo;
-        if (hdArtProbe(fid, hdInfo)) {
-            if (hdArtLoadIntoCache(fid, hdInfo, data, sizePtr)) {
-                return 0;
-            }
-
-            gHdArtInfoCache.erase(fid);
-        }
-    }
 
     char* artFileName = artBuildFilePath(fid);
     if (artFileName != nullptr) {
@@ -1882,9 +1003,6 @@ static int artCacheReadDataImpl(int fid, int* sizePtr, unsigned char* data)
 // 0x419C80
 static void artCacheFreeImpl(void* ptr)
 {
-    if (ptr != nullptr) {
-        hdTrueColorReleaseFramesForArt(ptr);
-    }
     internal_free(ptr);
 }
 
@@ -2154,220 +1272,6 @@ void FrmImage::unlock()
         _width = 0;
         _height = 0;
     }
-}
-
-// Legacy true-color hooks ---------------------------------------------------
-
-bool artGetTrueColorFrame(int fid, HdTrueColorFrameView& out)
-{
-    out.pixels = nullptr;
-    out.width = 0;
-    out.height = 0;
-    out.logicalWidth = 0;
-    out.logicalHeight = 0;
-    out.scaleX = 1;
-    out.scaleY = 1;
-    out.texelOriginX = 0.0;
-    out.texelOriginY = 0.0;
-    out.texelsPerLogicalX = 1.0;
-    out.texelsPerLogicalY = 1.0;
-
-    CacheEntry* cacheEntry = nullptr;
-    int frameWidth = 0;
-    int frameHeight = 0;
-    unsigned char* indexed = artLockFrameDataReturningSize(fid, &cacheEntry, &frameWidth, &frameHeight);
-    if (indexed == nullptr) {
-        return false;
-    }
-
-    HdTrueColorFrameView registeredView;
-    bool found = artLookupRegisteredTrueColorFrame(indexed, registeredView);
-
-    if (cacheEntry != nullptr) {
-        artUnlock(cacheEntry);
-    }
-
-    if (!found) {
-        return false;
-    }
-
-    if (!hdTrueColorConformToFrame(fid, frameWidth, frameHeight, registeredView)) {
-        return false;
-    }
-
-    out = registeredView;
-    return out.pixels != nullptr;
-}
-
-bool artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t* pixels, int width, int height, HdAlphaMode alphaMode)
-{
-    if (indexed == nullptr || pixels == nullptr || width <= 0 || height <= 0) {
-        if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-            diagnosticsLog(DiagnosticsLevel::Info, "SCALER", "artRegisterTrueColorFrameData rejected invalid input");
-        }
-        return false;
-    }
-
-    HdTrueColorFrameView view;
-    view.pixels = pixels;
-    view.width = width;
-    view.height = height;
-    view.alphaMode = alphaMode;
-
-    if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
-        diagnosticsLog(DiagnosticsLevel::Trace,
-            "SCALER",
-            "artRegisterTrueColorFrameData indexed=%p size=%dx%d mode=%s",
-            indexed,
-            width,
-            height,
-            hdAlphaModeToString(alphaMode));
-    }
-
-    return true;
-}
-
-void artUnregisterTrueColorFrameData(const unsigned char* indexed)
-{
-    if (indexed == nullptr) {
-        return;
-    }
-
-    // Delegate to render_asset_registry (single source of truth)
-    gHdTrueColorFrameStorage.erase(indexed);
-
-    if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
-        diagnosticsLog(DiagnosticsLevel::Trace, "SCALER", "artUnregisterTrueColorFrameData indexed=%p", indexed);
-    }
-}
-
-static void hdTrueColorTrackFrameOwner(const void* owner, const unsigned char* indexed)
-{
-    if (owner == nullptr || indexed == nullptr) {
-        return;
-    }
-
-    gHdTrueColorArtFrameOwners[owner].push_back(indexed);
-}
-
-static void hdTrueColorReleaseFramesForArt(const void* owner)
-{
-    if (owner == nullptr) {
-        return;
-    }
-
-    auto it = gHdTrueColorArtFrameOwners.find(owner);
-    if (it == gHdTrueColorArtFrameOwners.end()) {
-        return;
-    }
-
-    for (const unsigned char* indexed : it->second) {
-        artUnregisterTrueColorFrameData(indexed);
-    }
-
-    gHdTrueColorArtFrameOwners.erase(it);
-}
-
-bool artLookupRegisteredTrueColorFrame(const unsigned char* indexed, HdTrueColorFrameView& out)
-{
-    out.pixels = nullptr;
-    out.width = 0;
-    out.height = 0;
-    out.logicalWidth = 0;
-    out.logicalHeight = 0;
-    out.scaleX = 1;
-    out.scaleY = 1;
-    out.texelOriginX = 0.0;
-    out.texelOriginY = 0.0;
-    out.texelsPerLogicalX = 1.0;
-    out.texelsPerLogicalY = 1.0;
-
-    if (indexed == nullptr) {
-        return false;
-    }
-
-    gHdTrueColorCacheStats.requests++;
-
-    bool found = false;
-    if (found && out.pixels != nullptr && out.width > 0 && out.height > 0) {
-        gHdTrueColorCacheStats.hits++;
-        return true;
-    }
-    
-    return false;
-}
-
-bool artConformTrueColorFrame(int fid, int frameWidth, int frameHeight, HdTrueColorFrameView& view)
-{
-    return hdTrueColorConformToFrame(fid, frameWidth, frameHeight, view);
-}
-
-void artTrueColorStatsReset()
-{
-    gHdTrueColorCacheStats.requests = 0;
-    gHdTrueColorCacheStats.hits = 0;
-}
-
-void artTrueColorStatsLog(const char* mapName)
-{
-    int requests = gHdTrueColorCacheStats.requests;
-    int hits = gHdTrueColorCacheStats.hits;
-    int misses = requests - hits;
-    if (misses < 0) {
-        misses = 0;
-    }
-
-    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-        diagnosticsLog(DiagnosticsLevel::Info,
-            "SCALER",
-            "hd_cache map=%s hits=%d misses=%d",
-            mapName != nullptr ? mapName : "<unknown>",
-            hits,
-            misses);
-    }
-}
-
-void artTrueColorMarkActive(int fid)
-{
-    if (fid < 0) {
-        return;
-    }
-
-    gHdTrueColorActiveFids.insert(fid);
-}
-
-bool artTrueColorMarkInactive(int fid, const char* reason)
-{
-    if (fid < 0) {
-        return false;
-    }
-
-    auto it = gHdTrueColorActiveFids.find(fid);
-    if (it == gHdTrueColorActiveFids.end()) {
-        return false;
-    }
-
-    gHdTrueColorActiveFids.erase(it);
-
-    if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-        diagnosticsLog(DiagnosticsLevel::Info,
-            "SCALER",
-            "hd_overlay disabled fid=%d reason=%s",
-            fid,
-            reason != nullptr ? reason : "unknown");
-    }
-
-    return true;
-}
-
-double artGetDetectedHdAssetScale()
-{
-    return gDetectedHdAssetScale;
-}
-
-int artGetHdAssetScaleMismatchCount()
-{
-    return gHdAssetScaleMismatchCount;
 }
 
 } // namespace fallout

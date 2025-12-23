@@ -1,8 +1,6 @@
 #ifndef ART_H
 #define ART_H
 
-#include <cstdint>
-
 #include "cache.h"
 #include "db.h"
 #include "heap.h"
@@ -118,26 +116,6 @@ extern int _art_vault_person_nums[DUDE_NATIVE_LOOK_COUNT][GENDER_COUNT];
 
 extern Cache gArtCache;
 
-enum class HdAlphaMode {
-    Straight,
-    Premultiplied,
-};
-
-struct HdTrueColorFrameView {
-    const uint32_t* pixels = nullptr;
-    int width = 0;
-    int height = 0;
-    int logicalWidth = 0;
-    int logicalHeight = 0;
-    int scaleX = 1;
-    int scaleY = 1;
-    double texelOriginX = 0.0;
-    double texelOriginY = 0.0;
-    double texelsPerLogicalX = 0.0;
-    double texelsPerLogicalY = 0.0;
-    HdAlphaMode alphaMode = HdAlphaMode::Straight;
-};
-
 int artInit();
 void artReset();
 void artExit();
@@ -173,17 +151,6 @@ int buildFid(int objectType, int frmId, int animType, int weaponCode, int rotati
 Art* artLoad(const char* path);
 int artRead(const char* path, unsigned char* data);
 int artWrite(const char* path, unsigned char* data);
-bool artGetTrueColorFrame(int fid, HdTrueColorFrameView& out);
-bool artConformTrueColorFrame(int fid, int frameWidth, int frameHeight, HdTrueColorFrameView& view);
-bool artRegisterTrueColorFrameData(const unsigned char* indexed, const uint32_t* pixels, int width, int height, HdAlphaMode alphaMode = HdAlphaMode::Straight);
-void artUnregisterTrueColorFrameData(const unsigned char* indexed);
-bool artLookupRegisteredTrueColorFrame(const unsigned char* indexed, HdTrueColorFrameView& out);
-void artTrueColorStatsReset();
-void artTrueColorStatsLog(const char* mapName);
-void artTrueColorMarkActive(int fid);
-bool artTrueColorMarkInactive(int fid, const char* reason = nullptr);
-double artGetDetectedHdAssetScale();  // Returns 0.0 if not yet detected
-int artGetHdAssetScaleMismatchCount();  // Count of assets with mismatched scales
 
 class FrmImage {
 public:
@@ -197,17 +164,12 @@ public:
     int getWidth() const { return _width; }
     int getHeight() const { return _height; }
     unsigned char* getData() const { return _data; }
-    bool hasTrueColorData() const { return _trueColorPixels != nullptr; }
-    const uint32_t* getTrueColorData() const { return _trueColorPixels; }
-    int getTrueColorPitch() const { return _width * static_cast<int>(sizeof(uint32_t)); }
 
 private:
     CacheEntry* _key;
     unsigned char* _data;
     int _width;
     int _height;
-    unsigned int _fid;
-    const uint32_t* _trueColorPixels;
 };
 
 } // namespace fallout
