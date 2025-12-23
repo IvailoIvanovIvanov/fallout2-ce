@@ -1,5 +1,5 @@
 #include "scaler_pass.h"
-#include "../../diagnostics.h"
+#include "logger.h"
 #include <string>
 #include <cmath>
 #include <algorithm>
@@ -12,7 +12,7 @@ namespace renderer {
 static std::string LoadShaderFile(const std::string& path) {
     std::ifstream file(path);
     if (!file.is_open()) {
-        diagnosticsLog(DiagnosticsLevel::Error, "ScalerPass", "Failed to open shader file: %s", path.c_str());
+        Logger::Log(LogLevel::Error, "ScalerPass: Failed to open shader file: %s", path.c_str());
         return "";
     }
     std::stringstream buffer;
@@ -46,7 +46,7 @@ bool ScalerPass::Init(GpuContext& context, int inputWidth, int inputHeight, int 
     }
 
     if (!context.CreateComputeShader(source, &mShader)) {
-        diagnosticsLog(DiagnosticsLevel::Error, "ScalerPass", "Failed to compile shader");
+        Logger::Log(LogLevel::Error, "ScalerPass: Failed to compile shader");
         return false;
     }
     return true;

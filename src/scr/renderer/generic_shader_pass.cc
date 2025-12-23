@@ -1,5 +1,5 @@
 #include "generic_shader_pass.h"
-#include "../../diagnostics.h"
+#include "logger.h"
 #include <fstream>
 #include <sstream>
 
@@ -20,7 +20,7 @@ bool GenericShaderPass::Init(GpuContext& context, int inputWidth, int inputHeigh
 
     std::ifstream file(mShaderPath);
     if (!file.is_open()) {
-        diagnosticsLog(DiagnosticsLevel::Error, "GenericShaderPass", "Failed to open shader file: %s", mShaderPath.c_str());
+        Logger::Log(LogLevel::Error, "GenericShaderPass: Failed to open shader file: %s", mShaderPath.c_str());
         return false;
     }
 
@@ -29,7 +29,7 @@ bool GenericShaderPass::Init(GpuContext& context, int inputWidth, int inputHeigh
     std::string source = buffer.str();
 
     if (!context.CreateComputeShader(source, &mComputeShader)) {
-        diagnosticsLog(DiagnosticsLevel::Error, "GenericShaderPass", "Failed to compile shader: %s", mShaderPath.c_str());
+        Logger::Log(LogLevel::Error, "GenericShaderPass: Failed to compile shader: %s", mShaderPath.c_str());
         return false;
     }
 

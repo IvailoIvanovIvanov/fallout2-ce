@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
-#include "../../diagnostics.h"
+#include "logger.h"
 #include <fstream>
 #include <iomanip>
 
@@ -26,17 +26,12 @@ double gInvScale = 1.0;
 
 static void logScalerState(const char* reason)
 {
-    if (!diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-        return;
-    }
-
     const int viewportWidth = gPhysicalViewport.right - gPhysicalViewport.left + 1;
     const int viewportHeight = gPhysicalViewport.bottom - gPhysicalViewport.top + 1;
 
-    diagnosticsLog(
-        DiagnosticsLevel::Info,
-        "SCALER",
-        "%s logical=%dx%d physical=%dx%d viewport=(%d,%d %dx%d) letterbox=%d,%d scale=%.4f invScale=%.4f",
+    renderer::Logger::Log(
+        renderer::LogLevel::Info,
+        "SCALER: %s logical=%dx%d physical=%dx%d viewport=(%d,%d %dx%d) letterbox=%d,%d scale=%.4f invScale=%.4f",
         reason != nullptr ? reason : "update",
         gLogicalSpace.width,
         gLogicalSpace.height,

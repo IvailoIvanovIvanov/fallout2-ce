@@ -1,5 +1,5 @@
 #include "buffer_manager.h"
-#include "../../diagnostics.h"
+#include "logger.h"
 #include <cstring>
 
 namespace fallout {
@@ -26,7 +26,7 @@ bool BufferManager::Init(GpuContext& context, int inputWidth, int inputHeight, i
         mFrames[i].readbackData.resize(outputWidth * outputHeight * 4);
 
         if (!mFrames[i].inputBuffer || !mFrames[i].outputBuffer) {
-            diagnosticsLog(DiagnosticsLevel::Error, "BufferManager", "Failed to create textures");
+            Logger::Log(LogLevel::Error, "BufferManager: Failed to create textures");
             return false;
         }
     }

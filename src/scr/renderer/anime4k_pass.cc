@@ -1,5 +1,4 @@
 #include "anime4k_pass.h"
-#include "../../diagnostics.h"
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -65,8 +64,7 @@ bool Anime4kPass::LoadShader(GpuContext& context) {
     }
 
     std::ifstream file(filename);
-    if (!file.is_open()) {
-        diagnosticsLog(DiagnosticsLevel::Error, "Anime4kPass", "Failed to open shader file: %s", filename.c_str());
+    if (!file.is_open()) {        
         return false;
     }
     std::stringstream buffer;
@@ -153,7 +151,7 @@ bool Anime4kPass::ParseMPVShader(GpuContext& context, const std::string& source)
                 }
             }
         } else {
-            diagnosticsLog(DiagnosticsLevel::Error, "Anime4kPass", "Failed to compile pass");
+            
         }
 
         currentPass = Pass();

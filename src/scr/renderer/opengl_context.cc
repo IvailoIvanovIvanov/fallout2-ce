@@ -1,5 +1,5 @@
 #include "opengl_context.h"
-#include "../../diagnostics.h"
+#include "logger.h"
 #include <SDL_opengl.h>
 #include <SDL_opengl_glext.h>
 #include <vector>
@@ -40,7 +40,7 @@ static PFNGLACTIVETEXTUREPROC glActiveTexture = nullptr;
 #define LOAD_GL_FUNC(name, type) \
     name = (type)SDL_GL_GetProcAddress(#name); \
     if (!name) { \
-        diagnosticsLog(DiagnosticsLevel::Error, "OpenGL", "Failed to load " #name); \
+        Logger::Log(LogLevel::Error, "OpenGL: Failed to load " #name); \
         return false; \
     }
 
@@ -58,7 +58,7 @@ bool OpenGLContext::Init() {
 
     mGLContext = SDL_GL_CreateContext(mWindow);
     if (!mGLContext) {
-        diagnosticsLog(DiagnosticsLevel::Error, "OpenGL", "Failed to create OpenGL context");
+        Logger::Log(LogLevel::Error, "OpenGL: Failed to create OpenGL context");
         return false;
     }
 
@@ -93,7 +93,7 @@ bool OpenGLContext::Init() {
     LOAD_GL_FUNC(glDeleteBuffers, PFNGLDELETEBUFFERSPROC);
     LOAD_GL_FUNC(glActiveTexture, PFNGLACTIVETEXTUREPROC);
 
-    diagnosticsLog(DiagnosticsLevel::Info, "OpenGL", "OpenGL 4.3 Context Initialized");
+    Logger::Log(LogLevel::Info, "OpenGL: OpenGL 4.3 Context Initialized");
     return true;
 }
 
@@ -148,7 +148,7 @@ bool OpenGLContext::CreateComputeShader(const std::string& source, void** outSha
     if (!success) {
         char infoLog[512];
         glGetShaderInfoLog(shader, 512, nullptr, infoLog);
-        diagnosticsLog(DiagnosticsLevel::Error, "OpenGL", (std::string("Shader compilation failed: ") + infoLog).c_str());
+        Logger::Log(LogLevel::Error, "OpenGL: Shader compilation failed: %s", infoLog);
         return false;
     }
 
@@ -160,7 +160,7 @@ bool OpenGLContext::CreateComputeShader(const std::string& source, void** outSha
     if (!success) {
         char infoLog[512];
         glGetProgramInfoLog(program, 512, nullptr, infoLog);
-        diagnosticsLog(DiagnosticsLevel::Error, "OpenGL", (std::string("Program linking failed: ") + infoLog).c_str());
+        Logger::Log(LogLevel::Error, "OpenGL: Program linking failed: %s", infoLog);
         return false;
     }
 

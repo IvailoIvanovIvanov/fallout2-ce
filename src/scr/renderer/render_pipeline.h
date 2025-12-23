@@ -18,11 +18,8 @@ namespace fallout {
 namespace renderer {
 
 enum class RenderMode {
-    NONE = 0,
-    INTEGER_2X = 2,
-    INTEGER_3X = 3,
-    INTEGER_4X = 4,
-    ANIME4K = 5
+    SIMPLE = 0,
+    ANIME4K = 1
 };
 
 class RenderPipeline {
@@ -81,7 +78,7 @@ private:
     bool mInitialized = false;
 
     // Configuration
-    RenderMode mMode = RenderMode::NONE;
+    RenderMode mMode = RenderMode::SIMPLE;
     RenderMode mConfiguredMode = RenderMode::ANIME4K;
     
     // Filter Settings
