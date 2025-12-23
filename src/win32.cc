@@ -31,12 +31,7 @@ int main(int argc, char* argv[])
 {
     // Write immediate startup marker
     {
-        FILE* f = fopen("game_startup.log", "w");
-        if (f) {
-            fprintf(f, "Game exe started\n");
-            fflush(f);
-            fclose(f);
-        }
+        // Removed game_startup.log
     }
 
     int rc;
