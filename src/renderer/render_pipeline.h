@@ -31,6 +31,7 @@ public:
     const void* GetOutput();
 
     void AddPass(std::unique_ptr<ShaderPass> pass);
+    void AddPostPass(std::unique_ptr<ShaderPass> pass);
     void SetScalerPass(std::unique_ptr<ShaderPass> pass);
 
 private:
@@ -39,10 +40,13 @@ private:
     std::unique_ptr<GpuContext> mContext;
     BufferManager mBuffers;
     std::vector<std::unique_ptr<ShaderPass>> mPasses;
+    std::vector<std::unique_ptr<ShaderPass>> mPostPasses;
     std::unique_ptr<ShaderPass> mScalerPass;
 
     // Phantom buffers for 640x480 processing
     void* mIntermediateBuffers[2] = { nullptr, nullptr };
+    // Output buffers for WindowSize processing
+    void* mPostIntermediateBuffers[2] = { nullptr, nullptr };
 
     int mInputWidth = 0;
     int mInputHeight = 0;

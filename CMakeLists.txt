@@ -214,6 +214,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/renderer/scaler_pass.cc"
     "src/renderer/scaler_pass.h"
     "src/renderer/shader_pass.h"
+    "src/renderer/generic_shader_pass.cc"
+    "src/renderer/generic_shader_pass.h"
     "src/reaction.cc"
     "src/reaction.h"
     "src/region.cc"

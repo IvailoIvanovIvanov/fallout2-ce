@@ -14,6 +14,7 @@
 #include "anime4k_pass.h"
 #include "blur_filter.h"
 #include "hdr_filter.h"
+#include "generic_shader_pass.h"
 #include "phantom_display.h"
 #include "real_display.h"
 
@@ -122,6 +123,12 @@ private:
     float mBlackCrushThreshold = 0.05f;  // Higher threshold
     float mBlackCrushStrength = 1.5f;    // Stronger crush
     
+    // Post-Processing Config
+    bool mEnablePostBlur = false;
+    bool mEnablePostBloom = false;
+    bool mEnablePostSharpen = false;
+    bool mEnablePostDenoise = false;
+
     bool mVerboseLogging = false;
     char mLastError[ERROR_MSG_SIZE] = {};
     FILE* mUpscaleLog = nullptr;
@@ -253,6 +260,11 @@ void UpscalerImpl::loadFilterConfig() {
     if (configGetDouble(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, "black_crush_strength", &blackStr)) {
         mBlackCrushStrength = static_cast<float>(std::clamp(blackStr, 0.0, 2.0));
     }
+
+    configGetBool(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, "post_blur_enable", &mEnablePostBlur);
+    configGetBool(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, "post_bloom_enable", &mEnablePostBloom);
+    configGetBool(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, "post_sharpen_enable", &mEnablePostSharpen);
+    configGetBool(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, "post_denoise_enable", &mEnablePostDenoise);
 }
 
 void UpscalerImpl::saveConfiguration() {
@@ -365,6 +377,25 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
             scalerPass->SetStrength(0.0f);
             mPipeline->AddPass(std::move(scalerPass));
         }
+    }
+
+    // 4. Add Post-Processing Passes
+    if (mEnablePostBlur) {
+        logDiagnostic("[POST] Adding Blur Pass");
+        mPipeline->AddPostPass(std::make_unique<renderer::GenericShaderPass>("data/shaders/postprocess/pp_blur_h.glsl"));
+        mPipeline->AddPostPass(std::make_unique<renderer::GenericShaderPass>("data/shaders/postprocess/pp_blur_v.glsl"));
+    }
+    if (mEnablePostBloom) {
+        logDiagnostic("[POST] Adding Tone Map Pass (HDR)");
+        mPipeline->AddPostPass(std::make_unique<renderer::GenericShaderPass>("data/shaders/postprocess/pp_tonemap.glsl"));
+    }
+    if (mEnablePostSharpen) {
+        logDiagnostic("[POST] Adding Sharpen Pass");
+        mPipeline->AddPostPass(std::make_unique<renderer::GenericShaderPass>("data/shaders/postprocess/pp_sharpen.glsl"));
+    }
+    if (mEnablePostDenoise) {
+        logDiagnostic("[POST] Adding Denoise Pass");
+        mPipeline->AddPostPass(std::make_unique<renderer::GenericShaderPass>("data/shaders/postprocess/pp_denoise.glsl"));
     }
 
     mState = UpscalerState::STATE_READY;

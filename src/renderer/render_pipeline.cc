@@ -69,6 +69,13 @@ bool RenderPipeline::CreateIntermediateBuffers() {
         mIntermediateBuffers[i] = mContext->CreateTexture(desc);
         if (!mIntermediateBuffers[i]) return false;
     }
+
+    TextureDesc postDesc = { mOutputWidth, mOutputHeight, TextureFormat::RGBA8 };
+    for (int i = 0; i < 2; ++i) {
+        mPostIntermediateBuffers[i] = mContext->CreateTexture(postDesc);
+        if (!mPostIntermediateBuffers[i]) return false;
+    }
+
     return true;
 }
 
@@ -79,6 +86,11 @@ void RenderPipeline::Shutdown() {
         pass->Shutdown(*mContext);
     }
     mPasses.clear();
+
+    for (auto& pass : mPostPasses) {
+        pass->Shutdown(*mContext);
+    }
+    mPostPasses.clear();
     
     if (mScalerPass) mScalerPass->Shutdown(*mContext);
 
@@ -86,6 +98,10 @@ void RenderPipeline::Shutdown() {
         if (mIntermediateBuffers[i]) {
             mContext->DestroyTexture(mIntermediateBuffers[i]);
             mIntermediateBuffers[i] = nullptr;
+        }
+        if (mPostIntermediateBuffers[i]) {
+            mContext->DestroyTexture(mPostIntermediateBuffers[i]);
+            mPostIntermediateBuffers[i] = nullptr;
         }
     }
 
@@ -112,10 +128,10 @@ void RenderPipeline::Dispatch(const PhantomDisplay& display) {
     void* currentInput = mBuffers.GetInputBuffer();
     int targetIndex = 0;
 
-    diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Executing %zu passes", mPasses.size());
-    int passIndex = 0;
+    // diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Executing %zu passes", mPasses.size());
+    // int passIndex = 0;
     for (auto& pass : mPasses) {
-        diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Executing pass %d", passIndex++);
+        // diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Executing pass %d", passIndex++);
         void* currentOutput = mIntermediateBuffers[targetIndex];
 
         pass->Execute(*mContext, currentInput, currentOutput);
@@ -125,10 +141,28 @@ void RenderPipeline::Dispatch(const PhantomDisplay& display) {
     }
 
     // 5. Execute Scaler Pass
-    void* outputBuffer = mBuffers.GetOutputBuffer();
-    mScalerPass->Execute(*mContext, currentInput, outputBuffer);
+    // If there are post passes, write to intermediate buffer 0. Otherwise write to final output.
+    void* scalerOutput = (mPostPasses.empty()) ? mBuffers.GetOutputBuffer() : mPostIntermediateBuffers[0];
+    mScalerPass->Execute(*mContext, currentInput, scalerOutput);
 
-    // 6. End Frame (Readback happens on demand via GetOutput)
+    // 6. Execute Post Passes
+    if (!mPostPasses.empty()) {
+        currentInput = scalerOutput;
+        targetIndex = 1; // Next write goes to buffer 1 (since 0 was used by scaler)
+
+        for (size_t i = 0; i < mPostPasses.size(); ++i) {
+            auto& pass = mPostPasses[i];
+            bool isLast = (i == mPostPasses.size() - 1);
+            void* currentOutput = isLast ? mBuffers.GetOutputBuffer() : mPostIntermediateBuffers[targetIndex];
+
+            pass->Execute(*mContext, currentInput, currentOutput);
+
+            currentInput = currentOutput;
+            targetIndex = 1 - targetIndex;
+        }
+    }
+
+    // 7. End Frame (Readback happens on demand via GetOutput)
     mContext->EndFrame();
 }
 
@@ -146,6 +180,16 @@ void RenderPipeline::AddPass(std::unique_ptr<ShaderPass> pass) {
         }
     }
     mPasses.push_back(std::move(pass));
+}
+
+void RenderPipeline::AddPostPass(std::unique_ptr<ShaderPass> pass) {
+    if (mInitialized) {
+        if (!pass->Init(*mContext, mOutputWidth, mOutputHeight, mOutputWidth, mOutputHeight)) {
+            diagnosticsLog(DiagnosticsLevel::Info, "RenderPipeline", "Failed to initialize added post pass");
+            return;
+        }
+    }
+    mPostPasses.push_back(std::move(pass));
 }
 
 void RenderPipeline::SetScalerPass(std::unique_ptr<ShaderPass> pass) {
