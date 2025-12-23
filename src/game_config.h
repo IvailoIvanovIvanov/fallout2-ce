@@ -48,6 +48,17 @@ namespace fallout {
 #define GAME_CONFIG_BRIGHTNESS_KEY "brightness"
 #define GAME_CONFIG_MOUSE_SENSITIVITY_KEY "mouse_sensitivity"
 #define GAME_CONFIG_INITIALIZE_KEY "initialize"
+
+#define GAME_CONFIG_UPSCALER_KEY "upscaler"
+#define GAME_CONFIG_UPSCALER_MODE_KEY "mode"
+#define GAME_CONFIG_UPSCALER_QUALITY_KEY "quality"
+#define GAME_CONFIG_UPSCALER_SHARPNESS_KEY "sharpness"
+#define GAME_CONFIG_UPSCALER_DEBANDING_KEY "debanding"
+#define GAME_CONFIG_UPSCALER_DEBANDING_STRENGTH_KEY "debanding_strength"
+#define GAME_CONFIG_UPSCALER_EDGE_SMOOTHING_KEY "edge_smoothing"
+#define GAME_CONFIG_UPSCALER_SMOOTHING_STRENGTH_KEY "smoothing_strength"
+#define GAME_CONFIG_UPSCALER_VERBOSE_LOG_KEY "verbose_log"
+
 #define GAME_CONFIG_DEVICE_KEY "device"
 #define GAME_CONFIG_PORT_KEY "port"
 #define GAME_CONFIG_IRQ_KEY "irq"

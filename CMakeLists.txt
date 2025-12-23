@@ -219,6 +219,28 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/string_parsers.h"
     "src/svga.cc"
     "src/svga.h"
+    "src/scr/renderer/anime4k_pass.cc"
+    "src/scr/renderer/anime4k_pass.h"
+    "src/scr/renderer/blur_filter.cc"
+    "src/scr/renderer/blur_filter.h"
+    "src/scr/renderer/buffer_manager.cc"
+    "src/scr/renderer/buffer_manager.h"
+    "src/scr/renderer/display_scaler.cc"
+    "src/scr/renderer/display_scaler.h"
+    "src/scr/renderer/generic_shader_pass.cc"
+    "src/scr/renderer/generic_shader_pass.h"
+    "src/scr/renderer/gpu_context.h"
+    "src/scr/renderer/hdr_filter.cc"
+    "src/scr/renderer/hdr_filter.h"
+    "src/scr/renderer/opengl_context.cc"
+    "src/scr/renderer/opengl_context.h"
+    "src/scr/renderer/phantom_display.h"
+    "src/scr/renderer/real_display.h"
+    "src/scr/renderer/render_pipeline.cc"
+    "src/scr/renderer/render_pipeline.h"
+    "src/scr/renderer/scaler_pass.cc"
+    "src/scr/renderer/scaler_pass.h"
+    "src/scr/renderer/shader_pass.h"
     "src/text_font.cc"
     "src/text_font.h"
     "src/text_object.cc"
@@ -374,6 +396,9 @@ target_include_directories(${EXECUTABLE_NAME} PRIVATE ${ZLIB_INCLUDE_DIRS})
 
 target_link_libraries(${EXECUTABLE_NAME} ${SDL2_LIBRARIES})
 target_include_directories(${EXECUTABLE_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
+
+find_package(OpenGL REQUIRED)
+target_link_libraries(${EXECUTABLE_NAME} OpenGL::GL)
 
 if(APPLE)
     if(IOS)

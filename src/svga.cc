@@ -14,6 +14,8 @@
 #include "window_manager.h"
 #include "window_manager_private.h"
 
+#include "scr/renderer/render_pipeline.h"
+
 namespace fallout {
 
 static bool createRenderer(int width, int height);
@@ -33,6 +35,10 @@ SDL_Surface* gSdlSurface = nullptr;
 SDL_Renderer* gSdlRenderer = nullptr;
 SDL_Texture* gSdlTexture = nullptr;
 SDL_Surface* gSdlTextureSurface = nullptr;
+
+// Engine Abstraction Globals
+bool gUsePhantomDisplay = false;
+std::unique_ptr<renderer::RenderPipeline> gRenderPipeline;
 
 // TODO: Remove once migration to update-render cycle is completed.
 FpsLimiter sharedFpsLimiter;
@@ -103,18 +109,32 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
 {
     bool fullscreen = true;
     int scale = 1;
+    int physicalWidth = width;
+    int physicalHeight = height;
 
     Config resolutionConfig;
     if (configInit(&resolutionConfig)) {
         if (configRead(&resolutionConfig, "f2_res.ini", false)) {
+            configGetBool(&resolutionConfig, "MAIN", "USE_PHANTOM_DISPLAY", &gUsePhantomDisplay);
+
             int screenWidth;
             if (configGetInt(&resolutionConfig, "MAIN", "SCR_WIDTH", &screenWidth)) {
-                width = screenWidth;
+                if (gUsePhantomDisplay) {
+                    physicalWidth = screenWidth;
+                } else {
+                    width = screenWidth;
+                    physicalWidth = screenWidth;
+                }
             }
 
             int screenHeight;
             if (configGetInt(&resolutionConfig, "MAIN", "SCR_HEIGHT", &screenHeight)) {
-                height = screenHeight;
+                if (gUsePhantomDisplay) {
+                    physicalHeight = screenHeight;
+                } else {
+                    height = screenHeight;
+                    physicalHeight = screenHeight;
+                }
             }
 
             bool windowed;
@@ -126,11 +146,15 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
             if (configGetInt(&resolutionConfig, "MAIN", "SCALE_2X", &scaleValue)) {
                 scale = scaleValue + 1; // 0 = 1x, 1 = 2x
                 // Only allow scaling if resulting game resolution is >= 640x480
-                if ((width / scale) < 640 || (height / scale) < 480) {
-                    scale = 1;
-                } else {
-                    width /= scale;
-                    height /= scale;
+                if (!gUsePhantomDisplay) {
+                    if ((width / scale) < 640 || (height / scale) < 480) {
+                        scale = 1;
+                    } else {
+                        width /= scale;
+                        height /= scale;
+                        physicalWidth = width * scale;
+                        physicalHeight = height * scale;
+                    }
                 }
             }
 
@@ -142,8 +166,21 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
         configFree(&resolutionConfig);
     }
 
-    if (_GNW95_init_window(width, height, fullscreen, scale) == -1) {
-        return -1;
+    if (gUsePhantomDisplay) {
+        // We pass physical dimensions to window creation, but scale 1 because we handle scaling in shader
+        if (_GNW95_init_window(physicalWidth, physicalHeight, fullscreen, 1) == -1) {
+            return -1;
+        }
+
+        // Initialize RenderPipeline
+        gRenderPipeline = std::make_unique<renderer::RenderPipeline>();
+        if (!gRenderPipeline->Init(width, height, physicalWidth, physicalHeight, gSdlWindow)) {
+             return -1;
+        }
+    } else {
+        if (_GNW95_init_window(width, height, fullscreen, scale) == -1) {
+            return -1;
+        }
     }
 
     if (directDrawInit(width, height, bpp) == -1) {
@@ -302,16 +339,18 @@ void _GNW95_ShowRect(unsigned char* src, int srcPitch, int a3, int srcX, int src
 {
     blitBufferToBuffer(src + srcPitch * srcY + srcX, srcWidth, srcHeight, srcPitch, (unsigned char*)gSdlSurface->pixels + gSdlSurface->pitch * destY + destX, gSdlSurface->pitch);
 
-    SDL_Rect srcRect;
-    srcRect.x = destX;
-    srcRect.y = destY;
-    srcRect.w = srcWidth;
-    srcRect.h = srcHeight;
+    if (!gUsePhantomDisplay) {
+        SDL_Rect srcRect;
+        srcRect.x = destX;
+        srcRect.y = destY;
+        srcRect.w = srcWidth;
+        srcRect.h = srcHeight;
 
-    SDL_Rect destRect;
-    destRect.x = destX;
-    destRect.y = destY;
-    SDL_BlitSurface(gSdlSurface, &srcRect, gSdlTextureSurface, &destRect);
+        SDL_Rect destRect;
+        destRect.x = destX;
+        destRect.y = destY;
+        SDL_BlitSurface(gSdlSurface, &srcRect, gSdlTextureSurface, &destRect);
+    }
 }
 
 // Clears drawing surface.
@@ -329,7 +368,9 @@ void _GNW95_zero_vid_mem()
         surface += gSdlSurface->pitch;
     }
 
-    SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+    if (!gUsePhantomDisplay) {
+        SDL_BlitSurface(gSdlSurface, nullptr, gSdlTextureSurface, nullptr);
+    }
 }
 
 int screenGetWidth()
@@ -361,8 +402,10 @@ static bool createRenderer(int width, int height)
         return false;
     }
 
-    if (SDL_RenderSetLogicalSize(gSdlRenderer, width, height) != 0) {
-        return false;
+    if (!gUsePhantomDisplay) {
+        if (SDL_RenderSetLogicalSize(gSdlRenderer, width, height) != 0) {
+            return false;
+        }
     }
 
     gSdlTexture = SDL_CreateTexture(gSdlRenderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, width, height);
@@ -403,16 +446,31 @@ static void destroyRenderer()
 
 void handleWindowSizeChanged()
 {
-    destroyRenderer();
-    createRenderer(screenGetWidth(), screenGetHeight());
+    if (gUsePhantomDisplay) {
+        int w, h;
+        SDL_GetWindowSize(gSdlWindow, &w, &h);
+        if (gRenderPipeline) {
+            gRenderPipeline->Reconfigure(w, h);
+        }
+    } else {
+        destroyRenderer();
+        createRenderer(screenGetWidth(), screenGetHeight());
+    }
 }
 
 void renderPresent()
 {
-    SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch);
-    SDL_RenderClear(gSdlRenderer);
-    SDL_RenderCopy(gSdlRenderer, gSdlTexture, nullptr, nullptr);
-    SDL_RenderPresent(gSdlRenderer);
+    if (gUsePhantomDisplay) {
+        if (gRenderPipeline) {
+            gRenderPipeline->SetIndexedInput((const uint8_t*)gSdlSurface->pixels, directDrawGetPalette());
+            gRenderPipeline->Dispatch();
+        }
+    } else {
+        SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch);
+        SDL_RenderClear(gSdlRenderer);
+        SDL_RenderCopy(gSdlRenderer, gSdlTexture, nullptr, nullptr);
+        SDL_RenderPresent(gSdlRenderer);
+    }
 }
 
 } // namespace fallout
