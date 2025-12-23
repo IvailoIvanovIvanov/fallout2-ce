@@ -7,9 +7,11 @@ namespace fallout {
 
 // Upscaler mode selection
 enum class UpscalerMode {
-    NONE,       // No upscaling - passthrough
-    ANIME4K,    // Anime4K shader upscaling (experimental, fast ML-inspired shader)
-    REAL_ESRGAN // Real-ESRGAN ML upscaling (via ONNX Runtime + DirectML)
+    NONE = 0,
+    INTEGER_2X = 2,
+    INTEGER_3X = 3,
+    INTEGER_4X = 4,
+    ANIME4K = 5
 };
 
 // Upscaler quality/performance tiers

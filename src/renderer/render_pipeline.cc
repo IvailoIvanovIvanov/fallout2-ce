@@ -4,7 +4,6 @@
 
 #include "blur_filter.h"
 #include "hdr_filter.h"
-#include "ml_upscale_pass.h"
 
 namespace fallout {
 namespace renderer {

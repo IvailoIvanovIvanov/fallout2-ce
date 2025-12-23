@@ -121,13 +121,9 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/geometry.h"
     "src/graph_lib.cc"
     "src/graph_lib.h"
-    "src/renderer/gpu_device.cc"
-    "src/renderer/gpu_device.h"
     "src/renderer/gpu_context.h"
     "src/renderer/opengl_context.cc"
     "src/renderer/opengl_context.h"
-    "src/renderer/gpu_texture.cc"
-    "src/renderer/gpu_texture.h"
     "src/heap.cc"
     "src/heap.h"
     "src/input.cc"
@@ -207,10 +203,6 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/random.h"
     "src/renderer/buffer_manager.cc"
     "src/renderer/buffer_manager.h"
-    "src/renderer/d3d12_context.cc"
-    "src/renderer/d3d12_context.h"
-    "src/renderer/ml_upscale_pass.cc"
-    "src/renderer/ml_upscale_pass.h"
     "src/renderer/anime4k_pass.cc"
     "src/renderer/anime4k_pass.h"
     "src/renderer/blur_filter.cc"
@@ -252,8 +244,6 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/svga.h"
     "src/renderer/upscaler.cc"
     "src/renderer/upscaler.h"
-    "src/renderer/upscaler_ml.cc"
-    "src/renderer/upscaler_ml.h"
     "src/text_font.cc"
     "src/text_font.h"
     "src/text_object.cc"
@@ -412,13 +402,9 @@ target_link_libraries(${EXECUTABLE_NAME} ${SDL2_LIBRARIES})
 target_include_directories(${EXECUTABLE_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
 target_include_directories(${EXECUTABLE_NAME} PRIVATE "${CMAKE_SOURCE_DIR}/third_party/stb")
 
-# Windows D3D12 support for GPU operations
+# Windows OpenGL support
 if(WIN32)
     target_link_libraries(${EXECUTABLE_NAME} 
-        d3d12.lib
-        dxgi.lib
-        dxguid.lib
-        d3dcompiler.lib
         opengl32.lib
     )
 endif()
@@ -446,17 +432,6 @@ if(APPLE)
     endif()
 
     include(CPack)
-endif()
-
-# ONNX Runtime support
-set(ONNXRUNTIME_ROOT "${CMAKE_SOURCE_DIR}/third_party/onnxruntime-dml")
-if(EXISTS "${ONNXRUNTIME_ROOT}")
-    target_include_directories(${EXECUTABLE_NAME} PRIVATE "${ONNXRUNTIME_ROOT}/include")
-    target_link_libraries(${EXECUTABLE_NAME} 
-        "${ONNXRUNTIME_ROOT}/lib/onnxruntime.lib"
-        "${ONNXRUNTIME_ROOT}/lib/DirectML.lib"
-    )
-    target_compile_definitions(${EXECUTABLE_NAME} PRIVATE HAS_ONNX_RUNTIME)
 endif()
 
 # Copy Shaders

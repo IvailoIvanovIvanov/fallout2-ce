@@ -16,7 +16,6 @@
 #include "draw.h"
 #include "game_config.h"
 #include "geometry.h"
-#include "renderer/gpu_device.h"
 #include "interface.h"
 #include "memory.h"
 #include "mouse.h"
@@ -905,26 +904,6 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
                     diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Failed to recreate texture: %s", SDL_GetError());
                 }
             }
-        }
-
-        // CRITICAL FIX: Check if GPU device was lost during upscaler initialization (TDR)
-        // If the GPU device is gone, the SDL renderer (which shares the adapter) is likely invalid.
-        // We must recreate the renderer to recover from the driver reset.
-        if (!gpuDeviceIsReady()) {
-            diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "GPU device not ready after upscaler init - checking for renderer recovery");
-            
-            // Force fallback to D3D11 to ensure stability if D3D12 is unstable/crashed
-            SDL_SetHint(SDL_HINT_RENDER_DRIVER, "direct3d11");
-            
-            destroyRenderer();
-            if (!createRenderer()) {
-                destroyRenderer();
-                SDL_DestroyWindow(gSdlWindow);
-                gSdlWindow = nullptr;
-                return -1;
-            }
-            syncPhysicalSizeWithRenderer();
-            diagnosticsLog(DiagnosticsLevel::Info, "SVGA", "Renderer recreated successfully (fallback mode)");
         }
     } else {
         int physicalWidth;
@@ -1821,37 +1800,11 @@ static bool createRenderer()
         gGpuOverlayEnabled = false;
     }
 
-    // Phase 8: Initialize GPU device for compute operations (e.g., AI upscaling)
-    // GPU device needed for:
-    // - gpu_scaling (GPU texture acceleration)
-    // - virtual_adapter (virtual display adapter)
-    // - ANIME4K upscaler (mode 5) - requires GPU compute
-    int upscalerMode = 3; // Default INTEGER_3X
-    configGetInt(&gGameConfig, GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_UPSCALER_MODE_KEY, &upscalerMode);
-    bool needsGpuCompute = (upscalerMode == 5); // ANIME4K
-    
-    if (settings.system.gpu_scaling || needsGpuCompute) {  // virtual_adapter removed
-        if (!gpuDeviceInit()) {
-            diagnosticsLog(DiagnosticsLevel::Info, "RENDERER",
-                "GPU device initialization failed, GPU compute operations unavailable");
-            if (needsGpuCompute) {
-                diagnosticsLog(DiagnosticsLevel::Info, "RENDERER",
-                    "WARNING: Upscaler mode %d requires GPU compute but initialization failed!", upscalerMode);
-            }
-        } else if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
-            diagnosticsLog(DiagnosticsLevel::Info, "RENDERER",
-                "GPU device initialized for compute operations");
-        }
-    }
-
     return true;
 }
 
 static void destroyRenderer()
 {
-    // Phase 8: Shutdown GPU device
-    gpuDeviceShutdown();
-
     // Phase 7: Destroy GPU overlay texture
     if (gSdlOverlayTexture != nullptr) {
         SDL_DestroyTexture(gSdlOverlayTexture);

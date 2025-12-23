@@ -11,7 +11,6 @@
 #include <SDL.h>
 
 #include "render_pipeline.h"
-#include "ml_upscale_pass.h"
 #include "anime4k_pass.h"
 #include "blur_filter.h"
 #include "hdr_filter.h"
@@ -127,9 +126,6 @@ private:
     char mLastError[ERROR_MSG_SIZE] = {};
     FILE* mUpscaleLog = nullptr;
     std::string mLogFilePath;
-    
-    // ML Config
-    std::string mMlModelFile;
 };
 
 UpscalerImpl* upscalerGetImpl() {
@@ -214,13 +210,6 @@ void UpscalerImpl::loadUpscalerConfig() {
     bool verboseValue = false;
     if (configGetBool(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, GAME_CONFIG_UPSCALER_VERBOSE_LOG_KEY, &verboseValue)) {
         mVerboseLogging = verboseValue;
-    }
-    
-    char* modelFile = nullptr;
-    if (configGetString(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, "model_file", &modelFile)) {
-        mMlModelFile = std::string(modelFile);
-    } else {
-        mMlModelFile = "RealESRGAN_x4plus_anime_6B.onnx";
     }
 }
 
@@ -352,12 +341,7 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
     }
 
     // 3. Add ML Upscaler if mode is enabled (Final upscaling)
-    if (mode == UpscalerMode::REAL_ESRGAN) {
-        logDiagnostic("[PASS 3] Adding MlUpscalePass (model=%s)", mMlModelFile.c_str());
-        auto mlPass = std::make_unique<renderer::MLUpscalePass>();
-        mlPass->SetModelFile(mMlModelFile);
-        mPipeline->AddPass(std::move(mlPass));
-    } else if (mode == UpscalerMode::ANIME4K) {
+    if (mode == UpscalerMode::ANIME4K) {
         int anime4kVersion = 0;
         configGetInt(&gGameConfig, GAME_CONFIG_UPSCALER_KEY, "anime4k_version", &anime4kVersion);
         
@@ -373,7 +357,7 @@ bool UpscalerImpl::init(int inputWidth, int inputHeight, int outputWidth, int ou
     if (inputWidth != outputWidth || inputHeight != outputHeight) {
         // Check if pipeline has passes (we can't check mPipeline->mPasses directly as it's private)
         // But we know if we added any above.
-        bool hasPasses = (mode == UpscalerMode::REAL_ESRGAN) || mEnableEdgeSmoothing || mEnableSoftHDR;
+        bool hasPasses = (mode == UpscalerMode::ANIME4K) || mEnableEdgeSmoothing || mEnableSoftHDR;
         
         if (!hasPasses) {
             logDiagnostic("Adding BlurFilter (Strength 0) as default Scaler");
