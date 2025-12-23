@@ -4,9 +4,6 @@
 #include "logger.h"
 #include "renderer_config.h"
 
-#include "anime4k_pass.h"
-#include "blur_filter.h"
-#include "hdr_filter.h"
 #include "generic_shader_pass.h"
 
 #include <SDL.h>
@@ -85,32 +82,41 @@ void RenderPipeline::SetupPasses() {
     mScalerPass.reset();
 
     if (mConfiguredMode == RenderMode::ANIME4K) {
-        // 1. Add Blur Pass if needed (Pre-processing)
+        // 1. Add Blur Pass (Pre-processing) - 2 Passes (Horizontal + Vertical)
         if (mEnableEdgeSmoothing) {
-            LogDiagnostic("[PASS 1] Adding BlurFilter (strength=%.2f)", mSmoothingStrength);
-            auto blurPass = std::make_unique<BlurFilter>();
-            blurPass->SetStrength(mSmoothingStrength);
-            if (blurPass->Init(*mContext, mInputWidth, mInputHeight, mInputWidth, mInputHeight)) {
-                mPasses.push_back(std::move(blurPass));
+            LogDiagnostic("[PASS 1] Adding Blur Pass (H+V)");
+            
+            auto blurH = std::make_unique<GenericShaderPass>("data/shaders/pp_blur_h.glsl");
+            if (blurH->Init(*mContext, mInputWidth, mInputHeight, mInputWidth, mInputHeight)) {
+                mPasses.push_back(std::move(blurH));
+            }
+
+            auto blurV = std::make_unique<GenericShaderPass>("data/shaders/pp_blur_v.glsl");
+            if (blurV->Init(*mContext, mInputWidth, mInputHeight, mInputWidth, mInputHeight)) {
+                mPasses.push_back(std::move(blurV));
             }
         }
 
-        // 2. Add HDR Pass if needed (Color enhancement)
+        // 2. Add HDR/Tonemap Pass
         if (mEnableSoftHDR) {
-            LogDiagnostic("[PASS 2] Adding HdrFilter (sat=%.2f, contrast=%.2f)", mHdrSaturation, mHdrContrast);
-            auto hdrPass = std::make_unique<HDRFilter>();
-            hdrPass->SetParams(mHdrSaturation, mHdrContrast, mBlackCrushThreshold, mBlackCrushStrength);
+            LogDiagnostic("[PASS 2] Adding HDR/Tonemap Pass");
+            auto hdrPass = std::make_unique<GenericShaderPass>("data/shaders/pp_tonemap.glsl");
             if (hdrPass->Init(*mContext, mInputWidth, mInputHeight, mInputWidth, mInputHeight)) {
                 mPasses.push_back(std::move(hdrPass));
             }
         }
 
         // 3. Add Anime4K Scaler
-        int anime4kVersion = RendererConfig::GetInstance().GetInt("Scaler", "Anime4KVersion", 0);
-        LogDiagnostic("[SCALER] Using Anime4K Scaler (strength=%.2f, version=%d)", mSharpness, anime4kVersion);
-        auto anime4k = std::make_unique<Anime4kPass>();
-        anime4k->SetStrength(mSharpness);
-        anime4k->SetVersion(static_cast<Anime4kPass::Version>(anime4kVersion));
+        std::string anime4kShader = RendererConfig::GetInstance().GetString("Scaler", "Anime4KVersion", "Anime4K_Upscale_GAN_x4_UUL.glsl");
+        LogDiagnostic("[SCALER] Using Anime4K Scaler (shader=%s)", anime4kShader.c_str());
+        
+        // If user provides just a name, assume it's in data/shaders/
+        std::string shaderPath = anime4kShader;
+        if (shaderPath.find("/") == std::string::npos && shaderPath.find("\\") == std::string::npos) {
+            shaderPath = "data/shaders/" + shaderPath;
+        }
+
+        auto anime4k = std::make_unique<GenericShaderPass>(shaderPath);
         mScalerPass = std::move(anime4k);
 
         // 4. Add Post-Processing Passes
