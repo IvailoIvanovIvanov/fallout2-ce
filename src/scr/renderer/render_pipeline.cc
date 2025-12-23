@@ -9,6 +9,7 @@
 #include "hdr_filter.h"
 #include "generic_shader_pass.h"
 
+#include <SDL.h>
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
@@ -48,6 +49,9 @@ bool RenderPipeline::Init(int inputWidth, int inputHeight, int outputWidth, int 
 
     // Load Configuration
     LoadConfiguration();
+    
+    // Force verbose logging for debugging
+    mVerboseLogging = true;
 
     // Instantiate OpenGL Context
     mContext = std::make_unique<OpenGLContext>(window);
@@ -110,19 +114,6 @@ void RenderPipeline::SetupPasses() {
         mScalerPass = std::move(anime4k);
 
         // 4. Add Post-Processing Passes
-        if (mEnablePostBlur) {
-            LogDiagnostic("[POST] Adding Blur Pass");
-            auto pass = std::make_unique<GenericShaderPass>("data/shaders/pp_blur_h.glsl");
-            if (pass->Init(*mContext, mOutputWidth, mOutputHeight, mOutputWidth, mOutputHeight)) mPostPasses.push_back(std::move(pass));
-            
-            pass = std::make_unique<GenericShaderPass>("data/shaders/pp_blur_v.glsl");
-            if (pass->Init(*mContext, mOutputWidth, mOutputHeight, mOutputWidth, mOutputHeight)) mPostPasses.push_back(std::move(pass));
-        }
-        if (mEnablePostBloom) {
-            LogDiagnostic("[POST] Adding Tone Map Pass");
-            auto pass = std::make_unique<GenericShaderPass>("data/shaders/pp_tonemap.glsl");
-            if (pass->Init(*mContext, mOutputWidth, mOutputHeight, mOutputWidth, mOutputHeight)) mPostPasses.push_back(std::move(pass));
-        }
         if (mEnablePostSharpen) {
             LogDiagnostic("[POST] Adding Sharpen Pass");
             auto pass = std::make_unique<GenericShaderPass>("data/shaders/pp_sharpen.glsl");
@@ -209,30 +200,36 @@ bool RenderPipeline::Reconfigure(int outputWidth, int outputHeight) {
     return Init(inputW, inputH, outputWidth, outputHeight, win);
 }
 
-bool RenderPipeline::SetIndexedInput(const unsigned char* indexedBuffer, const unsigned char* palette) {
+bool RenderPipeline::SetIndexedInput(SDL_Surface* surface) {
     if (!mInitialized || !mPhantomDisplay) {
         LogDiagnostic("SetIndexedInput failed: Not initialized");
         return false;
     }
 
-    if (!indexedBuffer || !palette) {
-        LogDiagnostic("SetIndexedInput failed: Null buffer or palette");
+    if (!surface || !surface->pixels) {
+        LogDiagnostic("SetIndexedInput failed: Null surface or pixels");
         return false;
     }
 
     // Convert RGB palette to RGBA
+    // OpenGL expects RGBA, so we need to pack it as 0xAABBGGRR on Little Endian
     uint32_t paletteRGBA[256];
-    for (int i = 0; i < 256; ++i) {
-        paletteRGBA[i] = (0xFF000000) | (palette[i*3] << 16) | (palette[i*3+1] << 8) | (palette[i*3+2]);
+    
+    if (surface->format && surface->format->palette) {
+        SDL_Color* colors = surface->format->palette->colors;
+        for (int i = 0; i < 256; ++i) {
+            uint8_t r = colors[i].r;
+            uint8_t g = colors[i].g;
+            uint8_t b = colors[i].b;
+            // Ensure alpha is 0xFF
+            paletteRGBA[i] = (0xFF000000) | (b << 16) | (g << 8) | (r);
+        }
+    } else {
+        LogDiagnostic("SetIndexedInput: Surface has no palette!");
+        memset(paletteRGBA, 0, sizeof(paletteRGBA));
     }
 
-    // Log first few palette entries for debugging
-    static int logCounter = 0;
-    if (logCounter++ < 5) {
-        LogDiagnostic("Palette[0]: %08X, Palette[1]: %08X", paletteRGBA[0], paletteRGBA[1]);
-    }
-
-    mPhantomDisplay->SetData(indexedBuffer, paletteRGBA);
+    mPhantomDisplay->SetData((const unsigned char*)surface->pixels, paletteRGBA);
     return true;
 }
 
@@ -273,6 +270,9 @@ void RenderPipeline::Dispatch() {
         mScalerPass->Execute(*mContext, currentInput, scalerOutput);
     } else {
         LogDiagnostic("Dispatch: No Scaler Pass!");
+        // If no scaler pass, we must copy input to output manually or handle it
+        // For now, just copy if possible, but sizes differ so we need a scaler.
+        // mScalerPass should always be present.
     }
 
     // 6. Execute Post Passes
@@ -294,6 +294,10 @@ void RenderPipeline::Dispatch() {
 
     // 7. End Frame
     mContext->EndFrame();
+
+    // 8. Present to Screen
+    // Use the final output buffer
+    mContext->Present(mBuffers.GetOutputBuffer(), mOutputWidth, mOutputHeight);
 }
 
 const void* RenderPipeline::GetOutput() {
@@ -321,8 +325,6 @@ void RenderPipeline::LoadConfiguration() {
     mBlackCrushStrength = config.GetFloat("Filters", "BlackCrushStrength", 1.0f);
 
     // Post Processing
-    mEnablePostBlur = config.GetBool("PostProcessing", "Blur", false);
-    mEnablePostBloom = config.GetBool("PostProcessing", "Bloom", false);
     mEnablePostSharpen = config.GetBool("PostProcessing", "Sharpen", false);
     mEnablePostDenoise = config.GetBool("PostProcessing", "Denoise", false);
 
@@ -332,7 +334,11 @@ void RenderPipeline::LoadConfiguration() {
 }
 
 void RenderPipeline::LogDiagnostic(const char* format, ...) {
-    if (!mVerboseLogging) return;
+    // Check if it's an error message
+    bool isError = (strstr(format, "Failed") != nullptr || strstr(format, "Error") != nullptr);
+    
+    // Always log errors, otherwise check verbose flag
+    if (!mVerboseLogging && !isError) return;
     
     va_list args;
     va_start(args, format);
@@ -340,7 +346,7 @@ void RenderPipeline::LogDiagnostic(const char* format, ...) {
     vsnprintf(buffer, sizeof(buffer), format, args);
     va_end(args);
     
-    Logger::Log(LogLevel::Info, "%s", buffer);
+    Logger::Log(isError ? LogLevel::Error : LogLevel::Info, "%s", buffer);
 }
 
 } // namespace renderer

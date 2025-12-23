@@ -36,6 +36,11 @@ static PFNGLBUFFERDATAPROC glBufferData = nullptr;
 static PFNGLBINDBUFFERBASEPROC glBindBufferBase = nullptr;
 static PFNGLDELETEBUFFERSPROC glDeleteBuffers = nullptr;
 static PFNGLACTIVETEXTUREPROC glActiveTexture = nullptr;
+static PFNGLGENFRAMEBUFFERSPROC glGenFramebuffers = nullptr;
+static PFNGLBINDFRAMEBUFFERPROC glBindFramebuffer = nullptr;
+static PFNGLFRAMEBUFFERTEXTURE2DPROC glFramebufferTexture2D = nullptr;
+static PFNGLBLITFRAMEBUFFERPROC glBlitFramebuffer = nullptr;
+static PFNGLDELETEFRAMEBUFFERSPROC glDeleteFramebuffers = nullptr;
 
 #define LOAD_GL_FUNC(name, type) \
     name = (type)SDL_GL_GetProcAddress(#name); \
@@ -92,12 +97,25 @@ bool OpenGLContext::Init() {
     LOAD_GL_FUNC(glBindBufferBase, PFNGLBINDBUFFERBASEPROC);
     LOAD_GL_FUNC(glDeleteBuffers, PFNGLDELETEBUFFERSPROC);
     LOAD_GL_FUNC(glActiveTexture, PFNGLACTIVETEXTUREPROC);
+    LOAD_GL_FUNC(glGenFramebuffers, PFNGLGENFRAMEBUFFERSPROC);
+    LOAD_GL_FUNC(glBindFramebuffer, PFNGLBINDFRAMEBUFFERPROC);
+    LOAD_GL_FUNC(glFramebufferTexture2D, PFNGLFRAMEBUFFERTEXTURE2DPROC);
+    LOAD_GL_FUNC(glBlitFramebuffer, PFNGLBLITFRAMEBUFFERPROC);
+    LOAD_GL_FUNC(glDeleteFramebuffers, PFNGLDELETEFRAMEBUFFERSPROC);
+
+    // Create FBO for presentation
+    glGenFramebuffers(1, &mPresentFBO);
 
     Logger::Log(LogLevel::Info, "OpenGL: OpenGL 4.3 Context Initialized");
     return true;
 }
 
 void OpenGLContext::Shutdown() {
+    if (mPresentFBO) {
+        glDeleteFramebuffers(1, &mPresentFBO);
+        mPresentFBO = 0;
+    }
+
     for (auto& pair : mConstantBuffers) {
         glDeleteBuffers(1, &pair.second);
     }
@@ -209,6 +227,26 @@ void OpenGLContext::BeginFrame() {
 void OpenGLContext::EndFrame() {
     // Ensure all commands are submitted
     glMemoryBarrier(GL_ALL_BARRIER_BITS);
+}
+
+void OpenGLContext::Present(void* textureHandle, int width, int height) {
+    GLuint texture = (GLuint)(uintptr_t)textureHandle;
+
+    // Bind the texture to our FBO
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, mPresentFBO);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+
+    // Bind default framebuffer as draw target
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+    // Blit!
+    // Flip vertically by swapping srcY0 and srcY1
+    // Source texture is top-down (0,0 is top-left of image data), but OpenGL treats 0,0 as bottom-left.
+    // So the image is upside down in the texture. We flip it back during blit.
+    glBlitFramebuffer(0, height, width, 0, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
+    // Cleanup
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 void OpenGLContext::UpdateTexture(void* textureHandle, const void* data, int width, int height) {

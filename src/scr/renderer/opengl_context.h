@@ -31,11 +31,13 @@ public:
 
     void UpdateTexture(void* textureHandle, const void* data, int width, int height) override;
     void ReadbackTexture(void* textureHandle, void* data, int size) override;
+    void Present(void* textureHandle, int width, int height) override;
 
 private:
     SDL_Window* mWindow;
     SDL_GLContext mGLContext;
     std::map<int, unsigned int> mConstantBuffers;
+    unsigned int mPresentFBO = 0;
     
     // Helper to compile GLSL
     unsigned int CompileShader(unsigned int type, const std::string& source);

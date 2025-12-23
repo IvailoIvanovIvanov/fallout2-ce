@@ -13,6 +13,7 @@
 #include <string>
 
 struct SDL_Window;
+struct SDL_Surface;
 
 namespace fallout {
 namespace renderer {
@@ -35,7 +36,7 @@ public:
     bool Reconfigure(int outputWidth, int outputHeight);
 
     // Set input data
-    bool SetIndexedInput(const unsigned char* indexedBuffer, const unsigned char* palette);
+    bool SetIndexedInput(SDL_Surface* surface);
     bool SetRgbaInput(const uint32_t* rgbaBuffer);
 
     // Execute the pipeline
@@ -97,8 +98,6 @@ private:
     float mBlackCrushStrength = 1.5f;
     
     // Post-Processing Config
-    bool mEnablePostBlur = false;
-    bool mEnablePostBloom = false;
     bool mEnablePostSharpen = false;
     bool mEnablePostDenoise = false;
     

@@ -462,8 +462,9 @@ void renderPresent()
 {
     if (gUsePhantomDisplay) {
         if (gRenderPipeline) {
-            gRenderPipeline->SetIndexedInput((const uint8_t*)gSdlSurface->pixels, directDrawGetPalette());
+            gRenderPipeline->SetIndexedInput(gSdlSurface);
             gRenderPipeline->Dispatch();
+            SDL_GL_SwapWindow(gSdlWindow);
         }
     } else {
         SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch);
