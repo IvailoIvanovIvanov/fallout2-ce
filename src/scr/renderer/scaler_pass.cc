@@ -23,12 +23,7 @@ struct ScalerConstants {
 ScalerPass::ScalerPass() {}
 ScalerPass::~ScalerPass() {}
 
-bool ScalerPass::Init(GpuContext& context, int inputWidth, int inputHeight, int outputWidth, int outputHeight) {
-    mInputWidth = inputWidth;
-    mInputHeight = inputHeight;
-    mOutputWidth = outputWidth;
-    mOutputHeight = outputHeight;
-
+bool ScalerPass::Init(GpuContext& context, const RenderSurface& input, const RenderSurface& output) {
     mShader = std::make_unique<Shader>("data/shaders/scaler.glsl");
     if (!mShader->IsValid()) {
         Logger::Log(LogLevel::Error, "ScalerPass: Failed to compile shader");
@@ -41,33 +36,33 @@ void ScalerPass::Shutdown(GpuContext& context) {
     mShader.reset();
 }
 
-void ScalerPass::Execute(GpuContext& context, void* input, void* output) {
+void ScalerPass::Execute(GpuContext& context, const RenderSurface& input, const RenderSurface& output) {
     if (!mShader || !mShader->IsValid()) return;
 
     // Calculate scale and offset to preserve aspect ratio
-    float scaleX = (float)mOutputWidth / mInputWidth;
-    float scaleY = (float)mOutputHeight / mInputHeight;
+    float scaleX = (float)output.width / input.width;
+    float scaleY = (float)output.height / input.height;
     float scale = std::min(scaleX, scaleY);
 
-    float offsetX = (mOutputWidth - mInputWidth * scale) * 0.5f;
-    float offsetY = (mOutputHeight - mInputHeight * scale) * 0.5f;
+    float offsetX = (output.width - input.width * scale) * 0.5f;
+    float offsetY = (output.height - input.height * scale) * 0.5f;
 
     ScalerConstants constants;
-    constants.inputWidth = mInputWidth;
-    constants.inputHeight = mInputHeight;
-    constants.outputWidth = mOutputWidth;
-    constants.outputHeight = mOutputHeight;
+    constants.inputWidth = input.width;
+    constants.inputHeight = input.height;
+    constants.outputWidth = output.width;
+    constants.outputHeight = output.height;
     constants.offsetX = offsetX;
     constants.offsetY = offsetY;
     constants.scaleX = scale;
     constants.scaleY = scale;
 
     context.SetConstants(0, &constants, sizeof(constants));
-    context.BindTexture(0, input);
-    context.BindUnorderedAccessView(0, output);
+    context.BindTexture(0, input.handle);
+    context.BindUnorderedAccessView(0, output.handle);
 
-    int groupX = (mOutputWidth + 7) / 8;
-    int groupY = (mOutputHeight + 7) / 8;
+    int groupX = (output.width + 7) / 8;
+    int groupY = (output.height + 7) / 8;
     mShader->Dispatch(groupX, groupY, 1);
 }
 

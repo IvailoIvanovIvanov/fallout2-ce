@@ -10,16 +10,7 @@ namespace renderer {
 GenericShaderPass::GenericShaderPass(const std::string& shaderPath)
     : mShaderPath(shaderPath) {}
 
-bool GenericShaderPass::Init(GpuContext& context, int inputWidth, int inputHeight, int outputWidth, int outputHeight) {
-    mInputWidth = inputWidth;
-    mInputHeight = inputHeight;
-    mOutputWidth = outputWidth;
-    mOutputHeight = outputHeight;
-    
-    // Default for standard shaders
-    mWidth = outputWidth;
-    mHeight = outputHeight;
-
+bool GenericShaderPass::Init(GpuContext& context, const RenderSurface& input, const RenderSurface& output) {
     std::ifstream file(mShaderPath);
     if (!file.is_open()) {
         Logger::Log(LogLevel::Error, "GenericShaderPass: Failed to open shader file: %s", mShaderPath.c_str());
@@ -33,7 +24,7 @@ bool GenericShaderPass::Init(GpuContext& context, int inputWidth, int inputHeigh
     // Check if it's an MPV shader
     if (source.find("//!HOOK") != std::string::npos) {
         mIsMPV = true;
-        mPasses = MPVShaderParser::Parse(source, inputWidth, inputHeight, outputWidth, outputHeight);
+        mPasses = MPVShaderParser::Parse(source, input.width, input.height, output.width, output.height);
         
         for (const auto& pass : mPasses) {
             if (!pass.outputTexture.empty() && pass.outputTexture != "MAIN") {
@@ -55,33 +46,33 @@ bool GenericShaderPass::Init(GpuContext& context, int inputWidth, int inputHeigh
     return true;
 }
 
-void GenericShaderPass::Execute(GpuContext& context, void* input, void* output) {
+void GenericShaderPass::Execute(GpuContext& context, const RenderSurface& input, const RenderSurface& output) {
     if (!mIsMPV) {
         if (!mShader || !mShader->IsValid()) return;
-        context.BindTexture(0, input);
-        context.BindUnorderedAccessView(1, output);
-        mShader->Dispatch((mWidth + 15) / 16, (mHeight + 15) / 16, 1);
+        context.BindTexture(0, input.handle);
+        context.BindUnorderedAccessView(1, output.handle);
+        mShader->Dispatch((output.width + 15) / 16, (output.height + 15) / 16, 1);
         return;
     }
 
     // MPV Execution Logic
-    mTextures["INPUT"] = input;
-    mTextures["HOOKED"] = input; 
-    mTextures["MAIN"] = input; 
+    mTextures["INPUT"] = input.handle;
+    mTextures["HOOKED"] = input.handle; 
+    mTextures["MAIN"] = input.handle; 
 
-    void* currentHooked = input;
+    void* currentHooked = input.handle;
     
     std::map<std::string, std::pair<int, int>> sizes;
-    sizes["INPUT"] = {mInputWidth, mInputHeight};
-    sizes["HOOKED"] = {mInputWidth, mInputHeight};
-    sizes["MAIN"] = {mInputWidth, mInputHeight};
+    sizes["INPUT"] = {input.width, input.height};
+    sizes["HOOKED"] = {input.width, input.height};
+    sizes["MAIN"] = {input.width, input.height};
 
     for (const auto& pass : mPasses) {
         if (!pass.shader) continue;
 
         void* passOutput = nullptr;
         if (pass.outputTexture == "MAIN" || pass.outputTexture.empty()) {
-            passOutput = output;
+            passOutput = output.handle;
         } else {
             passOutput = GetTexture(pass.outputTexture);
             if (!passOutput) {
@@ -99,23 +90,23 @@ void GenericShaderPass::Execute(GpuContext& context, void* input, void* output) 
             if (texName == "HOOKED") {
                 tex = currentHooked;
             } else if (texName == "INPUT") {
-                tex = input;
+                tex = input.handle;
             } else {
                 tex = GetTexture(texName);
             }
             
-            if (!tex) tex = input; 
+            if (!tex) tex = input.handle; 
             context.BindTexture(slot, tex);
             
-            float w = (float)mInputWidth;
-            float h = (float)mInputHeight;
+            float w = (float)input.width;
+            float h = (float)input.height;
             
             if (sizes.count(texName)) {
                 w = (float)sizes[texName].first;
                 h = (float)sizes[texName].second;
-            } else if (tex == output) {
-                 w = (float)mOutputWidth;
-                 h = (float)mOutputHeight;
+            } else if (tex == output.handle) {
+                 w = (float)output.width;
+                 h = (float)output.height;
             }
             
             float pt[2] = { 1.0f / w, 1.0f / h };
@@ -134,7 +125,7 @@ void GenericShaderPass::Execute(GpuContext& context, void* input, void* output) 
         }
         
         if (pass.outputTexture == "MAIN") {
-            currentHooked = output;
+            currentHooked = output.handle;
             sizes["HOOKED"] = {pass.width, pass.height};
             sizes["MAIN"] = {pass.width, pass.height};
         }

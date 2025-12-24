@@ -104,18 +104,21 @@ void RenderPipeline::SetupPasses() {
     mPostPasses.clear();
     mScalerPass.reset();
 
+    RenderSurface inputSurface = { nullptr, mInputWidth, mInputHeight };
+    RenderSurface renderSurface = { nullptr, mRenderWidth, mRenderHeight };
+
     if (mConfiguredMode == RenderMode::ANIME4K) {
         // 1. Add Blur Pass (Pre-processing) - 2 Passes (Horizontal + Vertical)
         if (mEnableEdgeSmoothing) {
             LogDiagnostic("[PASS 1] Adding Blur Pass (H+V)");
             
             auto blurH = std::make_unique<GenericShaderPass>("data/shaders/pp_blur_h.glsl");
-            if (blurH->Init(*mContext, mInputWidth, mInputHeight, mInputWidth, mInputHeight)) {
+            if (blurH->Init(*mContext, inputSurface, inputSurface)) {
                 mPasses.push_back(std::move(blurH));
             }
 
             auto blurV = std::make_unique<GenericShaderPass>("data/shaders/pp_blur_v.glsl");
-            if (blurV->Init(*mContext, mInputWidth, mInputHeight, mInputWidth, mInputHeight)) {
+            if (blurV->Init(*mContext, inputSurface, inputSurface)) {
                 mPasses.push_back(std::move(blurV));
             }
         }
@@ -124,7 +127,7 @@ void RenderPipeline::SetupPasses() {
         if (mEnableSoftHDR) {
             LogDiagnostic("[PASS 2] Adding HDR/Tonemap Pass");
             auto hdrPass = std::make_unique<GenericShaderPass>("data/shaders/pp_tonemap.glsl");
-            if (hdrPass->Init(*mContext, mInputWidth, mInputHeight, mInputWidth, mInputHeight)) {
+            if (hdrPass->Init(*mContext, inputSurface, inputSurface)) {
                 mPasses.push_back(std::move(hdrPass));
             }
         }
@@ -146,12 +149,12 @@ void RenderPipeline::SetupPasses() {
         if (mEnablePostSharpen) {
             LogDiagnostic("[POST] Adding Sharpen Pass");
             auto pass = std::make_unique<GenericShaderPass>("data/shaders/pp_sharpen.glsl");
-            if (pass->Init(*mContext, mRenderWidth, mRenderHeight, mRenderWidth, mRenderHeight)) mPostPasses.push_back(std::move(pass));
+            if (pass->Init(*mContext, renderSurface, renderSurface)) mPostPasses.push_back(std::move(pass));
         }
         if (mEnablePostDenoise) {
             LogDiagnostic("[POST] Adding Denoise Pass");
             auto pass = std::make_unique<GenericShaderPass>("data/shaders/pp_denoise.glsl");
-            if (pass->Init(*mContext, mRenderWidth, mRenderHeight, mRenderWidth, mRenderHeight)) mPostPasses.push_back(std::move(pass));
+            if (pass->Init(*mContext, renderSurface, renderSurface)) mPostPasses.push_back(std::move(pass));
         }
 
     } else {
@@ -162,7 +165,7 @@ void RenderPipeline::SetupPasses() {
     }
 
     if (mScalerPass) {
-        if (!mScalerPass->Init(*mContext, mInputWidth, mInputHeight, mRenderWidth, mRenderHeight)) {
+        if (!mScalerPass->Init(*mContext, inputSurface, renderSurface)) {
             LogDiagnostic("Failed to initialize ScalerPass");
         }
     }
@@ -172,14 +175,18 @@ bool RenderPipeline::CreateIntermediateBuffers() {
     TextureDesc desc = { mInputWidth, mInputHeight, TextureFormat::RGBA8 };
 
     for (int i = 0; i < 2; ++i) {
-        mIntermediateBuffers[i] = mContext->CreateTexture(desc);
-        if (!mIntermediateBuffers[i]) return false;
+        mIntermediateBuffers[i].handle = mContext->CreateTexture(desc);
+        mIntermediateBuffers[i].width = mInputWidth;
+        mIntermediateBuffers[i].height = mInputHeight;
+        if (!mIntermediateBuffers[i].handle) return false;
     }
 
     TextureDesc postDesc = { mRenderWidth, mRenderHeight, TextureFormat::RGBA8 };
     for (int i = 0; i < 2; ++i) {
-        mPostIntermediateBuffers[i] = mContext->CreateTexture(postDesc);
-        if (!mPostIntermediateBuffers[i]) return false;
+        mPostIntermediateBuffers[i].handle = mContext->CreateTexture(postDesc);
+        mPostIntermediateBuffers[i].width = mRenderWidth;
+        mPostIntermediateBuffers[i].height = mRenderHeight;
+        if (!mPostIntermediateBuffers[i].handle) return false;
     }
 
     return true;
@@ -197,13 +204,13 @@ void RenderPipeline::Shutdown() {
     if (mScalerPass) mScalerPass->Shutdown(*mContext);
 
     for (int i = 0; i < 2; ++i) {
-        if (mIntermediateBuffers[i]) {
-            mContext->DestroyTexture(mIntermediateBuffers[i]);
-            mIntermediateBuffers[i] = nullptr;
+        if (mIntermediateBuffers[i].handle) {
+            mContext->DestroyTexture(mIntermediateBuffers[i].handle);
+            mIntermediateBuffers[i].handle = nullptr;
         }
-        if (mPostIntermediateBuffers[i]) {
-            mContext->DestroyTexture(mPostIntermediateBuffers[i]);
-            mPostIntermediateBuffers[i] = nullptr;
+        if (mPostIntermediateBuffers[i].handle) {
+            mContext->DestroyTexture(mPostIntermediateBuffers[i].handle);
+            mPostIntermediateBuffers[i].handle = nullptr;
         }
     }
 
@@ -283,18 +290,18 @@ void RenderPipeline::Dispatch() {
     }
 
     // 4. Execute Filter Chain
-    void* currentInput = mBuffers.GetInputBuffer();
+    RenderSurface currentInput = mBuffers.GetInputSurface();
     int targetIndex = 0;
 
     for (auto& pass : mPasses) {
-        void* currentOutput = mIntermediateBuffers[targetIndex];
+        RenderSurface currentOutput = mIntermediateBuffers[targetIndex];
         pass->Execute(*mContext, currentInput, currentOutput);
         currentInput = currentOutput;
         targetIndex = 1 - targetIndex;
     }
 
     // 5. Execute Scaler Pass
-    void* scalerOutput = (mPostPasses.empty()) ? mBuffers.GetOutputBuffer() : mPostIntermediateBuffers[0];
+    RenderSurface scalerOutput = (mPostPasses.empty()) ? mBuffers.GetOutputSurface() : mPostIntermediateBuffers[0];
     if (mScalerPass) {
         mScalerPass->Execute(*mContext, currentInput, scalerOutput);
     } else {
@@ -312,7 +319,7 @@ void RenderPipeline::Dispatch() {
         for (size_t i = 0; i < mPostPasses.size(); ++i) {
             auto& pass = mPostPasses[i];
             bool isLast = (i == mPostPasses.size() - 1);
-            void* currentOutput = isLast ? mBuffers.GetOutputBuffer() : mPostIntermediateBuffers[targetIndex];
+            RenderSurface currentOutput = isLast ? mBuffers.GetOutputSurface() : mPostIntermediateBuffers[targetIndex];
 
             pass->Execute(*mContext, currentInput, currentOutput);
 
@@ -326,7 +333,7 @@ void RenderPipeline::Dispatch() {
 
     // 8. Present to Screen
     // Use the final output buffer
-    mContext->Present(mBuffers.GetOutputBuffer(), mRenderWidth, mRenderHeight, mWindowWidth, mWindowHeight);
+    mContext->Present(mBuffers.GetOutputSurface().handle, mRenderWidth, mRenderHeight, mWindowWidth, mWindowHeight);
 }
 
 const void* RenderPipeline::GetOutput() {

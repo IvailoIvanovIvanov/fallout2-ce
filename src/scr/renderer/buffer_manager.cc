@@ -57,12 +57,12 @@ bool BufferManager::UploadInput(GpuContext& context, const void* data, size_t si
     return true;
 }
 
-void* BufferManager::GetInputBuffer() const {
-    return mFrames[mCurrentFrameIndex].inputBuffer;
+RenderSurface BufferManager::GetInputSurface() const {
+    return { mFrames[mCurrentFrameIndex].inputBuffer, mInputWidth, mInputHeight };
 }
 
-void* BufferManager::GetOutputBuffer() const {
-    return mFrames[mCurrentFrameIndex].outputBuffer;
+RenderSurface BufferManager::GetOutputSurface() const {
+    return { mFrames[mCurrentFrameIndex].outputBuffer, mOutputWidth, mOutputHeight };
 }
 
 const void* BufferManager::ReadbackOutput(GpuContext& context) {

@@ -2,6 +2,7 @@
 #define FALLOUT_RENDERER_BUFFER_MANAGER_H
 
 #include "gpu_context.h"
+#include "render_types.h"
 #include <vector>
 #include <memory>
 
@@ -23,8 +24,8 @@ public:
     bool UploadInput(GpuContext& context, const void* data, size_t size);
 
     // Getters for current frame resources
-    void* GetInputBuffer() const;
-    void* GetOutputBuffer() const;
+    RenderSurface GetInputSurface() const;
+    RenderSurface GetOutputSurface() const;
     
     // Getters for previous frame resources (for readback)
     const void* ReadbackOutput(GpuContext& context);

@@ -7,6 +7,7 @@
 #include "scaler_pass.h"
 #include "phantom_display.h"
 #include "real_display.h"
+#include "render_types.h"
 
 #include <vector>
 #include <memory>
@@ -68,9 +69,9 @@ private:
     std::unique_ptr<ShaderPass> mScalerPass;
 
     // Phantom buffers for 640x480 processing
-    void* mIntermediateBuffers[2] = { nullptr, nullptr };
+    RenderSurface mIntermediateBuffers[2];
     // Output buffers for WindowSize processing
-    void* mPostIntermediateBuffers[2] = { nullptr, nullptr };
+    RenderSurface mPostIntermediateBuffers[2];
 
     int mInputWidth = 0;
     int mInputHeight = 0;

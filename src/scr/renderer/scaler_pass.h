@@ -13,17 +13,12 @@ public:
     ScalerPass();
     ~ScalerPass() override;
 
-    bool Init(GpuContext& context, int inputWidth, int inputHeight, int outputWidth, int outputHeight) override;
-    void Execute(GpuContext& context, void* input, void* output) override;
+    bool Init(GpuContext& context, const RenderSurface& input, const RenderSurface& output) override;
+    void Execute(GpuContext& context, const RenderSurface& input, const RenderSurface& output) override;
     void Shutdown(GpuContext& context) override;
 
 private:
     std::unique_ptr<Shader> mShader;
-
-    int mInputWidth = 0;
-    int mInputHeight = 0;
-    int mOutputWidth = 0;
-    int mOutputHeight = 0;
 };
 
 } // namespace renderer
