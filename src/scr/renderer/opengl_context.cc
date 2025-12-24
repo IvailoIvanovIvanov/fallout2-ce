@@ -23,6 +23,12 @@ bool OpenGLContext::Init() {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 
+    // Ensure we get a standard 32-bit color buffer to avoid tinting issues
+    SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
+
     mGLContext = SDL_GL_CreateContext(mWindow);
     if (!mGLContext) {
         Logger::Log(LogLevel::Error, "OpenGL: Failed to create OpenGL context");
@@ -132,9 +138,13 @@ void OpenGLContext::BindTexture(int slot, void* textureHandle) {
     glBindTexture(GL_TEXTURE_2D, (GLuint)(uintptr_t)textureHandle);
 }
 
-void OpenGLContext::BindUnorderedAccessView(int slot, void* textureHandle) {
+void OpenGLContext::BindUnorderedAccessView(int slot, void* textureHandle, TextureFormat format) {
+    GLenum glFormat = GL_RGBA8;
+    if (format == TextureFormat::RGBA16F) glFormat = GL_RGBA16F;
+    if (format == TextureFormat::RGBA32F) glFormat = GL_RGBA32F;
+
     // Bind as image for compute write
-    glBindImageTexture(slot, (GLuint)(uintptr_t)textureHandle, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
+    glBindImageTexture(slot, (GLuint)(uintptr_t)textureHandle, 0, GL_FALSE, 0, GL_READ_WRITE, glFormat);
 }
 
 void OpenGLContext::SetConstants(int slot, const void* data, int size) {

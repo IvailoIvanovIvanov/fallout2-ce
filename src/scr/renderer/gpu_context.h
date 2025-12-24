@@ -4,21 +4,10 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "render_types.h"
 
 namespace fallout {
 namespace renderer {
-
-enum class TextureFormat {
-    RGBA8,
-    RGBA16F,
-    RGBA32F
-};
-
-struct TextureDesc {
-    int width;
-    int height;
-    TextureFormat format;
-};
 
 class GpuContext {
 public:
@@ -37,7 +26,7 @@ public:
 
     // State
     virtual void BindTexture(int slot, void* textureHandle) = 0;
-    virtual void BindUnorderedAccessView(int slot, void* textureHandle) = 0;
+    virtual void BindUnorderedAccessView(int slot, void* textureHandle, TextureFormat format = TextureFormat::RGBA8) = 0;
     virtual void SetConstants(int slot, const void* data, int size) = 0;
 
     // Frame Management

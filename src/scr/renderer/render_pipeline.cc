@@ -104,10 +104,17 @@ void RenderPipeline::SetupPasses() {
     mPostPasses.clear();
     mScalerPass.reset();
 
-    RenderSurface inputSurface = { nullptr, mInputWidth, mInputHeight };
-    RenderSurface renderSurface = { nullptr, mRenderWidth, mRenderHeight };
+    RenderSurface inputSurface = { nullptr, mInputWidth, mInputHeight, TextureFormat::RGBA8 };
+    RenderSurface renderSurface = { nullptr, mRenderWidth, mRenderHeight, TextureFormat::RGBA16F };
 
-    if (mConfiguredMode == RenderMode::ANIME4K) {
+    // Check if any advanced features are enabled, or if explicitly in Anime4K mode
+    bool useAdvancedPipeline = (mConfiguredMode == RenderMode::ANIME4K) || 
+                               mEnableEdgeSmoothing || 
+                               mEnableSoftHDR || 
+                               mEnablePostSharpen || 
+                               mEnablePostDenoise;
+
+    if (useAdvancedPipeline) {
         // 1. Add Blur Pass (Pre-processing) - 2 Passes (Horizontal + Vertical)
         if (mEnableEdgeSmoothing) {
             LogDiagnostic("[PASS 1] Adding Blur Pass (H+V)");
@@ -166,26 +173,35 @@ void RenderPipeline::SetupPasses() {
 
     if (mScalerPass) {
         if (!mScalerPass->Init(*mContext, inputSurface, renderSurface)) {
-            LogDiagnostic("Failed to initialize ScalerPass");
+            LogDiagnostic("Failed to initialize ScalerPass, falling back to default scaler");
+            // Fallback to default scaler
+            auto scalerPass = std::make_unique<ScalerPass>();
+            mScalerPass = std::move(scalerPass);
+            if (!mScalerPass->Init(*mContext, inputSurface, renderSurface)) {
+                LogDiagnostic("CRITICAL: Failed to initialize fallback ScalerPass");
+            }
         }
     }
 }
 
 bool RenderPipeline::CreateIntermediateBuffers() {
-    TextureDesc desc = { mInputWidth, mInputHeight, TextureFormat::RGBA8 };
+    // Intermediate buffers should be RGBA16F for precision
+    TextureDesc desc = { mInputWidth, mInputHeight, TextureFormat::RGBA16F };
 
     for (int i = 0; i < 2; ++i) {
         mIntermediateBuffers[i].handle = mContext->CreateTexture(desc);
         mIntermediateBuffers[i].width = mInputWidth;
         mIntermediateBuffers[i].height = mInputHeight;
+        mIntermediateBuffers[i].format = TextureFormat::RGBA16F;
         if (!mIntermediateBuffers[i].handle) return false;
     }
 
-    TextureDesc postDesc = { mRenderWidth, mRenderHeight, TextureFormat::RGBA8 };
+    TextureDesc postDesc = { mRenderWidth, mRenderHeight, TextureFormat::RGBA16F };
     for (int i = 0; i < 2; ++i) {
         mPostIntermediateBuffers[i].handle = mContext->CreateTexture(postDesc);
         mPostIntermediateBuffers[i].width = mRenderWidth;
         mPostIntermediateBuffers[i].height = mRenderHeight;
+        mPostIntermediateBuffers[i].format = TextureFormat::RGBA16F;
         if (!mPostIntermediateBuffers[i].handle) return false;
     }
 
@@ -385,7 +401,14 @@ const void* RenderPipeline::GetOutput() {
 
 void RenderPipeline::LoadConfiguration() {
     auto& config = RendererConfig::GetInstance();
-    config.Load("renderer_config.ini");
+    
+    // Try to load from current directory, then from executable directory if needed
+    if (!config.Load("renderer_config.ini")) {
+        LogDiagnostic("Failed to load renderer_config.ini from current directory");
+        // Fallback logic could go here
+    } else {
+        LogDiagnostic("Loaded renderer_config.ini");
+    }
 
     int mode = config.GetInt("General", "Mode", 0);
     mConfiguredMode = (mode == 1) ? RenderMode::ANIME4K : RenderMode::SIMPLE;
@@ -408,7 +431,9 @@ void RenderPipeline::LoadConfiguration() {
 
     mSharpness = config.GetFloat("Scaler", "Sharpness", 0.5f);
 
-    LogDiagnostic("Configuration Loaded: Mode=%d", (int)mConfiguredMode);
+    LogDiagnostic("Configuration Loaded: Mode=%d (Configured=%d)", mode, (int)mConfiguredMode);
+    LogDiagnostic("Filters: EdgeSmoothing=%d, HDR=%d", mEnableEdgeSmoothing, mEnableSoftHDR);
+    LogDiagnostic("Post: Sharpen=%d, Denoise=%d", mEnablePostSharpen, mEnablePostDenoise);
 }
 
 void RenderPipeline::LogDiagnostic(const char* format, ...) {

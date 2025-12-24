@@ -27,6 +27,8 @@ std::vector<MPVPass> MPVShaderParser::Parse(const std::string& source, int input
         std::stringstream shaderSrc;
         shaderSrc << "#version 430\n";
         shaderSrc << "layout(local_size_x = 8, local_size_y = 8) in;\n";
+        
+        // Always use rgba16f for MPV shaders as we standardized on it
         shaderSrc << "layout(rgba16f, binding = 0) writeonly uniform image2D outputImage;\n";
         
         int binding = 1;

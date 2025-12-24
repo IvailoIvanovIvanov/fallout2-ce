@@ -27,8 +27,18 @@ bool RendererConfig::Load(const std::string& configPath) {
     std::string currentSection;
 
     while (std::getline(file, line)) {
+        // Remove comments at end of line
+        size_t commentPos = line.find(';');
+        if (commentPos != std::string::npos) {
+            line = line.substr(0, commentPos);
+        }
+        commentPos = line.find('#');
+        if (commentPos != std::string::npos) {
+            line = line.substr(0, commentPos);
+        }
+
         line = Trim(line);
-        if (line.empty() || line[0] == ';' || line[0] == '#') continue;
+        if (line.empty()) continue;
 
         if (line[0] == '[' && line.back() == ']') {
             currentSection = line.substr(1, line.size() - 2);

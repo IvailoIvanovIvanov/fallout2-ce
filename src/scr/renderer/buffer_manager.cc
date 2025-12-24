@@ -18,7 +18,8 @@ bool BufferManager::Init(GpuContext& context, int inputWidth, int inputHeight, i
     mOutputHeight = outputHeight;
 
     TextureDesc inputDesc = { inputWidth, inputHeight, TextureFormat::RGBA8 };
-    TextureDesc outputDesc = { outputWidth, outputHeight, TextureFormat::RGBA8 };
+    // Use RGBA16F for output to support high-precision pipeline
+    TextureDesc outputDesc = { outputWidth, outputHeight, TextureFormat::RGBA16F };
 
     for (int i = 0; i < 2; ++i) {
         mFrames[i].inputBuffer = context.CreateTexture(inputDesc);
@@ -58,11 +59,11 @@ bool BufferManager::UploadInput(GpuContext& context, const void* data, size_t si
 }
 
 RenderSurface BufferManager::GetInputSurface() const {
-    return { mFrames[mCurrentFrameIndex].inputBuffer, mInputWidth, mInputHeight };
+    return { mFrames[mCurrentFrameIndex].inputBuffer, mInputWidth, mInputHeight, TextureFormat::RGBA8 };
 }
 
 RenderSurface BufferManager::GetOutputSurface() const {
-    return { mFrames[mCurrentFrameIndex].outputBuffer, mOutputWidth, mOutputHeight };
+    return { mFrames[mCurrentFrameIndex].outputBuffer, mOutputWidth, mOutputHeight, TextureFormat::RGBA16F };
 }
 
 const void* BufferManager::ReadbackOutput(GpuContext& context) {

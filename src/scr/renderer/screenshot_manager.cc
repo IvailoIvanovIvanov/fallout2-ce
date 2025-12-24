@@ -36,19 +36,11 @@ void ScreenshotManager::Capture(GpuContext& context, const RenderSurface& surfac
 
 void ScreenshotManager::SaveSurface(const void* data, int width, int height, const std::string& filename) {
     // Create SDL Surface to save as BMP
-    // OpenGL ReadPixels returns data starting from bottom-left, but SDL expects top-left.
-    // We need to flip it.
+    // Data is already in the correct order for SDL (Top-Down) because
+    // OpenGL texture data was uploaded Top-Down and ReadPixels returns it as is.
     
-    std::vector<uint8_t> flippedData(width * height * 4);
-    const uint8_t* src = static_cast<const uint8_t*>(data);
-    uint8_t* dst = flippedData.data();
     int stride = width * 4;
 
-    for (int y = 0; y < height; ++y) {
-        memcpy(dst + (height - 1 - y) * stride, src + y * stride, stride);
-    }
-
-    // Create SDL surface from flipped data
     // Mask for RGBA (Little Endian: ABGR in memory, so R mask is 0x000000FF)
     #if SDL_BYTEORDER == SDL_BIG_ENDIAN
         uint32_t rmask = 0xff000000;
@@ -62,8 +54,10 @@ void ScreenshotManager::SaveSurface(const void* data, int width, int height, con
         uint32_t amask = 0xff000000;
     #endif
 
+    // SDL_CreateRGBSurfaceFrom expects a non-const pointer, but doesn't modify it.
+    // We cast away const here. The data lifetime is managed by the caller (Capture).
     SDL_Surface* surf = SDL_CreateRGBSurfaceFrom(
-        flippedData.data(), width, height, 32, stride,
+        const_cast<void*>(data), width, height, 32, stride,
         rmask, gmask, bmask, amask
     );
 

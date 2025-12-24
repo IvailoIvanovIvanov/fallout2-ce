@@ -23,7 +23,7 @@ public:
     void Dispatch(void* shader, int x, int y, int z) override;
 
     void BindTexture(int slot, void* textureHandle) override;
-    void BindUnorderedAccessView(int slot, void* textureHandle) override;
+    void BindUnorderedAccessView(int slot, void* textureHandle, TextureFormat format = TextureFormat::RGBA8) override;
     void SetConstants(int slot, const void* data, int size) override;
 
     void BeginFrame() override;

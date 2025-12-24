@@ -13,8 +13,22 @@ GenericShaderPass::GenericShaderPass(const std::string& shaderPath)
 bool GenericShaderPass::Init(GpuContext& context, const RenderSurface& input, const RenderSurface& output) {
     std::ifstream file(mShaderPath);
     if (!file.is_open()) {
-        Logger::Log(LogLevel::Error, "GenericShaderPass: Failed to open shader file: %s", mShaderPath.c_str());
-        return false;
+        // Try looking in ../data/shaders/ (useful for dev builds)
+        std::string altPath = "../" + mShaderPath;
+        file.open(altPath);
+        if (file.is_open()) {
+            mShaderPath = altPath;
+        } else {
+            // Try looking in ../../data/shaders/
+            altPath = "../../" + mShaderPath;
+            file.open(altPath);
+            if (file.is_open()) {
+                mShaderPath = altPath;
+            } else {
+                Logger::Log(LogLevel::Error, "GenericShaderPass: Failed to open shader file: %s", mShaderPath.c_str());
+                return false;
+            }
+        }
     }
 
     std::stringstream buffer;
@@ -61,7 +75,7 @@ void GenericShaderPass::Execute(GpuContext& context, const RenderSurface& input,
     if (!mIsMPV) {
         if (!mShader || !mShader->IsValid()) return;
         context.BindTexture(0, input.handle);
-        context.BindUnorderedAccessView(1, output.handle);
+        context.BindUnorderedAccessView(1, output.handle, output.format);
         mShader->Dispatch((output.width + 15) / 16, (output.height + 15) / 16, 1);
         return;
     }
@@ -82,8 +96,11 @@ void GenericShaderPass::Execute(GpuContext& context, const RenderSurface& input,
         if (!pass.shader) continue;
 
         void* passOutput = nullptr;
+        TextureFormat passFormat = TextureFormat::RGBA16F;
+
         if (pass.outputTexture == "MAIN" || pass.outputTexture.empty()) {
             passOutput = output.handle;
+            passFormat = output.format;
         } else {
             passOutput = GetTexture(pass.outputTexture);
             if (!passOutput) {
@@ -92,7 +109,7 @@ void GenericShaderPass::Execute(GpuContext& context, const RenderSurface& input,
             }
         }
 
-        context.BindUnorderedAccessView(0, passOutput);
+        context.BindUnorderedAccessView(0, passOutput, passFormat);
 
         if (pass.shader) pass.shader->Use();
 
