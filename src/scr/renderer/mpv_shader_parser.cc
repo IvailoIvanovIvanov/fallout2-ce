@@ -32,10 +32,8 @@ std::vector<MPVPass> MPVShaderParser::Parse(const std::string& source, int input
         int binding = 1;
         for (const auto& texName : currentPass.inputTextures) {
             shaderSrc << "layout(binding = " << binding << ") uniform sampler2D " << texName << ";\n";
-            shaderSrc << "layout(std140, binding = " << binding << ") uniform " << texName << "_Constants {\n";
-            shaderSrc << "    vec2 " << texName << "_size;\n";
-            shaderSrc << "    vec2 " << texName << "_pt;\n";
-            shaderSrc << "};\n";
+            shaderSrc << "uniform vec2 " << texName << "_size;\n";
+            shaderSrc << "uniform vec2 " << texName << "_pt;\n";
             
             shaderSrc << "vec4 " << texName << "_tex(vec2 pos) { return texture(" << texName << ", pos); }\n";
             shaderSrc << "vec4 " << texName << "_texOff(vec2 off) { return texture(" << texName << ", (vec2(gl_GlobalInvocationID.xy) + off + 0.5) * " << texName << "_pt); }\n";

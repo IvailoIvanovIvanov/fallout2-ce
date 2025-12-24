@@ -83,6 +83,8 @@ void GenericShaderPass::Execute(GpuContext& context, const RenderSurface& input,
 
         context.BindUnorderedAccessView(0, passOutput);
 
+        if (pass.shader) pass.shader->Use();
+
         int slot = 1;
         for (const auto& texName : pass.inputTextures) {
             void* tex = nullptr;
@@ -110,8 +112,11 @@ void GenericShaderPass::Execute(GpuContext& context, const RenderSurface& input,
             }
             
             float pt[2] = { 1.0f / w, 1.0f / h };
-            struct { float w, h; float ptx, pty; } constants = { w, h, pt[0], pt[1] };
-            context.SetConstants(slot, &constants, sizeof(constants));
+            
+            if (pass.shader) {
+                pass.shader->SetVec2(texName + "_size", w, h);
+                pass.shader->SetVec2(texName + "_pt", pt[0], pt[1]);
+            }
             
             slot++;
         }
