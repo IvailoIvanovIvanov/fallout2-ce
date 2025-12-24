@@ -10,18 +10,18 @@ void main() {
     
     if (pos.x >= size.x || pos.y >= size.y) return;
 
-    // Gaussian Kernel 5x1 (Sigma=1.0)
-    // 0.06136, 0.24477, 0.38774, 0.24477, 0.06136
-    
-    vec4 original = texelFetch(inputTexture, pos, 0);
-    vec4 sum = vec4(0.0);
-    sum += texelFetch(inputTexture, pos + ivec2(-2, 0), 0) * 0.06136;
-    sum += texelFetch(inputTexture, pos + ivec2(-1, 0), 0) * 0.24477;
-    sum += original * 0.38774;
-    sum += texelFetch(inputTexture, pos + ivec2(1, 0), 0) * 0.24477;
-    sum += texelFetch(inputTexture, pos + ivec2(2, 0), 0) * 0.06136;
+    // Improved: 9-tap Gaussian Kernel (Sigma ~2.0)
+    float weights[5] = float[](0.227027, 0.194595, 0.121622, 0.054054, 0.016216);
 
-    // Strength control: 1.0 = full blur, 0.0 = no blur
-    float strength = 0.5;
+    vec4 sum = texelFetch(inputTexture, pos, 0) * weights[0];
+
+    for(int i = 1; i < 5; i++) {
+        sum += texelFetch(inputTexture, clamp(pos + ivec2(i, 0), ivec2(0), size - 1), 0) * weights[i];
+        sum += texelFetch(inputTexture, clamp(pos - ivec2(i, 0), ivec2(0), size - 1), 0) * weights[i];
+    }
+
+    // Strength control: 0.0 = no blur, 1.0 = full blur
+    float strength = 1.0; 
+    vec4 original = texelFetch(inputTexture, pos, 0);
     imageStore(outputTexture, pos, mix(original, sum, strength));
 }
