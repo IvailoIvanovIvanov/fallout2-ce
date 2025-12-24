@@ -10,18 +10,34 @@ void main() {
     
     if (pos.x >= size.x || pos.y >= size.y) return;
 
-    // Improved: 9-tap Gaussian Kernel (Sigma ~2.0)
-    float weights[5] = float[](0.227027, 0.194595, 0.121622, 0.054054, 0.016216);
+    // 1D Bilateral Filter (Vertical)
+    // Smooths patterns while preserving horizontal edges
+    vec4 center = texelFetch(inputTexture, pos, 0);
+    
+    const int radius = 4;
+    const float sigmaSpatial = 4.0;
+    const float sigmaColor = 0.2;
 
-    vec4 sum = texelFetch(inputTexture, pos, 0) * weights[0];
+    vec4 sum = vec4(0.0);
+    float totalWeight = 0.0;
 
-    for(int i = 1; i < 5; i++) {
-        sum += texelFetch(inputTexture, clamp(pos + ivec2(0, i), ivec2(0), size - 1), 0) * weights[i];
-        sum += texelFetch(inputTexture, clamp(pos - ivec2(0, i), ivec2(0), size - 1), 0) * weights[i];
+    for(int i = -radius; i <= radius; ++i) {
+        ivec2 samplePos = clamp(pos + ivec2(0, i), ivec2(0), size - 1);
+        vec4 sampleColor = texelFetch(inputTexture, samplePos, 0);
+
+        float dist = float(i);
+        float wSpatial = exp(-(dist * dist) / (2.0 * sigmaSpatial * sigmaSpatial));
+
+        vec3 diff = sampleColor.rgb - center.rgb;
+        float wColor = exp(-dot(diff, diff) / (2.0 * sigmaColor * sigmaColor));
+
+        float weight = wSpatial * wColor;
+
+        sum += sampleColor * weight;
+        totalWeight += weight;
     }
 
     // Strength control: 0.0 = no blur, 1.0 = full blur
-    float strength = 1.0; 
-    vec4 original = texelFetch(inputTexture, pos, 0);
-    imageStore(outputTexture, pos, mix(original, sum, strength));
+    float strength = 0.2; 
+    imageStore(outputTexture, pos, mix(center, sum / totalWeight, strength));
 }
