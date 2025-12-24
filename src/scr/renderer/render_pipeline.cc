@@ -36,6 +36,29 @@ bool RenderPipeline::Init(int inputWidth, int inputHeight, int outputWidth, int 
     mOutputHeight = outputHeight;
     mWindow = window;
 
+    mWindowWidth = outputWidth;
+    mWindowHeight = outputHeight;
+
+    // Calculate Render Resolution (Aspect Correct)
+    float inputAspect = (float)inputWidth / inputHeight;
+    float windowAspect = (float)outputWidth / outputHeight;
+
+    if (windowAspect > inputAspect) {
+        // Window is wider (Pillarbox)
+        mRenderHeight = outputHeight;
+        mRenderWidth = (int)(outputHeight * inputAspect);
+    } else {
+        // Window is taller (Letterbox)
+        mRenderWidth = outputWidth;
+        mRenderHeight = (int)(outputWidth / inputAspect);
+    }
+    
+    // Ensure even dimensions
+    mRenderWidth &= ~1;
+    mRenderHeight &= ~1;
+
+    LogDiagnostic("Render Resolution: %dx%d (Window: %dx%d)", mRenderWidth, mRenderHeight, mWindowWidth, mWindowHeight);
+
     // Initialize Display Scaler
     displayScalerInit(inputWidth, inputHeight);
     displayScalerUpdatePhysicalSize(outputWidth, outputHeight);
@@ -58,7 +81,7 @@ bool RenderPipeline::Init(int inputWidth, int inputHeight, int outputWidth, int 
         return false;
     }
 
-    if (!mBuffers.Init(*mContext, inputWidth, inputHeight, mOutputWidth, mOutputHeight)) {
+    if (!mBuffers.Init(*mContext, inputWidth, inputHeight, mRenderWidth, mRenderHeight)) {
         LogDiagnostic("Failed to initialize BufferManager");
         return false;
     }
@@ -123,12 +146,12 @@ void RenderPipeline::SetupPasses() {
         if (mEnablePostSharpen) {
             LogDiagnostic("[POST] Adding Sharpen Pass");
             auto pass = std::make_unique<GenericShaderPass>("data/shaders/pp_sharpen.glsl");
-            if (pass->Init(*mContext, mOutputWidth, mOutputHeight, mOutputWidth, mOutputHeight)) mPostPasses.push_back(std::move(pass));
+            if (pass->Init(*mContext, mRenderWidth, mRenderHeight, mRenderWidth, mRenderHeight)) mPostPasses.push_back(std::move(pass));
         }
         if (mEnablePostDenoise) {
             LogDiagnostic("[POST] Adding Denoise Pass");
             auto pass = std::make_unique<GenericShaderPass>("data/shaders/pp_denoise.glsl");
-            if (pass->Init(*mContext, mOutputWidth, mOutputHeight, mOutputWidth, mOutputHeight)) mPostPasses.push_back(std::move(pass));
+            if (pass->Init(*mContext, mRenderWidth, mRenderHeight, mRenderWidth, mRenderHeight)) mPostPasses.push_back(std::move(pass));
         }
 
     } else {
@@ -139,7 +162,7 @@ void RenderPipeline::SetupPasses() {
     }
 
     if (mScalerPass) {
-        if (!mScalerPass->Init(*mContext, mInputWidth, mInputHeight, mOutputWidth, mOutputHeight)) {
+        if (!mScalerPass->Init(*mContext, mInputWidth, mInputHeight, mRenderWidth, mRenderHeight)) {
             LogDiagnostic("Failed to initialize ScalerPass");
         }
     }
@@ -153,7 +176,7 @@ bool RenderPipeline::CreateIntermediateBuffers() {
         if (!mIntermediateBuffers[i]) return false;
     }
 
-    TextureDesc postDesc = { mOutputWidth, mOutputHeight, TextureFormat::RGBA8 };
+    TextureDesc postDesc = { mRenderWidth, mRenderHeight, TextureFormat::RGBA8 };
     for (int i = 0; i < 2; ++i) {
         mPostIntermediateBuffers[i] = mContext->CreateTexture(postDesc);
         if (!mPostIntermediateBuffers[i]) return false;
@@ -192,9 +215,9 @@ void RenderPipeline::Shutdown() {
 }
 
 bool RenderPipeline::Reconfigure(int outputWidth, int outputHeight) {
-    if (mOutputWidth == outputWidth && mOutputHeight == outputHeight) return true;
+    if (mWindowWidth == outputWidth && mWindowHeight == outputHeight) return true;
 
-    LogDiagnostic("Reconfiguring output: %dx%d -> %dx%d", mOutputWidth, mOutputHeight, outputWidth, outputHeight);
+    LogDiagnostic("Reconfiguring output: %dx%d -> %dx%d", mWindowWidth, mWindowHeight, outputWidth, outputHeight);
     
     // Shutdown and re-init
     // We keep input dimensions and window
@@ -303,7 +326,7 @@ void RenderPipeline::Dispatch() {
 
     // 8. Present to Screen
     // Use the final output buffer
-    mContext->Present(mBuffers.GetOutputBuffer(), mOutputWidth, mOutputHeight);
+    mContext->Present(mBuffers.GetOutputBuffer(), mRenderWidth, mRenderHeight, mWindowWidth, mWindowHeight);
 }
 
 const void* RenderPipeline::GetOutput() {

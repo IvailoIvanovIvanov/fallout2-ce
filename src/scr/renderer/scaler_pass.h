@@ -2,6 +2,8 @@
 #define FALLOUT_RENDERER_SCALER_PASS_H
 
 #include "shader_pass.h"
+#include "shader.h"
+#include <memory>
 
 namespace fallout {
 namespace renderer {
@@ -16,7 +18,7 @@ public:
     void Shutdown(GpuContext& context) override;
 
 private:
-    void* mShader = nullptr;
+    std::unique_ptr<Shader> mShader;
 
     int mInputWidth = 0;
     int mInputHeight = 0;

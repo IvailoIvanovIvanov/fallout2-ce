@@ -9,17 +9,6 @@
 namespace fallout {
 namespace renderer {
 
-static std::string LoadShaderFile(const std::string& path) {
-    std::ifstream file(path);
-    if (!file.is_open()) {
-        Logger::Log(LogLevel::Error, "ScalerPass: Failed to open shader file: %s", path.c_str());
-        return "";
-    }
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    return buffer.str();
-}
-
 struct ScalerConstants {
     int inputWidth;
     int inputHeight;
@@ -40,12 +29,8 @@ bool ScalerPass::Init(GpuContext& context, int inputWidth, int inputHeight, int 
     mOutputWidth = outputWidth;
     mOutputHeight = outputHeight;
 
-    std::string source = LoadShaderFile("data/shaders/scaler.glsl");
-    if (source.empty()) {
-        return false;
-    }
-
-    if (!context.CreateComputeShader(source, &mShader)) {
+    mShader = std::make_unique<Shader>("data/shaders/scaler.glsl");
+    if (!mShader->IsValid()) {
         Logger::Log(LogLevel::Error, "ScalerPass: Failed to compile shader");
         return false;
     }
@@ -53,11 +38,11 @@ bool ScalerPass::Init(GpuContext& context, int inputWidth, int inputHeight, int 
 }
 
 void ScalerPass::Shutdown(GpuContext& context) {
-    // Shader destruction is not yet exposed in GpuContext
+    mShader.reset();
 }
 
 void ScalerPass::Execute(GpuContext& context, void* input, void* output) {
-    if (!mShader) return;
+    if (!mShader || !mShader->IsValid()) return;
 
     // Calculate scale and offset to preserve aspect ratio
     float scaleX = (float)mOutputWidth / mInputWidth;
@@ -83,7 +68,7 @@ void ScalerPass::Execute(GpuContext& context, void* input, void* output) {
 
     int groupX = (mOutputWidth + 7) / 8;
     int groupY = (mOutputHeight + 7) / 8;
-    context.Dispatch(mShader, groupX, groupY, 1);
+    mShader->Dispatch(groupX, groupY, 1);
 }
 
 } // namespace renderer

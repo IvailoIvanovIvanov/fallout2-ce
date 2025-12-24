@@ -69,7 +69,7 @@ const void* BufferManager::ReadbackOutput(GpuContext& context) {
     // Readback from the PREVIOUS frame (which is now ready)
     int prevFrameIndex = 1 - mCurrentFrameIndex;
     
-    context.ReadbackTexture(mFrames[prevFrameIndex].outputBuffer, mFrames[prevFrameIndex].readbackData.data(), mFrames[prevFrameIndex].readbackData.size());
+    context.ReadbackTexture(mFrames[prevFrameIndex].outputBuffer, mFrames[prevFrameIndex].readbackData.data(), static_cast<int>(mFrames[prevFrameIndex].readbackData.size()));
     
     return mFrames[prevFrameIndex].readbackData.data();
 }

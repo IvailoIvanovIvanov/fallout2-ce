@@ -43,7 +43,7 @@ public:
     // Frame Management
     virtual void BeginFrame() = 0;
     virtual void EndFrame() = 0;
-    virtual void Present(void* textureHandle, int width, int height) = 0;
+    virtual void Present(void* textureHandle, int srcWidth, int srcHeight, int windowWidth, int windowHeight) = 0;
 
     // Data Transfer
     virtual void UpdateTexture(void* textureHandle, const void* data, int width, int height) = 0;

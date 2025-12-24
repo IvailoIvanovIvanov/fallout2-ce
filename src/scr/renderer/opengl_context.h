@@ -31,7 +31,7 @@ public:
 
     void UpdateTexture(void* textureHandle, const void* data, int width, int height) override;
     void ReadbackTexture(void* textureHandle, void* data, int size) override;
-    void Present(void* textureHandle, int width, int height) override;
+    void Present(void* textureHandle, int srcWidth, int srcHeight, int windowWidth, int windowHeight) override;
 
 private:
     SDL_Window* mWindow;

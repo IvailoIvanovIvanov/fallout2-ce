@@ -1,5 +1,6 @@
 #include "opengl_context.h"
 #include "logger.h"
+#include "gl_bindings.h"
 #include <SDL_opengl.h>
 #include <SDL_opengl_glext.h>
 #include <vector>
@@ -8,46 +9,7 @@
 namespace fallout {
 namespace renderer {
 
-// Function pointers
-static PFNGLCREATESHADERPROC glCreateShader = nullptr;
-static PFNGLSHADERSOURCEPROC glShaderSource = nullptr;
-static PFNGLCOMPILESHADERPROC glCompileShader = nullptr;
-static PFNGLGETSHADERIVPROC glGetShaderiv = nullptr;
-static PFNGLGETSHADERINFOLOGPROC glGetShaderInfoLog = nullptr;
-static PFNGLDELETESHADERPROC glDeleteShader = nullptr;
-static PFNGLCREATEPROGRAMPROC glCreateProgram = nullptr;
-static PFNGLATTACHSHADERPROC glAttachShader = nullptr;
-static PFNGLLINKPROGRAMPROC glLinkProgram = nullptr;
-static PFNGLGETPROGRAMIVPROC glGetProgramiv = nullptr;
-static PFNGLGETPROGRAMINFOLOGPROC glGetProgramInfoLog = nullptr;
-static PFNGLUSEPROGRAMPROC glUseProgram = nullptr;
-static PFNGLDISPATCHCOMPUTEPROC glDispatchCompute = nullptr;
-static PFNGLBINDIMAGETEXTUREPROC glBindImageTexture = nullptr;
-static PFNGLTEXSTORAGE2DPROC glTexStorage2D = nullptr;
-static PFNGLMEMORYBARRIERPROC glMemoryBarrier = nullptr;
-static PFNGLUNIFORM1IPROC glUniform1i = nullptr;
-static PFNGLUNIFORM1FPROC glUniform1f = nullptr;
-static PFNGLUNIFORM2FPROC glUniform2f = nullptr;
-static PFNGLUNIFORM2IPROC glUniform2i = nullptr;
-static PFNGLGETUNIFORMLOCATIONPROC glGetUniformLocation = nullptr;
-static PFNGLGENBUFFERSPROC glGenBuffers = nullptr;
-static PFNGLBINDBUFFERPROC glBindBuffer = nullptr;
-static PFNGLBUFFERDATAPROC glBufferData = nullptr;
-static PFNGLBINDBUFFERBASEPROC glBindBufferBase = nullptr;
-static PFNGLDELETEBUFFERSPROC glDeleteBuffers = nullptr;
-static PFNGLACTIVETEXTUREPROC glActiveTexture = nullptr;
-static PFNGLGENFRAMEBUFFERSPROC glGenFramebuffers = nullptr;
-static PFNGLBINDFRAMEBUFFERPROC glBindFramebuffer = nullptr;
-static PFNGLFRAMEBUFFERTEXTURE2DPROC glFramebufferTexture2D = nullptr;
-static PFNGLBLITFRAMEBUFFERPROC glBlitFramebuffer = nullptr;
-static PFNGLDELETEFRAMEBUFFERSPROC glDeleteFramebuffers = nullptr;
 
-#define LOAD_GL_FUNC(name, type) \
-    name = (type)SDL_GL_GetProcAddress(#name); \
-    if (!name) { \
-        Logger::Log(LogLevel::Error, "OpenGL: Failed to load " #name); \
-        return false; \
-    }
 
 OpenGLContext::OpenGLContext(SDL_Window* window) : mWindow(window), mGLContext(nullptr) {}
 
@@ -69,39 +31,10 @@ bool OpenGLContext::Init() {
 
     SDL_GL_MakeCurrent(mWindow, mGLContext);
 
-    // Load extensions
-    LOAD_GL_FUNC(glCreateShader, PFNGLCREATESHADERPROC);
-    LOAD_GL_FUNC(glShaderSource, PFNGLSHADERSOURCEPROC);
-    LOAD_GL_FUNC(glCompileShader, PFNGLCOMPILESHADERPROC);
-    LOAD_GL_FUNC(glGetShaderiv, PFNGLGETSHADERIVPROC);
-    LOAD_GL_FUNC(glGetShaderInfoLog, PFNGLGETSHADERINFOLOGPROC);
-    LOAD_GL_FUNC(glDeleteShader, PFNGLDELETESHADERPROC);
-    LOAD_GL_FUNC(glCreateProgram, PFNGLCREATEPROGRAMPROC);
-    LOAD_GL_FUNC(glAttachShader, PFNGLATTACHSHADERPROC);
-    LOAD_GL_FUNC(glLinkProgram, PFNGLLINKPROGRAMPROC);
-    LOAD_GL_FUNC(glGetProgramiv, PFNGLGETPROGRAMIVPROC);
-    LOAD_GL_FUNC(glGetProgramInfoLog, PFNGLGETPROGRAMINFOLOGPROC);
-    LOAD_GL_FUNC(glUseProgram, PFNGLUSEPROGRAMPROC);
-    LOAD_GL_FUNC(glDispatchCompute, PFNGLDISPATCHCOMPUTEPROC);
-    LOAD_GL_FUNC(glBindImageTexture, PFNGLBINDIMAGETEXTUREPROC);
-    LOAD_GL_FUNC(glTexStorage2D, PFNGLTEXSTORAGE2DPROC);
-    LOAD_GL_FUNC(glMemoryBarrier, PFNGLMEMORYBARRIERPROC);
-    LOAD_GL_FUNC(glUniform1i, PFNGLUNIFORM1IPROC);
-    LOAD_GL_FUNC(glUniform1f, PFNGLUNIFORM1FPROC);
-    LOAD_GL_FUNC(glUniform2f, PFNGLUNIFORM2FPROC);
-    LOAD_GL_FUNC(glUniform2i, PFNGLUNIFORM2IPROC);
-    LOAD_GL_FUNC(glGetUniformLocation, PFNGLGETUNIFORMLOCATIONPROC);
-    LOAD_GL_FUNC(glGenBuffers, PFNGLGENBUFFERSPROC);
-    LOAD_GL_FUNC(glBindBuffer, PFNGLBINDBUFFERPROC);
-    LOAD_GL_FUNC(glBufferData, PFNGLBUFFERDATAPROC);
-    LOAD_GL_FUNC(glBindBufferBase, PFNGLBINDBUFFERBASEPROC);
-    LOAD_GL_FUNC(glDeleteBuffers, PFNGLDELETEBUFFERSPROC);
-    LOAD_GL_FUNC(glActiveTexture, PFNGLACTIVETEXTUREPROC);
-    LOAD_GL_FUNC(glGenFramebuffers, PFNGLGENFRAMEBUFFERSPROC);
-    LOAD_GL_FUNC(glBindFramebuffer, PFNGLBINDFRAMEBUFFERPROC);
-    LOAD_GL_FUNC(glFramebufferTexture2D, PFNGLFRAMEBUFFERTEXTURE2DPROC);
-    LOAD_GL_FUNC(glBlitFramebuffer, PFNGLBLITFRAMEBUFFERPROC);
-    LOAD_GL_FUNC(glDeleteFramebuffers, PFNGLDELETEFRAMEBUFFERSPROC);
+    if (!LoadGLFunctions()) {
+        Logger::Log(LogLevel::Error, "OpenGL: Failed to load GL functions");
+        return false;
+    }
 
     // Create FBO for presentation
     glGenFramebuffers(1, &mPresentFBO);
@@ -229,7 +162,7 @@ void OpenGLContext::EndFrame() {
     glMemoryBarrier(GL_ALL_BARRIER_BITS);
 }
 
-void OpenGLContext::Present(void* textureHandle, int width, int height) {
+void OpenGLContext::Present(void* textureHandle, int srcWidth, int srcHeight, int windowWidth, int windowHeight) {
     GLuint texture = (GLuint)(uintptr_t)textureHandle;
 
     // Bind the texture to our FBO
@@ -239,11 +172,32 @@ void OpenGLContext::Present(void* textureHandle, int width, int height) {
     // Bind default framebuffer as draw target
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 
+    // Calculate destination rectangle (Centered, Aspect Correct)
+    float srcAspect = (float)srcWidth / srcHeight;
+    float winAspect = (float)windowWidth / windowHeight;
+
+    int dstX = 0;
+    int dstY = 0;
+    int dstW = windowWidth;
+    int dstH = windowHeight;
+
+    if (winAspect > srcAspect) {
+        // Window is wider than source (Pillarbox)
+        dstW = (int)(windowHeight * srcAspect);
+        dstX = (windowWidth - dstW) / 2;
+    } else {
+        // Window is taller than source (Letterbox)
+        dstH = (int)(windowWidth / srcAspect);
+        dstY = (windowHeight - dstH) / 2;
+    }
+
+    // Clear background to black
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
     // Blit!
     // Flip vertically by swapping srcY0 and srcY1
-    // Source texture is top-down (0,0 is top-left of image data), but OpenGL treats 0,0 as bottom-left.
-    // So the image is upside down in the texture. We flip it back during blit.
-    glBlitFramebuffer(0, height, width, 0, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBlitFramebuffer(0, srcHeight, srcWidth, 0, dstX, dstY, dstX + dstW, dstY + dstH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
 
     // Cleanup
     glBindFramebuffer(GL_FRAMEBUFFER, 0);

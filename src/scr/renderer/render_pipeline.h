@@ -76,6 +76,15 @@ private:
     int mInputHeight = 0;
     int mOutputWidth = 0;
     int mOutputHeight = 0;
+    
+    // Window dimensions (Physical Screen)
+    int mWindowWidth = 0;
+    int mWindowHeight = 0;
+    
+    // Render dimensions (Logical Output, Aspect Correct)
+    int mRenderWidth = 0;
+    int mRenderHeight = 0;
+
     bool mInitialized = false;
 
     // Configuration
