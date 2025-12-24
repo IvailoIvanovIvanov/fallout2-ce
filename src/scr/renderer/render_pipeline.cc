@@ -278,6 +278,19 @@ bool RenderPipeline::SetRgbaInput(const uint32_t* rgbaBuffer) {
 void RenderPipeline::Dispatch() {
     if (!mInitialized || !mPhantomDisplay) return;
 
+    // Check for F8 key press
+    const Uint8* state = SDL_GetKeyboardState(NULL);
+    if (state[SDL_SCANCODE_F8]) {
+        if (!mF8Pressed) {
+            mScreenshotManager.RequestCapture();
+            mF8Pressed = true;
+        }
+    } else {
+        mF8Pressed = false;
+    }
+
+    bool capture = mScreenshotManager.IsCaptureRequested();
+
     // 1. Swap Buffers (Move to next frame)
     mBuffers.SwapBuffers();
 
@@ -291,11 +304,24 @@ void RenderPipeline::Dispatch() {
 
     // 4. Execute Filter Chain
     RenderSurface currentInput = mBuffers.GetInputSurface();
+    
+    if (capture) {
+        mScreenshotManager.Capture(*mContext, currentInput, "00_Input");
+    }
+
     int targetIndex = 0;
+    int passIndex = 1;
 
     for (auto& pass : mPasses) {
         RenderSurface currentOutput = mIntermediateBuffers[targetIndex];
         pass->Execute(*mContext, currentInput, currentOutput);
+        
+        if (capture) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%02d_%s", passIndex++, pass->GetName().c_str());
+            mScreenshotManager.Capture(*mContext, currentOutput, buf);
+        }
+
         currentInput = currentOutput;
         targetIndex = 1 - targetIndex;
     }
@@ -304,6 +330,12 @@ void RenderPipeline::Dispatch() {
     RenderSurface scalerOutput = (mPostPasses.empty()) ? mBuffers.GetOutputSurface() : mPostIntermediateBuffers[0];
     if (mScalerPass) {
         mScalerPass->Execute(*mContext, currentInput, scalerOutput);
+        
+        if (capture) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%02d_%s", passIndex++, mScalerPass->GetName().c_str());
+            mScreenshotManager.Capture(*mContext, scalerOutput, buf);
+        }
     } else {
         LogDiagnostic("Dispatch: No Scaler Pass!");
         // If no scaler pass, we must copy input to output manually or handle it
@@ -323,9 +355,19 @@ void RenderPipeline::Dispatch() {
 
             pass->Execute(*mContext, currentInput, currentOutput);
 
+            if (capture) {
+                char buf[64];
+                snprintf(buf, sizeof(buf), "%02d_%s", passIndex++, pass->GetName().c_str());
+                mScreenshotManager.Capture(*mContext, currentOutput, buf);
+            }
+
             currentInput = currentOutput;
             targetIndex = 1 - targetIndex;
         }
+    }
+
+    if (capture) {
+        mScreenshotManager.EndCapture();
     }
 
     // 7. End Frame

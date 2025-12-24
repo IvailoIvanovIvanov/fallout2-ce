@@ -32,6 +32,7 @@ bool GenericShaderPass::Init(GpuContext& context, const RenderSurface& input, co
             }
         }
         
+        Logger::Log(LogLevel::Info, "GenericShaderPass: Successfully initialized MPV shader: %s", mShaderPath.c_str());
         return !mPasses.empty();
     }
 
@@ -43,7 +44,17 @@ bool GenericShaderPass::Init(GpuContext& context, const RenderSurface& input, co
         return false;
     }
 
+    Logger::Log(LogLevel::Info, "GenericShaderPass: Successfully initialized shader: %s", mShaderPath.c_str());
     return true;
+}
+
+std::string GenericShaderPass::GetName() const {
+    // Extract filename from path
+    size_t lastSlash = mShaderPath.find_last_of("/\\");
+    if (lastSlash != std::string::npos) {
+        return mShaderPath.substr(lastSlash + 1);
+    }
+    return mShaderPath;
 }
 
 void GenericShaderPass::Execute(GpuContext& context, const RenderSurface& input, const RenderSurface& output) {

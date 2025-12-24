@@ -8,6 +8,7 @@
 #include "phantom_display.h"
 #include "real_display.h"
 #include "render_types.h"
+#include "screenshot_manager.h"
 
 #include <vector>
 #include <memory>
@@ -57,6 +58,8 @@ private:
 
     std::unique_ptr<GpuContext> mContext;
     BufferManager mBuffers;
+    ScreenshotManager mScreenshotManager;
+    bool mF8Pressed = false;
     
     // Displays
     std::unique_ptr<PhantomDisplay> mPhantomDisplay;

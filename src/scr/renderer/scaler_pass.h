@@ -16,6 +16,7 @@ public:
     bool Init(GpuContext& context, const RenderSurface& input, const RenderSurface& output) override;
     void Execute(GpuContext& context, const RenderSurface& input, const RenderSurface& output) override;
     void Shutdown(GpuContext& context) override;
+    std::string GetName() const override { return "ScalerPass"; }
 
 private:
     std::unique_ptr<Shader> mShader;

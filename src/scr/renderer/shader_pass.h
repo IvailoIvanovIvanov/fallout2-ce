@@ -14,6 +14,7 @@ public:
     virtual bool Init(GpuContext& context, const RenderSurface& input, const RenderSurface& output) = 0;
     virtual void Execute(GpuContext& context, const RenderSurface& input, const RenderSurface& output) = 0;
     virtual void Shutdown(GpuContext& context) = 0;
+    virtual std::string GetName() const = 0;
 };
 
 } // namespace renderer

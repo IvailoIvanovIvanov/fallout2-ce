@@ -244,6 +244,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/scr/renderer/gl_bindings.h"
     "src/scr/renderer/mpv_shader_parser.cc"
     "src/scr/renderer/mpv_shader_parser.h"
+    "src/scr/renderer/screenshot_manager.cc"
+    "src/scr/renderer/screenshot_manager.h"
     "src/scr/renderer/shader_pass.h"
     "src/text_font.cc"
     "src/text_font.h"

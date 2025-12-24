@@ -20,6 +20,7 @@ public:
     bool Init(GpuContext& context, const RenderSurface& input, const RenderSurface& output) override;
     void Execute(GpuContext& context, const RenderSurface& input, const RenderSurface& output) override;
     void Shutdown(GpuContext& context) override;
+    std::string GetName() const override;
 
 private:
     void* GetTexture(const std::string& name);
