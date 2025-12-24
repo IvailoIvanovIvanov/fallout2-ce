@@ -424,3 +424,11 @@ if(APPLE)
 
     include(CPack)
 endif()
+
+# Copy shaders to build directory
+add_custom_command(TARGET ${EXECUTABLE_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_SOURCE_DIR}/data/shaders"
+    "$<TARGET_FILE_DIR:${EXECUTABLE_NAME}>/data/shaders"
+    COMMENT "Copying shaders to output directory..."
+)
