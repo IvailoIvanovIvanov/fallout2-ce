@@ -107,39 +107,32 @@ void RenderPipeline::SetupPasses() {
     RenderSurface inputSurface = { nullptr, mInputWidth, mInputHeight, TextureFormat::RGBA8 };
     RenderSurface renderSurface = { nullptr, mRenderWidth, mRenderHeight, TextureFormat::RGBA16F };
 
-    // Check if any advanced features are enabled, or if explicitly in Anime4K mode
-    bool useAdvancedPipeline = (mConfiguredMode == RenderMode::ANIME4K) || 
-                               mEnableEdgeSmoothing || 
-                               mEnableSoftHDR || 
-                               mEnablePostSharpen || 
-                               mEnablePostDenoise;
-
-    if (useAdvancedPipeline) {
-        // 1. Add Blur Pass (Pre-processing) - 2 Passes (Horizontal + Vertical)
-        if (mEnableEdgeSmoothing) {
-            LogDiagnostic("[PASS 1] Adding Blur Pass (H+V)");
-            
-            auto blurH = std::make_unique<GenericShaderPass>("data/shaders/pp_blur_h.glsl");
-            if (blurH->Init(*mContext, inputSurface, inputSurface)) {
-                mPasses.push_back(std::move(blurH));
-            }
-
-            auto blurV = std::make_unique<GenericShaderPass>("data/shaders/pp_blur_v.glsl");
-            if (blurV->Init(*mContext, inputSurface, inputSurface)) {
-                mPasses.push_back(std::move(blurV));
-            }
+    // 1. Add Blur Pass (Pre-processing) - 2 Passes (Horizontal + Vertical)
+    if (mEnableEdgeSmoothing) {
+        LogDiagnostic("[PASS 1] Adding Blur Pass (H+V)");
+        
+        auto blurH = std::make_unique<GenericShaderPass>("data/shaders/pp_blur_h.glsl");
+        if (blurH->Init(*mContext, inputSurface, inputSurface)) {
+            mPasses.push_back(std::move(blurH));
         }
 
-        // 2. Add HDR/Tonemap Pass
-        if (mEnableSoftHDR) {
-            LogDiagnostic("[PASS 2] Adding HDR/Tonemap Pass");
-            auto hdrPass = std::make_unique<GenericShaderPass>("data/shaders/pp_tonemap.glsl");
-            if (hdrPass->Init(*mContext, inputSurface, inputSurface)) {
-                mPasses.push_back(std::move(hdrPass));
-            }
+        auto blurV = std::make_unique<GenericShaderPass>("data/shaders/pp_blur_v.glsl");
+        if (blurV->Init(*mContext, inputSurface, inputSurface)) {
+            mPasses.push_back(std::move(blurV));
         }
+    }
 
-        // 3. Add Anime4K Scaler
+    // 2. Add HDR/Tonemap Pass
+    if (mEnableSoftHDR) {
+        LogDiagnostic("[PASS 2] Adding HDR/Tonemap Pass");
+        auto hdrPass = std::make_unique<GenericShaderPass>("data/shaders/pp_tonemap.glsl");
+        if (hdrPass->Init(*mContext, inputSurface, inputSurface)) {
+            mPasses.push_back(std::move(hdrPass));
+        }
+    }
+
+    // 3. Scaler Pass
+    if (mConfiguredMode == RenderMode::ANIME4K) {
         std::string anime4kShader = RendererConfig::GetInstance().GetString("Scaler", "Anime4KVersion", "Anime4K_Upscale_GAN_x4_UUL.glsl");
         LogDiagnostic("[SCALER] Using Anime4K Scaler (shader=%s)", anime4kShader.c_str());
         
@@ -151,24 +144,23 @@ void RenderPipeline::SetupPasses() {
 
         auto anime4k = std::make_unique<GenericShaderPass>(shaderPath);
         mScalerPass = std::move(anime4k);
-
-        // 4. Add Post-Processing Passes
-        if (mEnablePostSharpen) {
-            LogDiagnostic("[POST] Adding Sharpen Pass");
-            auto pass = std::make_unique<GenericShaderPass>("data/shaders/pp_sharpen.glsl");
-            if (pass->Init(*mContext, renderSurface, renderSurface)) mPostPasses.push_back(std::move(pass));
-        }
-        if (mEnablePostDenoise) {
-            LogDiagnostic("[POST] Adding Denoise Pass");
-            auto pass = std::make_unique<GenericShaderPass>("data/shaders/pp_denoise.glsl");
-            if (pass->Init(*mContext, renderSurface, renderSurface)) mPostPasses.push_back(std::move(pass));
-        }
-
     } else {
         // Mode 0: Simple Scaler Only
         LogDiagnostic("[SCALER] Using Default Scaler");
         auto scalerPass = std::make_unique<ScalerPass>();
         mScalerPass = std::move(scalerPass);
+    }
+
+    // 4. Add Post-Processing Passes
+    if (mEnablePostSharpen) {
+        LogDiagnostic("[POST] Adding Sharpen Pass");
+        auto pass = std::make_unique<GenericShaderPass>("data/shaders/pp_sharpen.glsl");
+        if (pass->Init(*mContext, renderSurface, renderSurface)) mPostPasses.push_back(std::move(pass));
+    }
+    if (mEnablePostDenoise) {
+        LogDiagnostic("[POST] Adding Denoise Pass");
+        auto pass = std::make_unique<GenericShaderPass>("data/shaders/pp_denoise.glsl");
+        if (pass->Init(*mContext, renderSurface, renderSurface)) mPostPasses.push_back(std::move(pass));
     }
 
     if (mScalerPass) {

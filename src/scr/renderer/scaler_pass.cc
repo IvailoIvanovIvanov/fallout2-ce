@@ -59,7 +59,7 @@ void ScalerPass::Execute(GpuContext& context, const RenderSurface& input, const 
 
     context.SetConstants(0, &constants, sizeof(constants));
     context.BindTexture(0, input.handle);
-    context.BindUnorderedAccessView(0, output.handle, output.format);
+    context.BindUnorderedAccessView(1, output.handle, output.format);
 
     int groupX = (output.width + 7) / 8;
     int groupY = (output.height + 7) / 8;

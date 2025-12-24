@@ -3,9 +3,22 @@
 #include "logger.h"
 #include <fstream>
 #include <sstream>
+#include <algorithm>
+#include <cmath>
 
 namespace fallout {
 namespace renderer {
+
+struct ScalerConstants {
+    int inputWidth;
+    int inputHeight;
+    int outputWidth;
+    int outputHeight;
+    float offsetX;
+    float offsetY;
+    float scaleX;
+    float scaleY;
+};
 
 GenericShaderPass::GenericShaderPass(const std::string& shaderPath)
     : mShaderPath(shaderPath) {}
@@ -44,6 +57,12 @@ bool GenericShaderPass::Init(GpuContext& context, const RenderSurface& input, co
             if (!pass.outputTexture.empty() && pass.outputTexture != "MAIN") {
                 CreateTexture(context, pass.outputTexture, pass.width, pass.height);
             }
+        }
+
+        // Load Blit Shader for resizing if needed
+        mBlitShader = std::make_unique<Shader>("data/shaders/scaler.glsl");
+        if (!mBlitShader->IsValid()) {
+             Logger::Log(LogLevel::Warning, "GenericShaderPass: Failed to load scaler.glsl for MPV resize support");
         }
         
         Logger::Log(LogLevel::Info, "GenericShaderPass: Successfully initialized MPV shader: %s", mShaderPath.c_str());
@@ -97,10 +116,38 @@ void GenericShaderPass::Execute(GpuContext& context, const RenderSurface& input,
 
         void* passOutput = nullptr;
         TextureFormat passFormat = TextureFormat::RGBA16F;
+        bool needsBlit = false;
 
         if (pass.outputTexture == "MAIN" || pass.outputTexture.empty()) {
-            passOutput = output.handle;
-            passFormat = output.format;
+            if (pass.width != output.width || pass.height != output.height) {
+                // Use intermediate buffer
+                std::string internalName = "MAIN_INTERNAL";
+                passOutput = GetTexture(internalName);
+                
+                // Check if existing buffer matches size
+                if (passOutput) {
+                    auto it = sizes.find(internalName);
+                    if (it != sizes.end()) {
+                        if (it->second.first != pass.width || it->second.second != pass.height) {
+                            context.DestroyTexture(passOutput);
+                            mTextures.erase(internalName);
+                            passOutput = nullptr;
+                        }
+                    }
+                }
+
+                if (!passOutput) {
+                    CreateTexture(context, internalName, pass.width, pass.height);
+                    passOutput = GetTexture(internalName);
+                    sizes[internalName] = {pass.width, pass.height};
+                }
+                
+                passFormat = TextureFormat::RGBA16F;
+                needsBlit = true;
+            } else {
+                passOutput = output.handle;
+                passFormat = output.format;
+            }
         } else {
             passOutput = GetTexture(pass.outputTexture);
             if (!passOutput) {
@@ -158,9 +205,32 @@ void GenericShaderPass::Execute(GpuContext& context, const RenderSurface& input,
         }
         
         if (pass.outputTexture == "MAIN") {
-            currentHooked = output.handle;
+            currentHooked = passOutput;
             sizes["HOOKED"] = {pass.width, pass.height};
             sizes["MAIN"] = {pass.width, pass.height};
+            
+            if (needsBlit && mBlitShader && mBlitShader->IsValid()) {
+                // Blit from passOutput to output.handle
+                mBlitShader->Use();
+                
+                ScalerConstants constants;
+                constants.inputWidth = pass.width;
+                constants.inputHeight = pass.height;
+                constants.outputWidth = output.width;
+                constants.outputHeight = output.height;
+                constants.offsetX = 0.0f;
+                constants.offsetY = 0.0f;
+                constants.scaleX = (float)output.width / pass.width;
+                constants.scaleY = (float)output.height / pass.height;
+                
+                context.SetConstants(0, &constants, sizeof(constants));
+                context.BindTexture(0, passOutput);
+                context.BindUnorderedAccessView(1, output.handle, output.format);
+                
+                int bx = (output.width + 7) / 8;
+                int by = (output.height + 7) / 8;
+                mBlitShader->Dispatch(bx, by, 1);
+            }
         }
     }
 }

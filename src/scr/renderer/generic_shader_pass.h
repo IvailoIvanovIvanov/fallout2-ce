@@ -35,6 +35,7 @@ private:
     bool mIsMPV = false;
     std::vector<MPVPass> mPasses;
     std::map<std::string, void*> mTextures;
+    std::unique_ptr<Shader> mBlitShader;
 };
 
 } // namespace renderer

@@ -2,7 +2,7 @@
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(binding = 0) uniform sampler2D InputTexture;
-layout(binding = 0, rgba8) uniform image2D OutputTexture;
+layout(binding = 1, rgba16f) uniform writeonly image2D OutputTexture;
 
 layout(std140, binding = 0) uniform Constants {
     ivec2 inputResolution;
