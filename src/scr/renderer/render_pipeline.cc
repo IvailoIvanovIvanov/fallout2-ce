@@ -86,11 +86,6 @@ bool RenderPipeline::Init(int inputWidth, int inputHeight, int outputWidth, int 
         return false;
     }
 
-    if (!CreateIntermediateBuffers()) {
-        LogDiagnostic("Failed to create intermediate buffers");
-        return false;
-    }
-
     // Setup Passes based on configuration
     SetupPasses();
 
@@ -100,127 +95,114 @@ bool RenderPipeline::Init(int inputWidth, int inputHeight, int outputWidth, int 
 }
 
 void RenderPipeline::SetupPasses() {
-    mPasses.clear();
-    mPostPasses.clear();
     mScalerPass.reset();
+    mAnime4KPasses.clear();
+    mPrePass.reset();
+    mPostPass.reset();
+
+    // Clear scaling buffers
+    for (auto& buf : mScalingBuffers) {
+        if (buf.handle) mContext->DestroyTexture(buf.handle);
+    }
+    mScalingBuffers.clear();
 
     RenderSurface inputSurface = { nullptr, mInputWidth, mInputHeight, TextureFormat::RGBA8 };
     RenderSurface renderSurface = { nullptr, mRenderWidth, mRenderHeight, TextureFormat::RGBA16F };
 
-    // 1. Add Blur Pass (Pre-processing) - 2 Passes (Horizontal + Vertical)
-    if (mEnableEdgeSmoothing) {
-        LogDiagnostic("[PASS 1] Adding Blur Pass (H+V)");
-        
-        auto blurH = std::make_unique<GenericShaderPass>("data/shaders/pp_blur_h.glsl");
-        if (blurH->Init(*mContext, inputSurface, inputSurface)) {
-            mPasses.push_back(std::move(blurH));
-        }
-
-        auto blurV = std::make_unique<GenericShaderPass>("data/shaders/pp_blur_v.glsl");
-        if (blurV->Init(*mContext, inputSurface, inputSurface)) {
-            mPasses.push_back(std::move(blurV));
-        }
-    }
-
-    // 2. Add HDR/Tonemap Pass
-    if (mEnableSoftHDR) {
-        LogDiagnostic("[PASS 2] Adding HDR/Tonemap Pass");
-        auto hdrPass = std::make_unique<GenericShaderPass>("data/shaders/pp_tonemap.glsl");
-        if (hdrPass->Init(*mContext, inputSurface, inputSurface)) {
-            mPasses.push_back(std::move(hdrPass));
-        }
-    }
-
-    // 3. Scaler Pass
+    // 3. Scaler Pass / Anime4K Pipeline
     if (mConfiguredMode == RenderMode::ANIME4K) {
-        std::string anime4kShader = RendererConfig::GetInstance().GetString("Scaler", "Anime4KVersion", "Anime4K_Upscale_GAN_x4_UUL.glsl");
-        LogDiagnostic("[SCALER] Using Anime4K Scaler (shader=%s)", anime4kShader.c_str());
+        LogDiagnostic("[SCALER] Setting up Anime4K Pipeline");
         
-        // If user provides just a name, assume it's in data/shaders/
-        std::string shaderPath = anime4kShader;
-        if (shaderPath.find("/") == std::string::npos && shaderPath.find("\\") == std::string::npos) {
-            shaderPath = "data/shaders/" + shaderPath;
+        int currentW = mInputWidth;
+        int currentH = mInputHeight;
+        RenderSurface currentInput = inputSurface;
+
+        // Helper to add pass
+        auto AddPass = [&](const std::string& shaderName, int scaleFactor) {
+            if (shaderName.empty()) return;
+
+            std::string path = "data/shaders/" + shaderName;
+            int nextW = currentW * scaleFactor;
+            int nextH = currentH * scaleFactor;
+            
+            // Create output buffer
+            TextureDesc desc = { nextW, nextH, TextureFormat::RGBA16F };
+            void* handle = mContext->CreateTexture(desc);
+            if (!handle) {
+                LogDiagnostic("Failed to create buffer for %s", shaderName.c_str());
+                return;
+            }
+            RenderSurface output = { handle, nextW, nextH, TextureFormat::RGBA16F };
+            mScalingBuffers.push_back(output);
+
+            auto pass = std::make_unique<GenericShaderPass>(path);
+            if (pass->Init(*mContext, currentInput, output)) {
+                mAnime4KPasses.push_back(std::move(pass));
+                LogDiagnostic("Added Anime4K Pass: %s (%dx%d -> %dx%d)", shaderName.c_str(), currentW, currentH, nextW, nextH);
+                currentW = nextW;
+                currentH = nextH;
+                currentInput = output;
+            } else {
+                LogDiagnostic("Failed to init Anime4K Pass: %s", shaderName.c_str());
+                // Cleanup buffer?
+            }
+        };
+
+        // Define Pipeline Steps
+        struct PipelineStep {
+            bool enabled;
+            std::string shader;
+            int scale;
+        };
+
+        std::vector<PipelineStep> steps = {
+            { mEnablePrePass, mPrePassShader, 1 },
+            { mEnableClean1, mClean1Shader, 1 },
+            { mEnableClean2, mClean2Shader, 1 },
+            { mEnableScale1, mScale1Shader, 2 },
+            { mEnableOptimize, mOptimizeShader, 1 },
+            { mEnableScale2, mScale2Shader, 2 },
+            { mEnablePolish, mPolishShader, 1 },
+            { mEnablePostPass, mPostPassShader, 1 }
+        };
+
+        for (const auto& step : steps) {
+            if (step.enabled) {
+                AddPass(step.shader, step.scale);
+            }
         }
 
-        auto anime4k = std::make_unique<GenericShaderPass>(shaderPath);
-        mScalerPass = std::move(anime4k);
+        // Final Scaler to Target
+        LogDiagnostic("[SCALER] Final scale from %dx%d to %dx%d", currentW, currentH, mRenderWidth, mRenderHeight);
+        auto scalerPass = std::make_unique<ScalerPass>();
+        if (scalerPass->Init(*mContext, currentInput, renderSurface)) {
+            mScalerPass = std::move(scalerPass);
+        } else {
+            LogDiagnostic("Failed to init final ScalerPass");
+        }
+
     } else {
         // Mode 0: Simple Scaler Only
         LogDiagnostic("[SCALER] Using Default Scaler");
         auto scalerPass = std::make_unique<ScalerPass>();
-        mScalerPass = std::move(scalerPass);
-    }
-
-    // 4. Add Post-Processing Passes
-    if (mEnablePostSharpen) {
-        LogDiagnostic("[POST] Adding Sharpen Pass");
-        auto pass = std::make_unique<GenericShaderPass>("data/shaders/pp_sharpen.glsl");
-        if (pass->Init(*mContext, renderSurface, renderSurface)) mPostPasses.push_back(std::move(pass));
-    }
-    if (mEnablePostDenoise) {
-        LogDiagnostic("[POST] Adding Denoise Pass");
-        auto pass = std::make_unique<GenericShaderPass>("data/shaders/pp_denoise.glsl");
-        if (pass->Init(*mContext, renderSurface, renderSurface)) mPostPasses.push_back(std::move(pass));
-    }
-
-    if (mScalerPass) {
-        if (!mScalerPass->Init(*mContext, inputSurface, renderSurface)) {
-            LogDiagnostic("Failed to initialize ScalerPass, falling back to default scaler");
-            // Fallback to default scaler
-            auto scalerPass = std::make_unique<ScalerPass>();
+        if (scalerPass->Init(*mContext, inputSurface, renderSurface)) {
             mScalerPass = std::move(scalerPass);
-            if (!mScalerPass->Init(*mContext, inputSurface, renderSurface)) {
-                LogDiagnostic("CRITICAL: Failed to initialize fallback ScalerPass");
-            }
         }
     }
-}
-
-bool RenderPipeline::CreateIntermediateBuffers() {
-    // Intermediate buffers should be RGBA16F for precision
-    TextureDesc desc = { mInputWidth, mInputHeight, TextureFormat::RGBA16F };
-
-    for (int i = 0; i < 2; ++i) {
-        mIntermediateBuffers[i].handle = mContext->CreateTexture(desc);
-        mIntermediateBuffers[i].width = mInputWidth;
-        mIntermediateBuffers[i].height = mInputHeight;
-        mIntermediateBuffers[i].format = TextureFormat::RGBA16F;
-        if (!mIntermediateBuffers[i].handle) return false;
-    }
-
-    TextureDesc postDesc = { mRenderWidth, mRenderHeight, TextureFormat::RGBA16F };
-    for (int i = 0; i < 2; ++i) {
-        mPostIntermediateBuffers[i].handle = mContext->CreateTexture(postDesc);
-        mPostIntermediateBuffers[i].width = mRenderWidth;
-        mPostIntermediateBuffers[i].height = mRenderHeight;
-        mPostIntermediateBuffers[i].format = TextureFormat::RGBA16F;
-        if (!mPostIntermediateBuffers[i].handle) return false;
-    }
-
-    return true;
 }
 
 void RenderPipeline::Shutdown() {
     if (!mContext) return;
-
-    for (auto& pass : mPasses) pass->Shutdown(*mContext);
-    mPasses.clear();
-
-    for (auto& pass : mPostPasses) pass->Shutdown(*mContext);
-    mPostPasses.clear();
     
+    for (auto& pass : mAnime4KPasses) pass->Shutdown(*mContext);
+    mAnime4KPasses.clear();
+
     if (mScalerPass) mScalerPass->Shutdown(*mContext);
 
-    for (int i = 0; i < 2; ++i) {
-        if (mIntermediateBuffers[i].handle) {
-            mContext->DestroyTexture(mIntermediateBuffers[i].handle);
-            mIntermediateBuffers[i].handle = nullptr;
-        }
-        if (mPostIntermediateBuffers[i].handle) {
-            mContext->DestroyTexture(mPostIntermediateBuffers[i].handle);
-            mPostIntermediateBuffers[i].handle = nullptr;
-        }
+    for (auto& buf : mScalingBuffers) {
+        if (buf.handle) mContext->DestroyTexture(buf.handle);
     }
+    mScalingBuffers.clear();
 
     mBuffers.Shutdown(*mContext);
     mContext->Shutdown();
@@ -317,25 +299,29 @@ void RenderPipeline::Dispatch() {
         mScreenshotManager.Capture(*mContext, currentInput, "00_Input");
     }
 
-    int targetIndex = 0;
     int passIndex = 1;
 
-    for (auto& pass : mPasses) {
-        RenderSurface currentOutput = mIntermediateBuffers[targetIndex];
-        pass->Execute(*mContext, currentInput, currentOutput);
-        
-        if (capture) {
-            char buf[64];
-            snprintf(buf, sizeof(buf), "%02d_%s", passIndex++, pass->GetName().c_str());
-            mScreenshotManager.Capture(*mContext, currentOutput, buf);
+    // 5. Execute Scaler Pass / Anime4K Chain
+    RenderSurface scalerOutput = mBuffers.GetOutputSurface();
+    
+    if (!mAnime4KPasses.empty()) {
+        // Execute Anime4K Chain
+        RenderSurface chainInput = currentInput;
+        for (size_t i = 0; i < mAnime4KPasses.size(); ++i) {
+            RenderSurface chainOutput = mScalingBuffers[i];
+            mAnime4KPasses[i]->Execute(*mContext, chainInput, chainOutput);
+            
+            if (capture) {
+                char buf[64];
+                snprintf(buf, sizeof(buf), "%02d_Anime4K_%d_%s", passIndex++, (int)i, mAnime4KPasses[i]->GetName().c_str());
+                mScreenshotManager.Capture(*mContext, chainOutput, buf);
+            }
+            
+            chainInput = chainOutput;
         }
-
-        currentInput = currentOutput;
-        targetIndex = 1 - targetIndex;
+        currentInput = chainInput;
     }
 
-    // 5. Execute Scaler Pass
-    RenderSurface scalerOutput = (mPostPasses.empty()) ? mBuffers.GetOutputSurface() : mPostIntermediateBuffers[0];
     if (mScalerPass) {
         mScalerPass->Execute(*mContext, currentInput, scalerOutput);
         
@@ -349,29 +335,6 @@ void RenderPipeline::Dispatch() {
         // If no scaler pass, we must copy input to output manually or handle it
         // For now, just copy if possible, but sizes differ so we need a scaler.
         // mScalerPass should always be present.
-    }
-
-    // 6. Execute Post Passes
-    if (!mPostPasses.empty()) {
-        currentInput = scalerOutput;
-        targetIndex = 1;
-
-        for (size_t i = 0; i < mPostPasses.size(); ++i) {
-            auto& pass = mPostPasses[i];
-            bool isLast = (i == mPostPasses.size() - 1);
-            RenderSurface currentOutput = isLast ? mBuffers.GetOutputSurface() : mPostIntermediateBuffers[targetIndex];
-
-            pass->Execute(*mContext, currentInput, currentOutput);
-
-            if (capture) {
-                char buf[64];
-                snprintf(buf, sizeof(buf), "%02d_%s", passIndex++, pass->GetName().c_str());
-                mScreenshotManager.Capture(*mContext, currentOutput, buf);
-            }
-
-            currentInput = currentOutput;
-            targetIndex = 1 - targetIndex;
-        }
     }
 
     if (capture) {
@@ -407,25 +370,34 @@ void RenderPipeline::LoadConfiguration() {
 
     mVerboseLogging = config.GetBool("General", "VerboseLogging", false);
 
-    // Filters
-    mEnableEdgeSmoothing = config.GetBool("Filters", "EdgeSmoothing", true);
-    mSmoothingStrength = config.GetFloat("Filters", "SmoothingStrength", 0.6f);
-    
-    mEnableSoftHDR = config.GetBool("Filters", "HDR", true);
-    mHdrSaturation = config.GetFloat("Filters", "HDRSaturation", 1.2f);
-    mHdrContrast = config.GetFloat("Filters", "HDRContrast", 1.1f);
-    mBlackCrushThreshold = config.GetFloat("Filters", "BlackCrushThreshold", 0.03f);
-    mBlackCrushStrength = config.GetFloat("Filters", "BlackCrushStrength", 1.0f);
-
-    // Post Processing
-    mEnablePostSharpen = config.GetBool("PostProcessing", "Sharpen", false);
-    mEnablePostDenoise = config.GetBool("PostProcessing", "Denoise", false);
-
     mSharpness = config.GetFloat("Scaler", "Sharpness", 0.5f);
 
+    // Anime4K Pipeline
+    mEnablePrePass = config.GetBool("Anime4K", "EnablePrePass", false);
+    mPrePassShader = config.GetString("Anime4K", "PrePassShader", "");
+
+    mEnableClean1 = config.GetBool("Anime4K", "EnableClean1", true);
+    mClean1Shader = config.GetString("Anime4K", "Clean1Shader", "Anime4K_Clamp_Highlights.glsl");
+
+    mEnableClean2 = config.GetBool("Anime4K", "EnableClean2", true);
+    mClean2Shader = config.GetString("Anime4K", "Clean2Shader", "Anime4K_Restore_CNN_M.glsl");
+
+    mEnableScale1 = config.GetBool("Anime4K", "EnableScale1", true);
+    mScale1Shader = config.GetString("Anime4K", "Scale1Shader", "Anime4K_Upscale_CNN_x2_L.glsl");
+
+    mEnableOptimize = config.GetBool("Anime4K", "EnableOptimize", true);
+    mOptimizeShader = config.GetString("Anime4K", "OptimizeShader", "Anime4K_AutoDownscalePre_x4.glsl");
+
+    mEnableScale2 = config.GetBool("Anime4K", "EnableScale2", true);
+    mScale2Shader = config.GetString("Anime4K", "Scale2Shader", "Anime4K_Upscale_CNN_x2_M.glsl");
+
+    mEnablePolish = config.GetBool("Anime4K", "EnablePolish", true);
+    mPolishShader = config.GetString("Anime4K", "PolishShader", "Anime4K_Thin_HQ.glsl");
+
+    mEnablePostPass = config.GetBool("Anime4K", "EnablePostPass", false);
+    mPostPassShader = config.GetString("Anime4K", "PostPassShader", "");
+
     LogDiagnostic("Configuration Loaded: Mode=%d (Configured=%d)", mode, (int)mConfiguredMode);
-    LogDiagnostic("Filters: EdgeSmoothing=%d, HDR=%d", mEnableEdgeSmoothing, mEnableSoftHDR);
-    LogDiagnostic("Post: Sharpen=%d, Denoise=%d", mEnablePostSharpen, mEnablePostDenoise);
 }
 
 void RenderPipeline::LogDiagnostic(const char* format, ...) {

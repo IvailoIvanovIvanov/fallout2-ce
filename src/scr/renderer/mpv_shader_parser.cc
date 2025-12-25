@@ -2,6 +2,7 @@
 #include "logger.h"
 #include <sstream>
 #include <regex>
+#include <set>
 
 namespace fallout {
 namespace renderer {
@@ -14,6 +15,7 @@ std::vector<MPVPass> MPVShaderParser::Parse(const std::string& source, int input
     MPVPass currentPass;
     std::string currentSource;
     bool inPass = false;
+    std::set<std::string> currentBindings;
     
     std::map<std::string, std::pair<int, int>> textureSizes;
     textureSizes["MAIN"] = {inputWidth, inputHeight};
@@ -41,6 +43,15 @@ std::vector<MPVPass> MPVShaderParser::Parse(const std::string& source, int input
             shaderSrc << "vec4 " << texName << "_texOff(vec2 off) { vec2 uv = (vec2(gl_GlobalInvocationID.xy) + 0.5) / vec2(imageSize(outputImage)); return texture(" << texName << ", uv + off * " << texName << "_pt); }\n";
             shaderSrc << "vec2 " << texName << "_pos;\n";
             binding++;
+        }
+
+        // Alias MAIN to HOOKED if MAIN is missing but HOOKED is present (since we only support //!HOOK MAIN)
+        if (currentBindings.count("HOOKED") && !currentBindings.count("MAIN")) {
+            shaderSrc << "#define MAIN_tex HOOKED_tex\n";
+            shaderSrc << "#define MAIN_texOff HOOKED_texOff\n";
+            shaderSrc << "#define MAIN_pos HOOKED_pos\n";
+            shaderSrc << "#define MAIN_size HOOKED_size\n";
+            shaderSrc << "#define MAIN_pt HOOKED_pt\n";
         }
 
         shaderSrc << currentSource << "\n";
@@ -74,11 +85,12 @@ std::vector<MPVPass> MPVShaderParser::Parse(const std::string& source, int input
 
         currentPass = MPVPass();
         currentSource = "";
+        currentBindings.clear();
         inPass = false;
     };
 
     while (std::getline(ss, line)) {
-        if (line.find("//!HOOK MAIN") != std::string::npos) {
+        if (line.find("//!HOOK") != std::string::npos) {
             FinishPass();
             inPass = true;
             currentPass.width = textureSizes["HOOKED"].first;
@@ -93,7 +105,10 @@ std::vector<MPVPass> MPVShaderParser::Parse(const std::string& source, int input
             std::smatch match;
             if (std::regex_search(line, match, re)) {
                 std::string name = match[1];
-                currentPass.inputTextures.push_back(name);
+                if (currentBindings.find(name) == currentBindings.end()) {
+                    currentBindings.insert(name);
+                    currentPass.inputTextures.push_back(name);
+                }
             }
         } else if (line.find("//!SAVE") != std::string::npos) {
             std::regex re("//!SAVE\\s+(\\w+)");

@@ -67,14 +67,7 @@ private:
     SDL_Window* mWindow = nullptr;
 
     // Passes
-    std::vector<std::unique_ptr<ShaderPass>> mPasses;
-    std::vector<std::unique_ptr<ShaderPass>> mPostPasses;
     std::unique_ptr<ShaderPass> mScalerPass;
-
-    // Phantom buffers for 640x480 processing
-    RenderSurface mIntermediateBuffers[2];
-    // Output buffers for WindowSize processing
-    RenderSurface mPostIntermediateBuffers[2];
 
     int mInputWidth = 0;
     int mInputHeight = 0;
@@ -98,21 +91,38 @@ private:
     // Filter Settings
     float mSharpness = 0.5f;
     bool mEnableDebanding = true;
+
+    // Pipeline Configuration
+    bool mEnablePrePass = false;
+    std::string mPrePassShader;
+
+    bool mEnableClean1 = true;
+    std::string mClean1Shader;
+
+    bool mEnableClean2 = true;
+    std::string mClean2Shader;
+
+    bool mEnableScale1 = true;
+    std::string mScale1Shader;
+
+    bool mEnableOptimize = true;
+    std::string mOptimizeShader;
+
+    bool mEnableScale2 = true;
+    std::string mScale2Shader;
+
+    bool mEnablePolish = true;
+    std::string mPolishShader;
+
+    bool mEnablePostPass = false;
+    std::string mPostPassShader;
+
+    // Scaling Buffers
+    std::vector<RenderSurface> mScalingBuffers;
+    std::vector<std::unique_ptr<ShaderPass>> mAnime4KPasses;
+    std::unique_ptr<ShaderPass> mPrePass;
+    std::unique_ptr<ShaderPass> mPostPass;
     float mDebandingStrength = 0.5f;
-    bool mEnableEdgeSmoothing = true;
-    float mSmoothingStrength = 0.6f;
-    bool mEnableKuwahara = false;
-    int mKuwaharaRadius = 2;
-    bool mEnableSoftHDR = true;
-    float mHdrStrength = 0.5f;
-    float mHdrSaturation = 1.5f;
-    float mHdrContrast = 1.3f;
-    float mBlackCrushThreshold = 0.05f;
-    float mBlackCrushStrength = 1.5f;
-    
-    // Post-Processing Config
-    bool mEnablePostSharpen = false;
-    bool mEnablePostDenoise = false;
     
     bool mVerboseLogging = false;
 };
