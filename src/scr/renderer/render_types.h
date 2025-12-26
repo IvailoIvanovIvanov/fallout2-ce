@@ -22,6 +22,7 @@ namespace renderer {
  * @brief Supported texture pixel formats.
  */
 enum class TextureFormat {
+    R8_UNORM, ///< 8-bit single channel (for grayscale/alpha textures)
     RGBA8,    ///< 8-bit per channel RGBA (32-bit total, standard format)
     RGBA16F,  ///< 16-bit float per channel RGBA (64-bit, high precision)
     RGBA32F   ///< 32-bit float per channel RGBA (128-bit, maximum precision)
@@ -39,6 +40,7 @@ struct TextureDesc {
     int width = 0;                          ///< Width in pixels
     int height = 0;                         ///< Height in pixels
     TextureFormat format = TextureFormat::RGBA8;  ///< Pixel format
+    bool isStorage = false;                 ///< Whether texture is used as compute storage image
 };
 
 //-----------------------------------------------------------------------------

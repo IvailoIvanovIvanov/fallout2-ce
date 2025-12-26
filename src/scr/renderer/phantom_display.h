@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <vector>
 #include <cstring>
+#include "logger.h"
 
 namespace fallout {
 namespace renderer {
@@ -78,13 +79,62 @@ public:
      *
      * @param indexedData 8-bit indexed pixel data.
      * @param palette 256-entry RGBA palette (0xAABBGGRR format).
+     * @param pitch Source row pitch in bytes (may be larger than width for alignment).
      */
-    void SetData(const uint8_t* indexedData, const uint32_t* palette) {
+    void SetData(const uint8_t* indexedData, const uint32_t* palette, int pitch) {
         mFormat = PixelFormat::RGBA8888;
         uint32_t* dest = reinterpret_cast<uint32_t*>(mPixels.data());
-        for (int i = 0; i < mWidth * mHeight; ++i) {
-            uint32_t color = palette[indexedData[i]];
-            dest[i] = (color & 0x00FFFFFF) | 0xFF000000;  // Force alpha = 255
+        
+        // Log sample of input indexed data and palette lookup
+        static int logCounter = 0;
+        bool shouldLog = (logCounter++ % 60 == 0);  // Log every 60 frames
+        
+        if (shouldLog) {
+            // Sample first 4 indexed pixels
+            uint8_t idx0 = indexedData[0];
+            uint8_t idx1 = indexedData[1];
+            uint8_t idx2 = indexedData[2];
+            uint8_t idx3 = indexedData[3];
+            
+            // Get corresponding palette colors
+            uint32_t pal0 = palette[idx0];
+            uint32_t pal1 = palette[idx1];
+            uint32_t pal2 = palette[idx2];
+            uint32_t pal3 = palette[idx3];
+            
+            Logger::Log(LogLevel::Info, "[PHANTOM] SetData: dims=%dx%d, pitch=%d", mWidth, mHeight, pitch);
+            Logger::Log(LogLevel::Info, "[PHANTOM] Input indices[0-3]: %d, %d, %d, %d", idx0, idx1, idx2, idx3);
+            Logger::Log(LogLevel::Info, "[PHANTOM] Palette[idx0=%d]=0x%08X, Palette[idx1=%d]=0x%08X", idx0, pal0, idx1, pal1);
+            Logger::Log(LogLevel::Info, "[PHANTOM] Palette[idx2=%d]=0x%08X, Palette[idx3=%d]=0x%08X", idx2, pal2, idx3, pal3);
+            
+            // Also sample from middle of image to get more representative pixels
+            int midY = mHeight / 2;
+            int midX = mWidth / 2;
+            int midIdx = midY * pitch + midX;
+            if (midIdx < pitch * mHeight) {
+                uint8_t midPalIdx = indexedData[midIdx];
+                uint32_t midPalColor = palette[midPalIdx];
+                Logger::Log(LogLevel::Info, "[PHANTOM] Mid-screen pixel[%d,%d]: index=%d, palette=0x%08X", midX, midY, midPalIdx, midPalColor);
+            }
+        }
+        
+        for (int y = 0; y < mHeight; ++y) {
+            for (int x = 0; x < mWidth; ++x) {
+                int srcIdx = y * pitch + x;
+                int dstIdx = y * mWidth + x;
+                uint32_t color = palette[indexedData[srcIdx]];
+                dest[dstIdx] = (color & 0x00FFFFFF) | 0xFF000000;  // Force alpha = 255
+            }
+        }
+        
+        if (shouldLog) {
+            // Log output after conversion
+            Logger::Log(LogLevel::Info, "[PHANTOM] Output RGBA[0-3]: 0x%08X, 0x%08X, 0x%08X, 0x%08X", 
+                        dest[0], dest[1], dest[2], dest[3]);
+            
+            // Sample output from middle
+            int midDstIdx = (mHeight / 2) * mWidth + (mWidth / 2);
+            Logger::Log(LogLevel::Info, "[PHANTOM] Output mid-screen RGBA: 0x%08X", dest[midDstIdx]);
         }
     }
 

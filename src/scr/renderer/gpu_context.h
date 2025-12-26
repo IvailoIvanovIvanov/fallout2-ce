@@ -132,6 +132,14 @@ public:
     virtual void EndFrame() = 0;
 
     /**
+     * @brief Reconfigures the context for a new window size.
+     * @param width New window width.
+     * @param height New window height.
+     * @return true if reconfiguration succeeded.
+     */
+    virtual bool Reconfigure(int width, int height) { return true; }
+
+    /**
      * @brief Presents a texture to the screen with aspect-correct scaling.
      * @param textureHandle Handle to the texture to present.
      * @param srcWidth Width of the source texture in pixels.

@@ -268,6 +268,7 @@ void OpenGLContext::ReadbackTexture(void* textureHandle, void* data, int size) {
 
 unsigned int OpenGLContext::ToGLInternalFormat(TextureFormat format) {
     switch (format) {
+        case TextureFormat::R8_UNORM: return GL_R8;
         case TextureFormat::RGBA16F: return GL_RGBA16F;
         case TextureFormat::RGBA32F: return GL_RGBA32F;
         default: return GL_RGBA8;
@@ -276,6 +277,7 @@ unsigned int OpenGLContext::ToGLInternalFormat(TextureFormat format) {
 
 unsigned int OpenGLContext::ToGLImageFormat(TextureFormat format) {
     switch (format) {
+        case TextureFormat::R8_UNORM: return GL_R8;
         case TextureFormat::RGBA16F: return GL_RGBA16F;
         case TextureFormat::RGBA32F: return GL_RGBA32F;
         default: return GL_RGBA8;

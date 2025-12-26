@@ -18,6 +18,7 @@
 #include "text_font.h"
 #include "win32.h"
 #include "window_manager_private.h"
+#include "scr/renderer/logger.h"
 
 namespace fallout {
 
@@ -802,6 +803,17 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
     // TODO: Get rid of this.
     dest_pitch = 0;
 
+    // Debug logging
+    {
+        using namespace fallout::renderer;
+        static int winRefreshLog = 0;
+        if (winRefreshLog < 5) {
+            Logger::Log(LogLevel::Info, "[DEBUG] _GNW_win_refresh: winId=%d, hidden=%d, _buffering=%d", 
+                       window->id, (window->flags & WINDOW_HIDDEN) ? 1 : 0, _buffering ? 1 : 0);
+            winRefreshLog++;
+        }
+    }
+
     if ((window->flags & WINDOW_HIDDEN) != 0) {
         return;
     }
@@ -870,6 +882,16 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                                     _scr_size.right - _scr_size.left + 1);
                             }
                         } else {
+                            // Debug: logging _scr_blit call
+                            {
+                                using namespace fallout::renderer;
+                                static int scrBlitLog = 0;
+                                if (scrBlitLog < 5) {
+                                    Logger::Log(LogLevel::Info, "[DEBUG] About to call _scr_blit: w=%d h=%d",
+                                               v20->rect.right - v20->rect.left + 1, v20->rect.bottom - v20->rect.top + 1);
+                                    scrBlitLog++;
+                                }
+                            }
                             _scr_blit(
                                 window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
                                 window->width,
@@ -1088,7 +1110,15 @@ void _win_get_mouse_buf(unsigned char* a1)
 // 0x4D7814
 void _refresh_all(Rect* rect, unsigned char* a2)
 {
+    using namespace fallout::renderer;
+    static int callCount = 0;
+    
     _doing_refresh_all = 1;
+
+    if (callCount < 5) {
+        Logger::Log(LogLevel::Info, "[DEBUG] _refresh_all: gWindowsLength=%d, _buffering=%d", gWindowsLength, _buffering ? 1 : 0);
+        callCount++;
+    }
 
     for (int index = 0; index < gWindowsLength; index++) {
         _GNW_win_refresh(gWindows[index], rect, a2);

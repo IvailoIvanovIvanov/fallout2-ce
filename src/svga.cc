@@ -15,6 +15,12 @@
 #include "window_manager_private.h"
 
 #include "scr/renderer/render_pipeline.h"
+#include "scr/renderer/renderer_config.h"
+#include "scr/renderer/logger.h"
+
+#ifdef _WIN32
+#include "scr/renderer/hdr_utils.h"
+#endif
 
 namespace fallout {
 
@@ -210,9 +216,31 @@ int _init_vesa_mode(int width, int height)
 int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
 {
     if (gSdlWindow == nullptr) {
-        SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+        // Determine which graphics API to use based on config and HDR status
+        bool useVulkan = false;
+        
+#if FALLOUT_HAVE_VULKAN
+        std::string backendPref = renderer::RendererConfig::GetInstance().GetString("Renderer", "Backend", "auto");
+        if (backendPref == "vulkan") {
+            useVulkan = true;
+        } else if (backendPref == "opengl") {
+            useVulkan = false;
+        } else {
+            // Auto-detect: use Vulkan if HDR is enabled
+#ifdef _WIN32
+            useVulkan = renderer::IsHDREnabled();
+#endif
+        }
+#endif
 
-        Uint32 windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI;
+        Uint32 windowFlags = SDL_WINDOW_ALLOW_HIGHDPI;
+        
+        if (useVulkan) {
+            windowFlags |= SDL_WINDOW_VULKAN;
+        } else {
+            SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+            windowFlags |= SDL_WINDOW_OPENGL;
+        }
 
         if (fullscreen) {
             windowFlags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
@@ -337,6 +365,14 @@ unsigned char* directDrawGetPalette()
 // 0x4CB850
 void _GNW95_ShowRect(unsigned char* src, int srcPitch, int a3, int srcX, int srcY, int srcWidth, int srcHeight, int destX, int destY)
 {
+    using namespace fallout::renderer;
+    static int callCount = 0;
+    if (callCount < 5) {
+        Logger::Log(LogLevel::Info, "[DEBUG] _GNW95_ShowRect called: src=%p, srcWidth=%d, srcHeight=%d, destX=%d, destY=%d, gUsePhantomDisplay=%d",
+                   src, srcWidth, srcHeight, destX, destY, gUsePhantomDisplay ? 1 : 0);
+        callCount++;
+    }
+    
     blitBufferToBuffer(src + srcPitch * srcY + srcX, srcWidth, srcHeight, srcPitch, (unsigned char*)gSdlSurface->pixels + gSdlSurface->pitch * destY + destX, gSdlSurface->pitch);
 
     if (!gUsePhantomDisplay) {

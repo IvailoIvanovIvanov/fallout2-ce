@@ -18,8 +18,8 @@ bool BufferManager::Init(GpuContext& context, int inputWidth, int inputHeight,
     mOutputWidth = outputWidth;
     mOutputHeight = outputHeight;
 
-    TextureDesc inputDesc{inputWidth, inputHeight, TextureFormat::RGBA8};
-    TextureDesc outputDesc{outputWidth, outputHeight, TextureFormat::RGBA16F};
+    TextureDesc inputDesc{inputWidth, inputHeight, TextureFormat::RGBA8, true};
+    TextureDesc outputDesc{outputWidth, outputHeight, TextureFormat::RGBA16F, true};
 
     for (int i = 0; i < kFrameCount; ++i) {
         if (!CreateFrameResources(context, mFrames[i], inputDesc, outputDesc)) {

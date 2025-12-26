@@ -230,6 +230,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/scr/renderer/logger.h"
     "src/scr/renderer/opengl_context.cc"
     "src/scr/renderer/opengl_context.h"
+    "src/scr/renderer/vulkan_context.cc"
+    "src/scr/renderer/vulkan_context.h"
     "src/scr/renderer/phantom_display.h"
     "src/scr/renderer/real_display.h"
     "src/scr/renderer/renderer_config.cc"
@@ -332,6 +334,7 @@ endif()
 if(WIN32)
     target_link_libraries(${EXECUTABLE_NAME}
         winmm
+        dxgi
     )
 endif()
 
@@ -405,6 +408,48 @@ target_include_directories(${EXECUTABLE_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
 
 find_package(OpenGL REQUIRED)
 target_link_libraries(${EXECUTABLE_NAME} OpenGL::GL)
+
+# Vulkan support for HDR rendering
+find_package(Vulkan QUIET)
+if(Vulkan_FOUND)
+    message(STATUS "Vulkan found: ${Vulkan_LIBRARY}")
+    target_compile_definitions(${EXECUTABLE_NAME} PRIVATE FALLOUT_HAVE_VULKAN=1)
+    target_link_libraries(${EXECUTABLE_NAME} Vulkan::Vulkan)
+    target_include_directories(${EXECUTABLE_NAME} PRIVATE ${Vulkan_INCLUDE_DIRS})
+    
+    # Link shaderc for GLSL to SPIR-V compilation
+    # Shaderc is included in the Vulkan SDK
+    if(WIN32)
+        # Get Vulkan SDK path from environment or use the found path
+        if(DEFINED ENV{VULKAN_SDK})
+            set(VULKAN_SDK_PATH "$ENV{VULKAN_SDK}")
+        else()
+            get_filename_component(VULKAN_SDK_PATH "${Vulkan_LIBRARY}" DIRECTORY)
+            get_filename_component(VULKAN_SDK_PATH "${VULKAN_SDK_PATH}" DIRECTORY)
+        endif()
+        
+        set(SHADERC_LIB_DEBUG "${VULKAN_SDK_PATH}/Lib/shaderc_combinedd.lib")
+        set(SHADERC_LIB_RELEASE "${VULKAN_SDK_PATH}/Lib/shaderc_combined.lib")
+        
+        if(EXISTS "${SHADERC_LIB_RELEASE}")
+            target_link_libraries(${EXECUTABLE_NAME} 
+                $<$<CONFIG:Debug>:${SHADERC_LIB_DEBUG}>
+                $<$<CONFIG:Release>:${SHADERC_LIB_RELEASE}>
+                $<$<CONFIG:RelWithDebInfo>:${SHADERC_LIB_RELEASE}>
+                $<$<CONFIG:MinSizeRel>:${SHADERC_LIB_RELEASE}>
+            )
+            target_compile_definitions(${EXECUTABLE_NAME} PRIVATE FALLOUT_HAVE_SHADERC=1)
+            message(STATUS "Shaderc found: ${SHADERC_LIB_RELEASE}")
+        else()
+            message(WARNING "Shaderc not found in Vulkan SDK - runtime shader compilation disabled")
+            target_compile_definitions(${EXECUTABLE_NAME} PRIVATE FALLOUT_HAVE_SHADERC=0)
+        endif()
+    endif()
+else()
+    message(WARNING "Vulkan not found - HDR rendering will be limited")
+    target_compile_definitions(${EXECUTABLE_NAME} PRIVATE FALLOUT_HAVE_VULKAN=0)
+    target_compile_definitions(${EXECUTABLE_NAME} PRIVATE FALLOUT_HAVE_SHADERC=0)
+endif()
 
 if(APPLE)
     if(IOS)

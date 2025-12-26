@@ -1,14 +1,23 @@
 #include "render_pipeline.h"
 #include "opengl_context.h"
+#include "vulkan_context.h"
 #include "display_scaler.h"
 #include "logger.h"
 #include "renderer_config.h"
 #include "generic_shader_pass.h"
 
+#ifdef _WIN32
+#include "hdr_utils.h"
+#endif
+
 #include <SDL.h>
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
+#include <filesystem>
+#include <sstream>
+#include <ctime>
+#include <iomanip>
 
 namespace fallout {
 namespace renderer {
@@ -96,11 +105,59 @@ void RenderPipeline::InitializeDisplays() {
 }
 
 bool RenderPipeline::InitializeContext() {
+    // Check configuration for backend preference
+    auto& config = RendererConfig::GetInstance();
+    std::string backendPref = config.GetString("General", "Backend", "auto");
+    
+    bool useVulkan = false;
+    
+    if (backendPref == "vulkan") {
+        useVulkan = true;
+        LogDiagnostic("Backend preference: Vulkan (forced)");
+    } else if (backendPref == "opengl") {
+        useVulkan = false;
+        LogDiagnostic("Backend preference: OpenGL (forced)");
+    } else {
+        // Auto-detect: use Vulkan if HDR is enabled and Vulkan is available
+#if FALLOUT_HAVE_VULKAN
+        if (IsHDREnabled()) {
+            useVulkan = true;
+            LogDiagnostic("Backend preference: Vulkan (auto - HDR detected)");
+        } else {
+            LogDiagnostic("Backend preference: OpenGL (auto - no HDR)");
+        }
+#else
+        LogDiagnostic("Backend preference: OpenGL (Vulkan not available)");
+#endif
+    }
+    
+#if FALLOUT_HAVE_VULKAN
+    if (useVulkan) {
+        LogDiagnostic("Initializing Vulkan context for HDR rendering...");
+        auto vulkanCtx = std::make_unique<VulkanContext>(mWindow, 
+                                                          mWindowDimensions.width, 
+                                                          mWindowDimensions.height, 
+                                                          true);
+        if (vulkanCtx->Init()) {
+            mContext = std::move(vulkanCtx);
+            mUsingVulkan = true;
+            LogDiagnostic("Vulkan context initialized successfully");
+            return true;
+        } else {
+            LogDiagnostic("Vulkan initialization failed, falling back to OpenGL");
+        }
+    }
+#endif
+    
+    // Fall back to OpenGL
+    LogDiagnostic("Initializing OpenGL context...");
     mContext = std::make_unique<OpenGLContext>(mWindow);
+    mUsingVulkan = false;
     if (!mContext->Init()) {
-        LogDiagnostic("Failed to initialize GpuContext");
+        LogDiagnostic("Failed to initialize OpenGL context");
         return false;
     }
+    LogDiagnostic("OpenGL context initialized successfully");
     return true;
 }
 
@@ -135,6 +192,23 @@ bool RenderPipeline::Reconfigure(int outputWidth, int outputHeight) {
                   mWindowDimensions.width, mWindowDimensions.height, 
                   outputWidth, outputHeight);
     
+    // For Vulkan, just reconfigure the swapchain - don't recreate everything
+    if (mUsingVulkan && mContext) {
+        mWindowDimensions.width = outputWidth;
+        mWindowDimensions.height = outputHeight;
+        
+        // Recalculate render dimensions
+        float aspectRatio = static_cast<float>(mInputDimensions.width) / mInputDimensions.height;
+        int maxScaleWidth = outputWidth / mInputDimensions.width;
+        int maxScaleHeight = outputHeight / mInputDimensions.height;
+        int scale = std::max(1, std::min(maxScaleWidth, maxScaleHeight));
+        mRenderDimensions.width = mInputDimensions.width * scale;
+        mRenderDimensions.height = mInputDimensions.height * scale;
+        LogDiagnostic("[DEBUG] Vulkan Reconfigure: aspectRatio=%.3f, maxScaleWidth=%d, maxScaleHeight=%d, scale=%d, renderDims=%dx%d", aspectRatio, maxScaleWidth, maxScaleHeight, scale, mRenderDimensions.width, mRenderDimensions.height);
+        return mContext->Reconfigure(outputWidth, outputHeight);
+    }
+    
+    // For OpenGL, do full reinit (window context may need recreation)
     Dimensions savedInput = mInputDimensions;
     SDL_Window* savedWindow = mWindow;
 
@@ -151,6 +225,14 @@ void RenderPipeline::SetupPasses() {
 
     RenderSurface inputSurface{nullptr, mInputDimensions.width, mInputDimensions.height, TextureFormat::RGBA8};
     RenderSurface outputSurface{nullptr, mRenderDimensions.width, mRenderDimensions.height, TextureFormat::RGBA16F};
+
+    // Vulkan backend currently uses direct presentation without shader passes
+    // Anime4K shaders need to be ported to Vulkan GLSL format first
+    if (mUsingVulkan) {
+        LogDiagnostic("[SCALER] Vulkan mode: Using direct presentation (HDR passthrough)");
+        // No shader passes needed - VulkanContext::Present() handles scaling
+        return;
+    }
 
     if (mConfiguredMode == RenderMode::ANIME4K) {
         SetupAnime4KPipeline(inputSurface, outputSurface);
@@ -269,13 +351,60 @@ bool RenderPipeline::SetIndexedInput(SDL_Surface* surface) {
     uint32_t paletteRGBA[256];
     ConvertPaletteToRGBA(surface, paletteRGBA);
     
-    mPhantomDisplay->SetData(static_cast<const unsigned char*>(surface->pixels), paletteRGBA);
+    // Debug: Check if palette has non-black colors
+    int nonBlackPalette = 0;
+    for (int i = 0; i < 256; i++) {
+        if ((paletteRGBA[i] & 0x00FFFFFF) != 0) {
+            nonBlackPalette++;
+        }
+    }
+    
+    // Debug: Check if indexed pixels have non-zero indices
+    uint8_t* pixels = static_cast<uint8_t*>(surface->pixels);
+    int nonZeroIndex = 0;
+    const int sampleSize = std::min(1024, surface->w * surface->h);
+    for (int i = 0; i < sampleSize; i++) {
+        if (pixels[i] != 0) {
+            nonZeroIndex++;
+        }
+    }
+    
+    // Detailed logging every 60 frames
+    static int frameCount = 0;
+    frameCount++;
+    if (frameCount % 60 == 0) {
+        LogDiagnostic("[STAGE1-RAW] SetIndexedInput: dims=%dx%d, pitch=%d", surface->w, surface->h, surface->pitch);
+        LogDiagnostic("[STAGE1-RAW] First 4 indexed pixels: %d, %d, %d, %d", 
+                      pixels[0], pixels[1], pixels[2], pixels[3]);
+        
+        // Sample from middle of screen
+        int midY = surface->h / 2;
+        int midX = surface->w / 2;
+        int midIdx = midY * surface->pitch + midX;
+        LogDiagnostic("[STAGE1-RAW] Mid-screen[%d,%d] index=%d", midX, midY, pixels[midIdx]);
+        
+        // Show what palette colors these indices map to
+        LogDiagnostic("[STAGE1-RAW] Palette lookup: idx[0]=%d -> 0x%08X, idx[mid]=%d -> 0x%08X",
+                      pixels[0], paletteRGBA[pixels[0]], 
+                      pixels[midIdx], paletteRGBA[pixels[midIdx]]);
+        
+        LogDiagnostic("[STAGE1-RAW] Stats: paletteNonBlack=%d/256, nonZeroIndices=%d/%d", 
+                      nonBlackPalette, nonZeroIndex, sampleSize);
+    }
+    
+    mPhantomDisplay->SetData(pixels, paletteRGBA, surface->pitch);
     return true;
 }
 
 void RenderPipeline::ConvertPaletteToRGBA(SDL_Surface* surface, uint32_t* paletteRGBA) {
     if (surface->format && surface->format->palette) {
         SDL_Color* colors = surface->format->palette->colors;
+        LogDiagnostic("[DEBUG] ConvertPalette: ncolors=%d, first4colors=[(R%d,G%d,B%d) (R%d,G%d,B%d) (R%d,G%d,B%d) (R%d,G%d,B%d)]", 
+                      surface->format->palette->ncolors,
+                      colors[0].r, colors[0].g, colors[0].b,
+                      colors[1].r, colors[1].g, colors[1].b,
+                      colors[2].r, colors[2].g, colors[2].b,
+                      colors[3].r, colors[3].g, colors[3].b);
         for (int i = 0; i < 256; ++i) {
             // Pack as 0xAABBGGRR for OpenGL (Little Endian)
             paletteRGBA[i] = 0xFF000000 | 
@@ -315,7 +444,25 @@ void RenderPipeline::Dispatch() {
         LogDiagnostic("Failed to upload input");
     }
 
-    // Execute filter chain
+    // For Vulkan HDR mode, skip shader passes and present input directly
+    // (Vulkan shaders will be implemented separately)
+    if (mUsingVulkan) {
+        LogDiagnostic("[DEBUG] Vulkan Dispatch: Presenting input surface %p (%dx%d) to window %dx%d", mBuffers.GetInputSurface().handle, mInputDimensions.width, mInputDimensions.height, mWindowDimensions.width, mWindowDimensions.height);
+        
+        // For Vulkan mode, save CPU-side screenshot since GPU readback isn't implemented
+        if (capture) {
+            SaveCpuScreenshot("00_VulkanInput");
+            mScreenshotManager.EndCapture();
+        }
+        
+        mContext->Present(mBuffers.GetInputSurface().handle, 
+                          mInputDimensions.width, mInputDimensions.height,
+                          mWindowDimensions.width, mWindowDimensions.height);
+        mContext->EndFrame();
+        return;
+    }
+
+    // Execute filter chain (OpenGL path)
     RenderSurface currentInput = mBuffers.GetInputSurface();
     
     if (capture) {
@@ -448,6 +595,76 @@ void RenderPipeline::LogDiagnostic(const char* format, ...) {
     va_end(args);
     
     Logger::Log(isError ? LogLevel::Error : LogLevel::Info, "%s", buffer);
+}
+
+void RenderPipeline::SaveCpuScreenshot(const std::string& stageName) {
+    if (!mPhantomDisplay) {
+        Logger::Log(LogLevel::Error, "SaveCpuScreenshot: No phantom display");
+        return;
+    }
+    
+    const void* pixels = mPhantomDisplay->GetPixels();
+    int width = mPhantomDisplay->GetWidth();
+    int height = mPhantomDisplay->GetHeight();
+    
+    if (!pixels || width <= 0 || height <= 0) {
+        Logger::Log(LogLevel::Error, "SaveCpuScreenshot: Invalid pixel data");
+        return;
+    }
+    
+    // Create screenshots directory
+    std::filesystem::path dir("screenshots");
+    if (!std::filesystem::exists(dir)) {
+        std::filesystem::create_directory(dir);
+    }
+    
+    // Generate filename with timestamp
+    auto t = std::time(nullptr);
+    auto tm = *std::localtime(&t);
+    std::stringstream ss;
+    ss << "screenshots/shot_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << "_" << stageName << ".bmp";
+    std::string filename = ss.str();
+    
+    // Create SDL surface - our data is in ABGR format (0xAABBGGRR in little-endian memory)
+    // which appears as RGBA when read byte-by-byte
+    int stride = width * 4;
+    
+    #if SDL_BYTEORDER == SDL_BIG_ENDIAN
+        uint32_t rmask = 0xff000000;
+        uint32_t gmask = 0x00ff0000;
+        uint32_t bmask = 0x0000ff00;
+        uint32_t amask = 0x000000ff;
+    #else
+        uint32_t rmask = 0x000000ff;
+        uint32_t gmask = 0x0000ff00;
+        uint32_t bmask = 0x00ff0000;
+        uint32_t amask = 0xff000000;
+    #endif
+    
+    SDL_Surface* surf = SDL_CreateRGBSurfaceFrom(
+        const_cast<void*>(pixels), width, height, 32, stride,
+        rmask, gmask, bmask, amask
+    );
+    
+    if (surf) {
+        if (SDL_SaveBMP(surf, filename.c_str()) != 0) {
+            Logger::Log(LogLevel::Error, "SaveCpuScreenshot: Failed to save %s: %s", filename.c_str(), SDL_GetError());
+        } else {
+            Logger::Log(LogLevel::Info, "SaveCpuScreenshot: Saved %s (%dx%d)", filename.c_str(), width, height);
+            
+            // Also log some pixel samples from the saved data
+            const uint32_t* px = static_cast<const uint32_t*>(pixels);
+            Logger::Log(LogLevel::Info, "SaveCpuScreenshot: first4pixels=0x%08X 0x%08X 0x%08X 0x%08X",
+                        px[0], px[1], px[2], px[3]);
+            
+            // Sample from middle
+            int midIdx = (height / 2) * width + (width / 2);
+            Logger::Log(LogLevel::Info, "SaveCpuScreenshot: midPixel=0x%08X", px[midIdx]);
+        }
+        SDL_FreeSurface(surf);
+    } else {
+        Logger::Log(LogLevel::Error, "SaveCpuScreenshot: Failed to create surface: %s", SDL_GetError());
+    }
 }
 
 } // namespace renderer

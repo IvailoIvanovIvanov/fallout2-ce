@@ -202,6 +202,7 @@ private:
     void ExecuteAnime4KChain(RenderSurface& currentInput, bool capture, int& passIndex);
     void ExecuteScalerPass(const RenderSurface& input, const RenderSurface& output, 
                             bool capture, int passIndex);
+    void SaveCpuScreenshot(const std::string& stageName);  // CPU-side screenshot for Vulkan mode
     
     //-------------------------------------------------------------------------
     // Utility
@@ -249,6 +250,7 @@ private:
     bool mInitialized = false;
     bool mF8Pressed = false;
     bool mVerboseLogging = false;
+    bool mUsingVulkan = false;  ///< True if using Vulkan backend (HDR capable)
 
     //-------------------------------------------------------------------------
     // Configuration
