@@ -1,27 +1,23 @@
 #include "scaler_pass.h"
 #include "logger.h"
+#include "render_types.h"
 #include <string>
 #include <cmath>
 #include <algorithm>
-#include <fstream>
-#include <sstream>
 
 namespace fallout {
 namespace renderer {
 
-struct ScalerConstants {
-    int inputWidth;
-    int inputHeight;
-    int outputWidth;
-    int outputHeight;
-    float offsetX;
-    float offsetY;
-    float scaleX;
-    float scaleY;
-};
+//-----------------------------------------------------------------------------
+// Construction / Destruction
+//-----------------------------------------------------------------------------
 
-ScalerPass::ScalerPass() {}
-ScalerPass::~ScalerPass() {}
+ScalerPass::ScalerPass() = default;
+ScalerPass::~ScalerPass() = default;
+
+//-----------------------------------------------------------------------------
+// Lifecycle
+//-----------------------------------------------------------------------------
 
 bool ScalerPass::Init(GpuContext& context, const RenderSurface& input, const RenderSurface& output) {
     mShader = std::make_unique<Shader>("data/shaders/scaler.glsl");
@@ -36,14 +32,19 @@ void ScalerPass::Shutdown(GpuContext& context) {
     mShader.reset();
 }
 
+//-----------------------------------------------------------------------------
+// Execution
+//-----------------------------------------------------------------------------
+
 void ScalerPass::Execute(GpuContext& context, const RenderSurface& input, const RenderSurface& output) {
     if (!mShader || !mShader->IsValid()) return;
 
-    // Calculate scale and offset to preserve aspect ratio
-    float scaleX = (float)output.width / input.width;
-    float scaleY = (float)output.height / input.height;
+    // Calculate uniform scale to preserve aspect ratio
+    float scaleX = static_cast<float>(output.width) / input.width;
+    float scaleY = static_cast<float>(output.height) / input.height;
     float scale = std::min(scaleX, scaleY);
 
+    // Center the image with letterbox/pillarbox offset
     float offsetX = (output.width - input.width * scale) * 0.5f;
     float offsetY = (output.height - input.height * scale) * 0.5f;
 

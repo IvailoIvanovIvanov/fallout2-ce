@@ -8,44 +8,55 @@ namespace renderer {
 BufferManager::BufferManager() = default;
 
 BufferManager::~BufferManager() {
-    // Shutdown should be called explicitly with context
+    // Note: Shutdown() must be called explicitly with GPU context before destruction
 }
 
-bool BufferManager::Init(GpuContext& context, int inputWidth, int inputHeight, int outputWidth, int outputHeight) {
+bool BufferManager::Init(GpuContext& context, int inputWidth, int inputHeight, 
+                          int outputWidth, int outputHeight) {
     mInputWidth = inputWidth;
     mInputHeight = inputHeight;
     mOutputWidth = outputWidth;
     mOutputHeight = outputHeight;
 
-    TextureDesc inputDesc = { inputWidth, inputHeight, TextureFormat::RGBA8 };
-    // Use RGBA16F for output to support high-precision pipeline
-    TextureDesc outputDesc = { outputWidth, outputHeight, TextureFormat::RGBA16F };
+    TextureDesc inputDesc{inputWidth, inputHeight, TextureFormat::RGBA8};
+    TextureDesc outputDesc{outputWidth, outputHeight, TextureFormat::RGBA16F};
 
-    for (int i = 0; i < 2; ++i) {
-        mFrames[i].inputBuffer = context.CreateTexture(inputDesc);
-        mFrames[i].outputBuffer = context.CreateTexture(outputDesc);
-        mFrames[i].readbackData.resize(outputWidth * outputHeight * 4);
-
-        if (!mFrames[i].inputBuffer || !mFrames[i].outputBuffer) {
-            Logger::Log(LogLevel::Error, "BufferManager: Failed to create textures");
+    for (int i = 0; i < kFrameCount; ++i) {
+        if (!CreateFrameResources(context, mFrames[i], inputDesc, outputDesc)) {
+            Logger::Log(LogLevel::Error, "BufferManager: Failed to create frame resources");
             return false;
         }
     }
+    
     return true;
 }
 
+bool BufferManager::CreateFrameResources(GpuContext& context, FrameResources& frame,
+                                          const TextureDesc& inputDesc, 
+                                          const TextureDesc& outputDesc) {
+    frame.inputBuffer = context.CreateTexture(inputDesc);
+    frame.outputBuffer = context.CreateTexture(outputDesc);
+    frame.readbackData.resize(outputDesc.width * outputDesc.height * 4);
+
+    return frame.inputBuffer != nullptr && frame.outputBuffer != nullptr;
+}
+
 void BufferManager::Shutdown(GpuContext& context) {
-    for (int i = 0; i < 2; ++i) {
-        if (mFrames[i].inputBuffer) {
-            context.DestroyTexture(mFrames[i].inputBuffer);
-            mFrames[i].inputBuffer = nullptr;
-        }
-        if (mFrames[i].outputBuffer) {
-            context.DestroyTexture(mFrames[i].outputBuffer);
-            mFrames[i].outputBuffer = nullptr;
-        }
-        mFrames[i].readbackData.clear();
+    for (int i = 0; i < kFrameCount; ++i) {
+        DestroyFrameResources(context, mFrames[i]);
     }
+}
+
+void BufferManager::DestroyFrameResources(GpuContext& context, FrameResources& frame) {
+    if (frame.inputBuffer) {
+        context.DestroyTexture(frame.inputBuffer);
+        frame.inputBuffer = nullptr;
+    }
+    if (frame.outputBuffer) {
+        context.DestroyTexture(frame.outputBuffer);
+        frame.outputBuffer = nullptr;
+    }
+    frame.readbackData.clear();
 }
 
 void BufferManager::SwapBuffers() {
@@ -53,26 +64,26 @@ void BufferManager::SwapBuffers() {
 }
 
 bool BufferManager::UploadInput(GpuContext& context, const void* data, size_t size) {
-    // Assuming size matches input dimensions
     context.UpdateTexture(mFrames[mCurrentFrameIndex].inputBuffer, data, mInputWidth, mInputHeight);
     return true;
 }
 
 RenderSurface BufferManager::GetInputSurface() const {
-    return { mFrames[mCurrentFrameIndex].inputBuffer, mInputWidth, mInputHeight, TextureFormat::RGBA8 };
+    return {mFrames[mCurrentFrameIndex].inputBuffer, mInputWidth, mInputHeight, TextureFormat::RGBA8};
 }
 
 RenderSurface BufferManager::GetOutputSurface() const {
-    return { mFrames[mCurrentFrameIndex].outputBuffer, mOutputWidth, mOutputHeight, TextureFormat::RGBA16F };
+    return {mFrames[mCurrentFrameIndex].outputBuffer, mOutputWidth, mOutputHeight, TextureFormat::RGBA16F};
 }
 
 const void* BufferManager::ReadbackOutput(GpuContext& context) {
-    // Readback from the PREVIOUS frame (which is now ready)
-    int prevFrameIndex = 1 - mCurrentFrameIndex;
+    const int prevFrameIndex = 1 - mCurrentFrameIndex;
+    FrameResources& prevFrame = mFrames[prevFrameIndex];
     
-    context.ReadbackTexture(mFrames[prevFrameIndex].outputBuffer, mFrames[prevFrameIndex].readbackData.data(), static_cast<int>(mFrames[prevFrameIndex].readbackData.size()));
+    context.ReadbackTexture(prevFrame.outputBuffer, prevFrame.readbackData.data(), 
+                             static_cast<int>(prevFrame.readbackData.size()));
     
-    return mFrames[prevFrameIndex].readbackData.data();
+    return prevFrame.readbackData.data();
 }
 
 } // namespace renderer
