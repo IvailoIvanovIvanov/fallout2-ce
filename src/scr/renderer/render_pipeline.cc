@@ -1,10 +1,7 @@
 #include "render_pipeline.h"
-#include "opengl_context.h"
-#include "vulkan_context.h"
 #include "display_scaler.h"
 #include "logger.h"
 #include "renderer_config.h"
-#include "generic_shader_pass.h"
 
 #if FALLOUT_HAVE_LIBPLACEBO
 #include "placebo_context.h"
@@ -66,18 +63,29 @@ bool RenderPipeline::Init(int inputWidth, int inputHeight,
     LoadConfiguration();
     mVerboseLogging = true;
 
-    if (!InitializeContext()) {
-        return false;
+    // Try libplacebo first (preferred), fallback to simple mode
+#if FALLOUT_HAVE_LIBPLACEBO
+    if (mConfiguredMode == RenderMode::LIBPLACEBO) {
+        if (InitializePlaceboContext()) {
+            mUsingPlacebo = true;
+            mInitialized = true;
+            LogDiagnostic("RenderPipeline initialized with libplacebo backend");
+            return true;
+        }
+        LogDiagnostic("libplacebo initialization failed, falling back to simple mode");
+    }
+#endif
+
+    // Simple mode fallback
+    if (InitializeSimpleContext()) {
+        mUsingPlacebo = false;
+        mInitialized = true;
+        LogDiagnostic("RenderPipeline initialized with simple backend");
+        return true;
     }
 
-    if (!InitializeBuffers()) {
-        return false;
-    }
-
-    SetupPasses();
-    mInitialized = true;
-    LogDiagnostic("RenderPipeline initialized successfully");
-    return true;
+    LogDiagnostic("Failed to initialize any rendering backend");
+    return false;
 }
 
 Dimensions RenderPipeline::CalculateRenderDimensions() {
@@ -108,112 +116,46 @@ void RenderPipeline::InitializeDisplays() {
         mWindowDimensions.width, mWindowDimensions.height);
 }
 
-bool RenderPipeline::InitializeContext() {
-    // Check configuration for backend preference
-    auto& config = RendererConfig::GetInstance();
-    std::string backendPref = config.GetString("General", "Backend", "auto");
-    
-    bool useVulkan = false;
-    bool usePlacebo = false;
-    
-    if (backendPref == "libplacebo") {
-        usePlacebo = true;
-        LogDiagnostic("Backend preference: libplacebo (forced)");
-    } else if (backendPref == "vulkan") {
-        useVulkan = true;
-        LogDiagnostic("Backend preference: Vulkan (forced)");
-    } else if (backendPref == "opengl") {
-        useVulkan = false;
-        LogDiagnostic("Backend preference: OpenGL (forced)");
-    } else {
-        // Auto-detect: use Vulkan if HDR is enabled and Vulkan is available
-#if FALLOUT_HAVE_VULKAN
-        if (IsHDREnabled()) {
-            useVulkan = true;
-            LogDiagnostic("Backend preference: Vulkan (auto - HDR detected)");
-        } else {
-            LogDiagnostic("Backend preference: OpenGL (auto - no HDR)");
-        }
-#else
-        LogDiagnostic("Backend preference: OpenGL (Vulkan not available)");
-#endif
-    }
-    
 #if FALLOUT_HAVE_LIBPLACEBO
-    if (usePlacebo) {
-        LogDiagnostic("Initializing libplacebo context with Vulkan backend...");
-        auto placeboCtx = std::make_unique<PlaceboContext>(mWindow, 
-                                                            mWindowDimensions.width, 
-                                                            mWindowDimensions.height);
-        if (placeboCtx->Init()) {
-            // Apply configuration
-            placeboCtx->SetConfig(mPlaceboConfig);
-            mContext = std::move(placeboCtx);
-            mUsingVulkan = true;  // libplacebo uses Vulkan internally
-            mUsingPlacebo = true;
-            LogDiagnostic("libplacebo context initialized successfully");
-            return true;
-        } else {
-            LogDiagnostic("libplacebo initialization failed, falling back to Vulkan");
-            useVulkan = true;  // Try regular Vulkan as fallback
-        }
-    }
-#else
-    if (usePlacebo) {
-        LogDiagnostic("libplacebo not available, falling back to Vulkan");
-        useVulkan = true;
-    }
-#endif
-
-#if FALLOUT_HAVE_VULKAN
-    if (useVulkan) {
-        LogDiagnostic("Initializing Vulkan context for HDR rendering...");
-        auto vulkanCtx = std::make_unique<VulkanContext>(mWindow, 
-                                                          mWindowDimensions.width, 
-                                                          mWindowDimensions.height, 
-                                                          true);
-        if (vulkanCtx->Init()) {
-            mContext = std::move(vulkanCtx);
-            mUsingVulkan = true;
-            LogDiagnostic("Vulkan context initialized successfully");
-            return true;
-        } else {
-            LogDiagnostic("Vulkan initialization failed, falling back to OpenGL");
-        }
-    }
-#endif
+bool RenderPipeline::InitializePlaceboContext() {
+    LogDiagnostic("Initializing libplacebo context with Vulkan backend...");
     
-    // Fall back to OpenGL
-    LogDiagnostic("Initializing OpenGL context...");
-    mContext = std::make_unique<OpenGLContext>(mWindow);
-    mUsingVulkan = false;
-    if (!mContext->Init()) {
-        LogDiagnostic("Failed to initialize OpenGL context");
+    mPlaceboContext = std::make_unique<PlaceboContext>(
+        mWindow, mWindowDimensions.width, mWindowDimensions.height);
+    
+    if (!mPlaceboContext->Init()) {
+        LogDiagnostic("PlaceboContext::Init() failed");
+        mPlaceboContext.reset();
         return false;
     }
-    LogDiagnostic("OpenGL context initialized successfully");
+    
+    // Apply configuration
+    mPlaceboContext->SetConfig(mPlaceboConfig);
+    
+    LogDiagnostic("libplacebo context initialized successfully");
     return true;
 }
+#endif
 
-bool RenderPipeline::InitializeBuffers() {
-    if (!mBuffers.Init(*mContext, 
-                        mInputDimensions.width, mInputDimensions.height,
-                        mRenderDimensions.width, mRenderDimensions.height)) {
-        LogDiagnostic("Failed to initialize BufferManager");
-        return false;
-    }
+bool RenderPipeline::InitializeSimpleContext() {
+    LogDiagnostic("Initializing simple rendering context...");
+    // Simple mode just uses SDL for presentation
+    // PhantomDisplay already handles palette conversion
     return true;
 }
 
 void RenderPipeline::Shutdown() {
-    if (!mContext) return;
+#if FALLOUT_HAVE_LIBPLACEBO
+    if (mPlaceboContext) {
+        mPlaceboContext->Shutdown();
+        mPlaceboContext.reset();
+    }
+#endif
     
-    CleanupPasses();
-    mBuffers.Shutdown(*mContext);
-    mContext->Shutdown();
     mPhantomDisplay.reset();
     mRealDisplay.reset();
     mInitialized = false;
+    mUsingPlacebo = false;
 }
 
 bool RenderPipeline::Reconfigure(int outputWidth, int outputHeight) {
@@ -226,145 +168,17 @@ bool RenderPipeline::Reconfigure(int outputWidth, int outputHeight) {
                   mWindowDimensions.width, mWindowDimensions.height, 
                   outputWidth, outputHeight);
     
-    // For Vulkan, just reconfigure the swapchain - don't recreate everything
-    if (mUsingVulkan && mContext) {
-        mWindowDimensions.width = outputWidth;
-        mWindowDimensions.height = outputHeight;
-        
-        // Recalculate render dimensions
-        float aspectRatio = static_cast<float>(mInputDimensions.width) / mInputDimensions.height;
-        int maxScaleWidth = outputWidth / mInputDimensions.width;
-        int maxScaleHeight = outputHeight / mInputDimensions.height;
-        int scale = std::max(1, std::min(maxScaleWidth, maxScaleHeight));
-        mRenderDimensions.width = mInputDimensions.width * scale;
-        mRenderDimensions.height = mInputDimensions.height * scale;
-        LogDiagnostic("[DEBUG] Vulkan Reconfigure: aspectRatio=%.3f, maxScaleWidth=%d, maxScaleHeight=%d, scale=%d, renderDims=%dx%d", aspectRatio, maxScaleWidth, maxScaleHeight, scale, mRenderDimensions.width, mRenderDimensions.height);
-        return mContext->Reconfigure(outputWidth, outputHeight);
+    mWindowDimensions.width = outputWidth;
+    mWindowDimensions.height = outputHeight;
+    mRenderDimensions = CalculateRenderDimensions();
+
+#if FALLOUT_HAVE_LIBPLACEBO
+    if (mUsingPlacebo && mPlaceboContext) {
+        return mPlaceboContext->Reconfigure(outputWidth, outputHeight);
     }
+#endif
     
-    // For OpenGL, do full reinit (window context may need recreation)
-    Dimensions savedInput = mInputDimensions;
-    SDL_Window* savedWindow = mWindow;
-
-    Shutdown();
-    return Init(savedInput.width, savedInput.height, outputWidth, outputHeight, savedWindow);
-}
-
-//-----------------------------------------------------------------------------
-// Pass Management
-//-----------------------------------------------------------------------------
-
-void RenderPipeline::SetupPasses() {
-    CleanupPasses();
-
-    RenderSurface inputSurface{nullptr, mInputDimensions.width, mInputDimensions.height, TextureFormat::RGBA8};
-    RenderSurface outputSurface{nullptr, mRenderDimensions.width, mRenderDimensions.height, TextureFormat::RGBA16F};
-
-    // Vulkan backend currently uses direct presentation without shader passes
-    // Anime4K shaders need to be ported to Vulkan GLSL format first
-    if (mUsingVulkan) {
-        LogDiagnostic("[SCALER] Vulkan mode: Using direct presentation (HDR passthrough)");
-        // No shader passes needed - VulkanContext::Present() handles scaling
-        return;
-    }
-
-    if (mConfiguredMode == RenderMode::ANIME4K) {
-        SetupAnime4KPipeline(inputSurface, outputSurface);
-    } else {
-        SetupSimplePipeline(inputSurface, outputSurface);
-    }
-}
-
-void RenderPipeline::SetupSimplePipeline(const RenderSurface& inputSurface, 
-                                          const RenderSurface& outputSurface) {
-    LogDiagnostic("[SCALER] Using Default Scaler");
-    auto scalerPass = std::make_unique<ScalerPass>();
-    if (scalerPass->Init(*mContext, inputSurface, outputSurface)) {
-        mScalerPass = std::move(scalerPass);
-    }
-}
-
-void RenderPipeline::SetupAnime4KPipeline(const RenderSurface& inputSurface, 
-                                           const RenderSurface& outputSurface) {
-    LogDiagnostic("[SCALER] Setting up Anime4K Pipeline");
-    
-    int currentW = mInputDimensions.width;
-    int currentH = mInputDimensions.height;
-    RenderSurface currentInput = inputSurface;
-
-    // Collect enabled steps
-    std::vector<PipelineStepConfig*> steps = {
-        &mAnime4KConfig.prePass,
-        &mAnime4KConfig.clean1,
-        &mAnime4KConfig.clean2,
-        &mAnime4KConfig.scale1,
-        &mAnime4KConfig.optimize,
-        &mAnime4KConfig.scale2,
-        &mAnime4KConfig.polish,
-        &mAnime4KConfig.postPass
-    };
-
-    for (auto* step : steps) {
-        if (!step->enabled || step->shaderPath.empty()) continue;
-
-        std::string path = "data/shaders/" + step->shaderPath;
-        int nextW = currentW * step->scaleFactor;
-        int nextH = currentH * step->scaleFactor;
-        
-        TextureDesc desc{nextW, nextH, TextureFormat::RGBA16F};
-        void* handle = mContext->CreateTexture(desc);
-        if (!handle) {
-            LogDiagnostic("Failed to create buffer for %s", step->shaderPath.c_str());
-            continue;
-        }
-        
-        RenderSurface output{handle, nextW, nextH, TextureFormat::RGBA16F};
-        mScalingBuffers.push_back(output);
-
-        auto pass = std::make_unique<GenericShaderPass>(path);
-        if (pass->Init(*mContext, currentInput, output)) {
-            mAnime4KPasses.push_back(std::move(pass));
-            LogDiagnostic("Added Anime4K Pass: %s (%dx%d -> %dx%d)", 
-                          step->shaderPath.c_str(), currentW, currentH, nextW, nextH);
-            currentW = nextW;
-            currentH = nextH;
-            currentInput = output;
-        } else {
-            LogDiagnostic("Failed to init Anime4K Pass: %s", step->shaderPath.c_str());
-        }
-    }
-
-    // Final scaler to target dimensions
-    LogDiagnostic("[SCALER] Final scale from %dx%d to %dx%d", 
-                  currentW, currentH, mRenderDimensions.width, mRenderDimensions.height);
-    
-    auto scalerPass = std::make_unique<ScalerPass>();
-    if (scalerPass->Init(*mContext, currentInput, outputSurface)) {
-        mScalerPass = std::move(scalerPass);
-    } else {
-        LogDiagnostic("Failed to init final ScalerPass");
-    }
-}
-
-void RenderPipeline::CleanupPasses() {
-    if (!mContext) return;
-    
-    for (auto& pass : mAnime4KPasses) {
-        pass->Shutdown(*mContext);
-    }
-    mAnime4KPasses.clear();
-
-    if (mScalerPass) {
-        mScalerPass->Shutdown(*mContext);
-        mScalerPass.reset();
-    }
-
-    for (auto& buf : mScalingBuffers) {
-        if (buf.handle) {
-            mContext->DestroyTexture(buf.handle);
-        }
-    }
-    mScalingBuffers.clear();
+    return true;
 }
 
 //-----------------------------------------------------------------------------
@@ -385,47 +199,7 @@ bool RenderPipeline::SetIndexedInput(SDL_Surface* surface) {
     uint32_t paletteRGBA[256];
     ConvertPaletteToRGBA(surface, paletteRGBA);
     
-    // Debug: Check if palette has non-black colors
-    int nonBlackPalette = 0;
-    for (int i = 0; i < 256; i++) {
-        if ((paletteRGBA[i] & 0x00FFFFFF) != 0) {
-            nonBlackPalette++;
-        }
-    }
-    
-    // Debug: Check if indexed pixels have non-zero indices
     uint8_t* pixels = static_cast<uint8_t*>(surface->pixels);
-    int nonZeroIndex = 0;
-    const int sampleSize = std::min(1024, surface->w * surface->h);
-    for (int i = 0; i < sampleSize; i++) {
-        if (pixels[i] != 0) {
-            nonZeroIndex++;
-        }
-    }
-    
-    // Detailed logging every 60 frames
-    static int frameCount = 0;
-    frameCount++;
-    if (frameCount % 60 == 0) {
-        LogDiagnostic("[STAGE1-RAW] SetIndexedInput: dims=%dx%d, pitch=%d", surface->w, surface->h, surface->pitch);
-        LogDiagnostic("[STAGE1-RAW] First 4 indexed pixels: %d, %d, %d, %d", 
-                      pixels[0], pixels[1], pixels[2], pixels[3]);
-        
-        // Sample from middle of screen
-        int midY = surface->h / 2;
-        int midX = surface->w / 2;
-        int midIdx = midY * surface->pitch + midX;
-        LogDiagnostic("[STAGE1-RAW] Mid-screen[%d,%d] index=%d", midX, midY, pixels[midIdx]);
-        
-        // Show what palette colors these indices map to
-        LogDiagnostic("[STAGE1-RAW] Palette lookup: idx[0]=%d -> 0x%08X, idx[mid]=%d -> 0x%08X",
-                      pixels[0], paletteRGBA[pixels[0]], 
-                      pixels[midIdx], paletteRGBA[pixels[midIdx]]);
-        
-        LogDiagnostic("[STAGE1-RAW] Stats: paletteNonBlack=%d/256, nonZeroIndices=%d/%d", 
-                      nonBlackPalette, nonZeroIndex, sampleSize);
-    }
-    
     mPhantomDisplay->SetData(pixels, paletteRGBA, surface->pitch);
     return true;
 }
@@ -433,14 +207,8 @@ bool RenderPipeline::SetIndexedInput(SDL_Surface* surface) {
 void RenderPipeline::ConvertPaletteToRGBA(SDL_Surface* surface, uint32_t* paletteRGBA) {
     if (surface->format && surface->format->palette) {
         SDL_Color* colors = surface->format->palette->colors;
-        LogDiagnostic("[DEBUG] ConvertPalette: ncolors=%d, first4colors=[(R%d,G%d,B%d) (R%d,G%d,B%d) (R%d,G%d,B%d) (R%d,G%d,B%d)]", 
-                      surface->format->palette->ncolors,
-                      colors[0].r, colors[0].g, colors[0].b,
-                      colors[1].r, colors[1].g, colors[1].b,
-                      colors[2].r, colors[2].g, colors[2].b,
-                      colors[3].r, colors[3].g, colors[3].b);
         for (int i = 0; i < 256; ++i) {
-            // Pack as 0xAABBGGRR for OpenGL (Little Endian)
+            // Pack as 0xAABBGGRR for OpenGL/Vulkan (Little Endian)
             paletteRGBA[i] = 0xFF000000 | 
                              (colors[i].b << 16) | 
                              (colors[i].g << 8) | 
@@ -466,59 +234,47 @@ void RenderPipeline::Dispatch() {
     if (!mInitialized || !mPhantomDisplay) return;
 
     HandleScreenshotRequest();
-    bool capture = mScreenshotManager.IsCaptureRequested();
 
-    // Swap to next frame's buffers
-    mBuffers.SwapBuffers();
-    mContext->BeginFrame();
-
-    // Upload input data
-    if (!mBuffers.UploadInput(*mContext, mPhantomDisplay->GetPixels(), 
-                               mPhantomDisplay->GetWidth() * mPhantomDisplay->GetHeight() * 4)) {
-        LogDiagnostic("Failed to upload input");
-    }
-
-    // For Vulkan HDR mode, skip shader passes and present input directly
-    // (Vulkan shaders will be implemented separately)
-    if (mUsingVulkan) {
-        LogDiagnostic("[DEBUG] Vulkan Dispatch: Presenting input surface %p (%dx%d) to window %dx%d", mBuffers.GetInputSurface().handle, mInputDimensions.width, mInputDimensions.height, mWindowDimensions.width, mWindowDimensions.height);
-        
-        // For Vulkan mode, save CPU-side screenshot since GPU readback isn't implemented
-        if (capture) {
-            SaveCpuScreenshot("00_VulkanInput");
-            mScreenshotManager.EndCapture();
-        }
-        
-        mContext->Present(mBuffers.GetInputSurface().handle, 
-                          mInputDimensions.width, mInputDimensions.height,
-                          mWindowDimensions.width, mWindowDimensions.height);
-        mContext->EndFrame();
+#if FALLOUT_HAVE_LIBPLACEBO
+    if (mUsingPlacebo) {
+        DispatchPlacebo();
         return;
     }
+#endif
 
-    // Execute filter chain (OpenGL path)
-    RenderSurface currentInput = mBuffers.GetInputSurface();
+    DispatchSimple();
+}
+
+#if FALLOUT_HAVE_LIBPLACEBO
+void RenderPipeline::DispatchPlacebo() {
+    if (!mPlaceboContext) return;
+    
+    bool capture = mScreenshotManager.IsCaptureRequested();
+    
+    // Render frame through libplacebo
+    // PlaceboContext handles all upscaling, effects, and presentation
+    mPlaceboContext->RenderFromPixels(
+        static_cast<const uint32_t*>(mPhantomDisplay->GetPixels()),
+        mPhantomDisplay->GetWidth(),
+        mPhantomDisplay->GetHeight()
+    );
     
     if (capture) {
-        mScreenshotManager.Capture(*mContext, currentInput, "00_Input");
-    }
-
-    int passIndex = 1;
-    RenderSurface scalerOutput = mBuffers.GetOutputSurface();
-    
-    ExecuteAnime4KChain(currentInput, capture, passIndex);
-    ExecuteScalerPass(currentInput, scalerOutput, capture, passIndex);
-
-    if (capture) {
+        SaveCpuScreenshot("libplacebo_input");
         mScreenshotManager.EndCapture();
     }
+}
+#endif
 
-    mContext->EndFrame();
-
-    // Present to screen
-    mContext->Present(mBuffers.GetOutputSurface().handle, 
-                      mRenderDimensions.width, mRenderDimensions.height,
-                      mWindowDimensions.width, mWindowDimensions.height);
+void RenderPipeline::DispatchSimple() {
+    // Simple mode: just present via SDL
+    // The game's native SDL rendering handles this
+    bool capture = mScreenshotManager.IsCaptureRequested();
+    
+    if (capture) {
+        SaveCpuScreenshot("simple_input");
+        mScreenshotManager.EndCapture();
+    }
 }
 
 void RenderPipeline::HandleScreenshotRequest() {
@@ -533,46 +289,9 @@ void RenderPipeline::HandleScreenshotRequest() {
     }
 }
 
-void RenderPipeline::ExecuteAnime4KChain(RenderSurface& currentInput, bool capture, int& passIndex) {
-    if (mAnime4KPasses.empty()) return;
-
-    RenderSurface chainInput = currentInput;
-    for (size_t i = 0; i < mAnime4KPasses.size(); ++i) {
-        RenderSurface chainOutput = mScalingBuffers[i];
-        mAnime4KPasses[i]->Execute(*mContext, chainInput, chainOutput);
-        
-        if (capture) {
-            char buf[64];
-            snprintf(buf, sizeof(buf), "%02d_Anime4K_%d_%s", 
-                     passIndex++, static_cast<int>(i), 
-                     mAnime4KPasses[i]->GetName().c_str());
-            mScreenshotManager.Capture(*mContext, chainOutput, buf);
-        }
-        
-        chainInput = chainOutput;
-    }
-    currentInput = chainInput;
-}
-
-void RenderPipeline::ExecuteScalerPass(const RenderSurface& input, const RenderSurface& output,
-                                        bool capture, int passIndex) {
-    if (!mScalerPass) {
-        LogDiagnostic("Dispatch: No Scaler Pass!");
-        return;
-    }
-
-    mScalerPass->Execute(*mContext, input, output);
-    
-    if (capture) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "%02d_%s", passIndex, mScalerPass->GetName().c_str());
-        mScreenshotManager.Capture(*mContext, output, buf);
-    }
-}
-
 const void* RenderPipeline::GetOutput() {
     if (!mInitialized) return nullptr;
-    return mBuffers.ReadbackOutput(*mContext);
+    return mPhantomDisplay ? mPhantomDisplay->GetPixels() : nullptr;
 }
 
 //-----------------------------------------------------------------------------
@@ -583,51 +302,35 @@ void RenderPipeline::LoadConfiguration() {
     auto& config = RendererConfig::GetInstance();
     
     if (!config.Load("renderer_config.ini")) {
-        LogDiagnostic("Failed to load renderer_config.ini from current directory");
+        LogDiagnostic("Failed to load renderer_config.ini, using defaults");
     } else {
         LogDiagnostic("Loaded renderer_config.ini");
     }
 
-    int mode = config.GetInt("General", "Mode", 0);
+    // Parse render mode (0=simple, 1=libplacebo)
+    int mode = config.GetInt("General", "Mode", 1);
     switch (mode) {
-        case 1:
-            mConfiguredMode = RenderMode::ANIME4K;
-            break;
-#if FALLOUT_HAVE_LIBPLACEBO
-        case 2:
-            mConfiguredMode = RenderMode::LIBPLACEBO;
-            break;
-#endif
-        default:
+        case 0:
             mConfiguredMode = RenderMode::SIMPLE;
             break;
+        case 1:
+        default:
+#if FALLOUT_HAVE_LIBPLACEBO
+            mConfiguredMode = RenderMode::LIBPLACEBO;
+#else
+            mConfiguredMode = RenderMode::SIMPLE;
+            LogDiagnostic("libplacebo not available, using simple mode");
+#endif
+            break;
     }
+    
     mVerboseLogging = config.GetBool("General", "VerboseLogging", false);
 
-    // Load Anime4K configuration
-    auto loadStep = [&](PipelineStepConfig& step, const std::string& enableKey, 
-                        const std::string& shaderKey, const std::string& defaultShader,
-                        bool defaultEnabled, int scale) {
-        step.enabled = config.GetBool("Anime4K", enableKey, defaultEnabled);
-        step.shaderPath = config.GetString("Anime4K", shaderKey, defaultShader);
-        step.scaleFactor = scale;
-    };
-
-    loadStep(mAnime4KConfig.prePass, "EnablePrePass", "PrePassShader", "", false, 1);
-    loadStep(mAnime4KConfig.clean1, "EnableClean1", "Clean1Shader", "Anime4K_Clamp_Highlights.glsl", true, 1);
-    loadStep(mAnime4KConfig.clean2, "EnableClean2", "Clean2Shader", "Anime4K_Restore_CNN_M.glsl", true, 1);
-    loadStep(mAnime4KConfig.scale1, "EnableScale1", "Scale1Shader", "Anime4K_Upscale_CNN_x2_L.glsl", true, 2);
-    loadStep(mAnime4KConfig.optimize, "EnableOptimize", "OptimizeShader", "Anime4K_AutoDownscalePre_x4.glsl", true, 1);
-    loadStep(mAnime4KConfig.scale2, "EnableScale2", "Scale2Shader", "Anime4K_Upscale_CNN_x2_M.glsl", true, 2);
-    loadStep(mAnime4KConfig.polish, "EnablePolish", "PolishShader", "Anime4K_Thin_HQ.glsl", true, 1);
-    loadStep(mAnime4KConfig.postPass, "EnablePostPass", "PostPassShader", "", false, 1);
-
 #if FALLOUT_HAVE_LIBPLACEBO
-    // Load libplacebo configuration
     LoadPlaceboConfiguration(config);
 #endif
 
-    LogDiagnostic("Configuration Loaded: Mode=%d (Configured=%d)", mode, static_cast<int>(mConfiguredMode));
+    LogDiagnostic("Configuration Loaded: Mode=%d", static_cast<int>(mConfiguredMode));
 }
 
 #if FALLOUT_HAVE_LIBPLACEBO
@@ -673,9 +376,9 @@ void RenderPipeline::LoadPlaceboConfiguration(RendererConfig& config) {
     mPlaceboConfig.skipAntiAliasing = config.GetBool("libplacebo", "SkipAntiAliasing", false);
     mPlaceboConfig.preserveMixingCache = config.GetBool("libplacebo", "PreserveMixingCache", true);
     
-    // Custom shaders
+    // Custom shaders (Anime4K via libplacebo's shader system)
     mPlaceboConfig.enableCustomShaders = config.GetBool("libplacebo", "EnableCustomShaders", false);
-    mPlaceboConfig.shaderDirectory = config.GetString("libplacebo", "ShaderDirectory", "data/shaders/anime4k");
+    mPlaceboConfig.shaderDirectory = config.GetString("libplacebo", "ShaderDirectory", "data/shaders");
     
     // Anime4K preset
     std::string preset = config.GetString("libplacebo", "Anime4KPreset", "none");
@@ -790,8 +493,6 @@ void RenderPipeline::SaveCpuScreenshot(const std::string& stageName) {
     ss << "screenshots/shot_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << "_" << stageName << ".bmp";
     std::string filename = ss.str();
     
-    // Create SDL surface - our data is in ABGR format (0xAABBGGRR in little-endian memory)
-    // which appears as RGBA when read byte-by-byte
     int stride = width * 4;
     
     #if SDL_BYTEORDER == SDL_BIG_ENDIAN
@@ -812,23 +513,12 @@ void RenderPipeline::SaveCpuScreenshot(const std::string& stageName) {
     );
     
     if (surf) {
-        if (SDL_SaveBMP(surf, filename.c_str()) != 0) {
-            Logger::Log(LogLevel::Error, "SaveCpuScreenshot: Failed to save %s: %s", filename.c_str(), SDL_GetError());
+        if (SDL_SaveBMP(surf, filename.c_str()) == 0) {
+            Logger::Log(LogLevel::Info, "Screenshot saved: %s (%dx%d)", filename.c_str(), width, height);
         } else {
-            Logger::Log(LogLevel::Info, "SaveCpuScreenshot: Saved %s (%dx%d)", filename.c_str(), width, height);
-            
-            // Also log some pixel samples from the saved data
-            const uint32_t* px = static_cast<const uint32_t*>(pixels);
-            Logger::Log(LogLevel::Info, "SaveCpuScreenshot: first4pixels=0x%08X 0x%08X 0x%08X 0x%08X",
-                        px[0], px[1], px[2], px[3]);
-            
-            // Sample from middle
-            int midIdx = (height / 2) * width + (width / 2);
-            Logger::Log(LogLevel::Info, "SaveCpuScreenshot: midPixel=0x%08X", px[midIdx]);
+            Logger::Log(LogLevel::Error, "Failed to save screenshot: %s", SDL_GetError());
         }
         SDL_FreeSurface(surf);
-    } else {
-        Logger::Log(LogLevel::Error, "SaveCpuScreenshot: Failed to create surface: %s", SDL_GetError());
     }
 }
 

@@ -7,14 +7,15 @@
  *
  * The RenderPipeline orchestrates the complete rendering process:
  * 1. Receives indexed or RGBA frame data from the game
- * 2. Uploads to GPU and executes shader passes
- * 3. Presents the upscaled result to the screen
+ * 2. Processes through libplacebo for upscaling/effects
+ * 3. Presents the result to the screen
+ *
+ * Two modes are supported:
+ * - SIMPLE: Basic SDL rendering (fallback)
+ * - LIBPLACEBO: High-quality upscaling via libplacebo + Vulkan
  */
 
 #include "gpu_context.h"
-#include "buffer_manager.h"
-#include "shader_pass.h"
-#include "scaler_pass.h"
 #include "phantom_display.h"
 #include "real_display.h"
 #include "render_types.h"
@@ -29,7 +30,6 @@
 #include <vector>
 #include <memory>
 #include <string>
-#include <unordered_map>
 
 struct SDL_Window;
 struct SDL_Surface;
@@ -43,39 +43,11 @@ namespace renderer {
 
 /**
  * @enum RenderMode
- * @brief Rendering quality modes.
+ * @brief Rendering backend modes.
  */
 enum class RenderMode {
-    SIMPLE = 0,     ///< Basic bilinear scaling only
-    ANIME4K = 1,    ///< Multi-pass Anime4K upscaling pipeline
-#if FALLOUT_HAVE_LIBPLACEBO
-    LIBPLACEBO = 2  ///< libplacebo high-quality upscaling and effects
-#endif
-};
-
-/**
- * @struct PipelineStepConfig
- * @brief Configuration for a single shader pass in the pipeline.
- */
-struct PipelineStepConfig {
-    bool enabled = false;
-    std::string shaderPath;
-    int scaleFactor = 1;
-};
-
-/**
- * @struct Anime4KConfig
- * @brief Complete configuration for the Anime4K pipeline.
- */
-struct Anime4KConfig {
-    PipelineStepConfig prePass;
-    PipelineStepConfig clean1;
-    PipelineStepConfig clean2;
-    PipelineStepConfig scale1;
-    PipelineStepConfig optimize;
-    PipelineStepConfig scale2;
-    PipelineStepConfig polish;
-    PipelineStepConfig postPass;
+    SIMPLE = 0,     ///< Basic SDL/software scaling (fallback)
+    LIBPLACEBO = 1  ///< libplacebo with Vulkan (high quality)
 };
 
 //-----------------------------------------------------------------------------
@@ -84,13 +56,12 @@ struct Anime4KConfig {
 
 /**
  * @class RenderPipeline
- * @brief Orchestrates GPU-accelerated rendering with optional upscaling.
+ * @brief Orchestrates GPU-accelerated rendering with libplacebo.
  *
  * Manages the complete rendering workflow including:
- * - GPU context and resource initialization
- * - Double-buffered frame management
- * - Multi-pass shader execution
- * - Screen presentation
+ * - libplacebo/Vulkan context initialization
+ * - Frame upload and processing
+ * - Screen presentation with upscaling and effects
  *
  * Usage:
  * @code
@@ -183,36 +154,34 @@ public:
      */
     void SetMode(RenderMode mode) { mConfiguredMode = mode; }
 
+    /**
+     * @brief Gets the current rendering mode.
+     */
+    RenderMode GetMode() const { return mConfiguredMode; }
+
+    /**
+     * @brief Returns true if using libplacebo backend.
+     */
+    bool IsUsingPlacebo() const { return mUsingPlacebo; }
+
 private:
     //-------------------------------------------------------------------------
     // Initialization Helpers
     //-------------------------------------------------------------------------
     
-    bool InitializeContext();
-    bool InitializeBuffers();
+    bool InitializePlaceboContext();
+    bool InitializeSimpleContext();
     void InitializeDisplays();
     Dimensions CalculateRenderDimensions();
-    
-    //-------------------------------------------------------------------------
-    // Pass Management
-    //-------------------------------------------------------------------------
-    
-    void SetupPasses();
-    void SetupAnime4KPipeline(const RenderSurface& inputSurface, 
-                               const RenderSurface& outputSurface);
-    void SetupSimplePipeline(const RenderSurface& inputSurface, 
-                              const RenderSurface& outputSurface);
-    void CleanupPasses();
     
     //-------------------------------------------------------------------------
     // Frame Execution Helpers
     //-------------------------------------------------------------------------
     
+    void DispatchPlacebo();
+    void DispatchSimple();
     void HandleScreenshotRequest();
-    void ExecuteAnime4KChain(RenderSurface& currentInput, bool capture, int& passIndex);
-    void ExecuteScalerPass(const RenderSurface& input, const RenderSurface& output, 
-                            bool capture, int passIndex);
-    void SaveCpuScreenshot(const std::string& stageName);  // CPU-side screenshot for Vulkan mode
+    void SaveCpuScreenshot(const std::string& stageName);
     
     //-------------------------------------------------------------------------
     // Utility
@@ -222,7 +191,6 @@ private:
     void ConvertPaletteToRGBA(SDL_Surface* surface, uint32_t* paletteRGBA);
     
 #if FALLOUT_HAVE_LIBPLACEBO
-    // libplacebo configuration helpers
     void LoadPlaceboConfiguration(RendererConfig& config);
     PlaceboUpscaler ParseUpscaler(const std::string& name);
     PlaceboColorMode ParseColorMode(const std::string& name);
@@ -233,8 +201,9 @@ private:
     // Core Components
     //-------------------------------------------------------------------------
     
-    std::unique_ptr<GpuContext> mContext;
-    BufferManager mBuffers;
+#if FALLOUT_HAVE_LIBPLACEBO
+    std::unique_ptr<PlaceboContext> mPlaceboContext;
+#endif
     ScreenshotManager mScreenshotManager;
     SDL_Window* mWindow = nullptr;
     
@@ -244,14 +213,6 @@ private:
     
     std::unique_ptr<PhantomDisplay> mPhantomDisplay;
     std::unique_ptr<RealDisplay> mRealDisplay;
-
-    //-------------------------------------------------------------------------
-    // Shader Passes
-    //-------------------------------------------------------------------------
-    
-    std::unique_ptr<ShaderPass> mScalerPass;
-    std::vector<std::unique_ptr<ShaderPass>> mAnime4KPasses;
-    std::vector<RenderSurface> mScalingBuffers;
 
     //-------------------------------------------------------------------------
     // Dimensions
@@ -268,19 +229,15 @@ private:
     bool mInitialized = false;
     bool mF8Pressed = false;
     bool mVerboseLogging = false;
-    bool mUsingVulkan = false;  ///< True if using Vulkan backend (HDR capable)
-#if FALLOUT_HAVE_LIBPLACEBO
-    bool mUsingPlacebo = false; ///< True if using libplacebo backend
-#endif
+    bool mUsingPlacebo = false;
 
     //-------------------------------------------------------------------------
     // Configuration
     //-------------------------------------------------------------------------
     
-    RenderMode mConfiguredMode = RenderMode::ANIME4K;
-    Anime4KConfig mAnime4KConfig;
+    RenderMode mConfiguredMode = RenderMode::LIBPLACEBO;
 #if FALLOUT_HAVE_LIBPLACEBO
-    PlaceboConfig mPlaceboConfig;  ///< libplacebo configuration
+    PlaceboConfig mPlaceboConfig;
 #endif
 };
 
