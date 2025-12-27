@@ -6,6 +6,10 @@
 #include "renderer_config.h"
 #include "generic_shader_pass.h"
 
+#if FALLOUT_HAVE_LIBPLACEBO
+#include "placebo_context.h"
+#endif
+
 #ifdef _WIN32
 #include "hdr_utils.h"
 #endif
@@ -110,8 +114,12 @@ bool RenderPipeline::InitializeContext() {
     std::string backendPref = config.GetString("General", "Backend", "auto");
     
     bool useVulkan = false;
+    bool usePlacebo = false;
     
-    if (backendPref == "vulkan") {
+    if (backendPref == "libplacebo") {
+        usePlacebo = true;
+        LogDiagnostic("Backend preference: libplacebo (forced)");
+    } else if (backendPref == "vulkan") {
         useVulkan = true;
         LogDiagnostic("Backend preference: Vulkan (forced)");
     } else if (backendPref == "opengl") {
@@ -131,6 +139,32 @@ bool RenderPipeline::InitializeContext() {
 #endif
     }
     
+#if FALLOUT_HAVE_LIBPLACEBO
+    if (usePlacebo) {
+        LogDiagnostic("Initializing libplacebo context with Vulkan backend...");
+        auto placeboCtx = std::make_unique<PlaceboContext>(mWindow, 
+                                                            mWindowDimensions.width, 
+                                                            mWindowDimensions.height);
+        if (placeboCtx->Init()) {
+            // Apply configuration
+            placeboCtx->SetConfig(mPlaceboConfig);
+            mContext = std::move(placeboCtx);
+            mUsingVulkan = true;  // libplacebo uses Vulkan internally
+            mUsingPlacebo = true;
+            LogDiagnostic("libplacebo context initialized successfully");
+            return true;
+        } else {
+            LogDiagnostic("libplacebo initialization failed, falling back to Vulkan");
+            useVulkan = true;  // Try regular Vulkan as fallback
+        }
+    }
+#else
+    if (usePlacebo) {
+        LogDiagnostic("libplacebo not available, falling back to Vulkan");
+        useVulkan = true;
+    }
+#endif
+
 #if FALLOUT_HAVE_VULKAN
     if (useVulkan) {
         LogDiagnostic("Initializing Vulkan context for HDR rendering...");
@@ -555,7 +589,19 @@ void RenderPipeline::LoadConfiguration() {
     }
 
     int mode = config.GetInt("General", "Mode", 0);
-    mConfiguredMode = (mode == 1) ? RenderMode::ANIME4K : RenderMode::SIMPLE;
+    switch (mode) {
+        case 1:
+            mConfiguredMode = RenderMode::ANIME4K;
+            break;
+#if FALLOUT_HAVE_LIBPLACEBO
+        case 2:
+            mConfiguredMode = RenderMode::LIBPLACEBO;
+            break;
+#endif
+        default:
+            mConfiguredMode = RenderMode::SIMPLE;
+            break;
+    }
     mVerboseLogging = config.GetBool("General", "VerboseLogging", false);
 
     // Load Anime4K configuration
@@ -576,8 +622,127 @@ void RenderPipeline::LoadConfiguration() {
     loadStep(mAnime4KConfig.polish, "EnablePolish", "PolishShader", "Anime4K_Thin_HQ.glsl", true, 1);
     loadStep(mAnime4KConfig.postPass, "EnablePostPass", "PostPassShader", "", false, 1);
 
+#if FALLOUT_HAVE_LIBPLACEBO
+    // Load libplacebo configuration
+    LoadPlaceboConfiguration(config);
+#endif
+
     LogDiagnostic("Configuration Loaded: Mode=%d (Configured=%d)", mode, static_cast<int>(mConfiguredMode));
 }
+
+#if FALLOUT_HAVE_LIBPLACEBO
+void RenderPipeline::LoadPlaceboConfiguration(RendererConfig& config) {
+    // Upscaler/Downscaler
+    std::string upscaler = config.GetString("libplacebo", "Upscaler", "ewa_lanczos");
+    mPlaceboConfig.upscaler = ParseUpscaler(upscaler);
+    
+    std::string downscaler = config.GetString("libplacebo", "Downscaler", "lanczos");
+    mPlaceboConfig.downscaler = ParseUpscaler(downscaler);
+    
+    mPlaceboConfig.antiringing = config.GetFloat("libplacebo", "Antiringing", 0.5f);
+    mPlaceboConfig.sigmoidize = config.GetBool("libplacebo", "Sigmoidize", true);
+    
+    // Debanding
+    mPlaceboConfig.debanding = config.GetBool("libplacebo", "Debanding", true);
+    mPlaceboConfig.debandIterations = config.GetInt("libplacebo", "DebandIterations", 1);
+    mPlaceboConfig.debandThreshold = config.GetFloat("libplacebo", "DebandThreshold", 3.0f);
+    mPlaceboConfig.debandRadius = config.GetFloat("libplacebo", "DebandRadius", 16.0f);
+    mPlaceboConfig.debandGrain = config.GetFloat("libplacebo", "DebandGrain", 4.0f);
+    
+    // Color adjustments
+    mPlaceboConfig.brightness = config.GetFloat("libplacebo", "Brightness", 0.0f);
+    mPlaceboConfig.contrast = config.GetFloat("libplacebo", "Contrast", 1.1f);
+    mPlaceboConfig.saturation = config.GetFloat("libplacebo", "Saturation", 1.2f);
+    mPlaceboConfig.gamma = config.GetFloat("libplacebo", "Gamma", 1.0f);
+    mPlaceboConfig.hue = config.GetFloat("libplacebo", "Hue", 0.0f);
+    
+    // Color mode
+    std::string colorMode = config.GetString("libplacebo", "ColorMode", "sdr_enhance");
+    mPlaceboConfig.colorMode = ParseColorMode(colorMode);
+    
+    // HDR settings
+    mPlaceboConfig.peakNits = config.GetFloat("libplacebo", "PeakNits", 1000.0f);
+    mPlaceboConfig.paperWhiteNits = config.GetFloat("libplacebo", "PaperWhiteNits", 203.0f);
+    mPlaceboConfig.hdrPassthrough = config.GetBool("libplacebo", "HDRPassthrough", false);
+    
+    // Dithering
+    mPlaceboConfig.dithering = config.GetBool("libplacebo", "Dithering", true);
+    mPlaceboConfig.ditherDepth = config.GetInt("libplacebo", "DitherDepth", 8);
+    
+    // Performance
+    mPlaceboConfig.skipAntiAliasing = config.GetBool("libplacebo", "SkipAntiAliasing", false);
+    mPlaceboConfig.preserveMixingCache = config.GetBool("libplacebo", "PreserveMixingCache", true);
+    
+    // Custom shaders
+    mPlaceboConfig.enableCustomShaders = config.GetBool("libplacebo", "EnableCustomShaders", false);
+    mPlaceboConfig.shaderDirectory = config.GetString("libplacebo", "ShaderDirectory", "data/shaders/anime4k");
+    
+    // Anime4K preset
+    std::string preset = config.GetString("libplacebo", "Anime4KPreset", "none");
+    mPlaceboConfig.anime4kPreset = ParseAnime4KPreset(preset);
+    
+    // Custom shader paths (semicolon-separated)
+    std::string customShaders = config.GetString("libplacebo", "CustomShaders", "");
+    if (!customShaders.empty()) {
+        std::stringstream ss(customShaders);
+        std::string path;
+        while (std::getline(ss, path, ';')) {
+            if (!path.empty()) {
+                mPlaceboConfig.customShaderPaths.push_back(path);
+            }
+        }
+    }
+    
+    LogDiagnostic("[libplacebo] Config: upscaler=%s, debanding=%s, customShaders=%s, preset=%s",
+                  upscaler.c_str(),
+                  mPlaceboConfig.debanding ? "on" : "off",
+                  mPlaceboConfig.enableCustomShaders ? "on" : "off",
+                  preset.c_str());
+}
+
+PlaceboUpscaler RenderPipeline::ParseUpscaler(const std::string& name) {
+    static const std::unordered_map<std::string, PlaceboUpscaler> map = {
+        {"bilinear", PlaceboUpscaler::BILINEAR},
+        {"bicubic", PlaceboUpscaler::BICUBIC},
+        {"hermite", PlaceboUpscaler::HERMITE},
+        {"lanczos", PlaceboUpscaler::LANCZOS},
+        {"ewa_lanczos", PlaceboUpscaler::EWA_LANCZOS},
+        {"ewa_lanczossharp", PlaceboUpscaler::EWA_LANCZOSSHARP},
+        {"ewa_lanczos4sharpest", PlaceboUpscaler::EWA_LANCZOS4SHARPEST},
+        {"spline16", PlaceboUpscaler::SPLINE16},
+        {"spline36", PlaceboUpscaler::SPLINE36},
+        {"spline64", PlaceboUpscaler::SPLINE64},
+        {"mitchell", PlaceboUpscaler::MITCHELL},
+        {"catmull_rom", PlaceboUpscaler::CATMULL_ROM},
+        {"robidoux", PlaceboUpscaler::ROBIDOUX},
+        {"robidouxsharp", PlaceboUpscaler::ROBIDOUXSHARP},
+        {"gaussian", PlaceboUpscaler::GAUSSIAN},
+        {"oversample", PlaceboUpscaler::OVERSAMPLE}
+    };
+    
+    auto it = map.find(name);
+    return (it != map.end()) ? it->second : PlaceboUpscaler::EWA_LANCZOS;
+}
+
+PlaceboColorMode RenderPipeline::ParseColorMode(const std::string& name) {
+    if (name == "passthrough") return PlaceboColorMode::COLOR_PASSTHROUGH;
+    if (name == "sdr_enhance") return PlaceboColorMode::SDR_ENHANCE;
+    if (name == "hdr10") return PlaceboColorMode::HDR10;
+    if (name == "hdr10_tonemap") return PlaceboColorMode::HDR10_TONEMAP;
+    return PlaceboColorMode::SDR_ENHANCE;
+}
+
+Anime4KPreset RenderPipeline::ParseAnime4KPreset(const std::string& name) {
+    if (name == "mode_a") return Anime4KPreset::MODE_A;
+    if (name == "mode_b") return Anime4KPreset::MODE_B;
+    if (name == "mode_c") return Anime4KPreset::MODE_C;
+    if (name == "mode_a_hq") return Anime4KPreset::MODE_A_HQ;
+    if (name == "mode_b_hq") return Anime4KPreset::MODE_B_HQ;
+    if (name == "mode_c_hq") return Anime4KPreset::MODE_C_HQ;
+    if (name == "custom") return Anime4KPreset::CUSTOM;
+    return Anime4KPreset::NONE;
+}
+#endif // FALLOUT_HAVE_LIBPLACEBO
 
 //-----------------------------------------------------------------------------
 // Utility

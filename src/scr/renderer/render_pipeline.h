@@ -19,10 +19,17 @@
 #include "real_display.h"
 #include "render_types.h"
 #include "screenshot_manager.h"
+#include "renderer_config.h"
+
+#if FALLOUT_HAVE_LIBPLACEBO
+#include "placebo_context.h"
+#include "placebo_filter_chain.h"
+#endif
 
 #include <vector>
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 struct SDL_Window;
 struct SDL_Surface;
@@ -39,8 +46,11 @@ namespace renderer {
  * @brief Rendering quality modes.
  */
 enum class RenderMode {
-    SIMPLE = 0,   ///< Basic bilinear scaling only
-    ANIME4K = 1   ///< Multi-pass Anime4K upscaling pipeline
+    SIMPLE = 0,     ///< Basic bilinear scaling only
+    ANIME4K = 1,    ///< Multi-pass Anime4K upscaling pipeline
+#if FALLOUT_HAVE_LIBPLACEBO
+    LIBPLACEBO = 2  ///< libplacebo high-quality upscaling and effects
+#endif
 };
 
 /**
@@ -210,6 +220,14 @@ private:
     
     void LogDiagnostic(const char* format, ...);
     void ConvertPaletteToRGBA(SDL_Surface* surface, uint32_t* paletteRGBA);
+    
+#if FALLOUT_HAVE_LIBPLACEBO
+    // libplacebo configuration helpers
+    void LoadPlaceboConfiguration(RendererConfig& config);
+    PlaceboUpscaler ParseUpscaler(const std::string& name);
+    PlaceboColorMode ParseColorMode(const std::string& name);
+    Anime4KPreset ParseAnime4KPreset(const std::string& name);
+#endif
 
     //-------------------------------------------------------------------------
     // Core Components
@@ -251,6 +269,9 @@ private:
     bool mF8Pressed = false;
     bool mVerboseLogging = false;
     bool mUsingVulkan = false;  ///< True if using Vulkan backend (HDR capable)
+#if FALLOUT_HAVE_LIBPLACEBO
+    bool mUsingPlacebo = false; ///< True if using libplacebo backend
+#endif
 
     //-------------------------------------------------------------------------
     // Configuration
@@ -258,6 +279,9 @@ private:
     
     RenderMode mConfiguredMode = RenderMode::ANIME4K;
     Anime4KConfig mAnime4KConfig;
+#if FALLOUT_HAVE_LIBPLACEBO
+    PlaceboConfig mPlaceboConfig;  ///< libplacebo configuration
+#endif
 };
 
 } // namespace renderer
