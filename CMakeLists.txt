@@ -219,6 +219,24 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/string_parsers.h"
     "src/svga.cc"
     "src/svga.h"
+    "src/scr/renderer/display_scaler.cc"
+    "src/scr/renderer/display_scaler.h"
+    "src/scr/renderer/gpu_context.h"
+    "src/scr/renderer/logger.cc"
+    "src/scr/renderer/logger.h"
+    "src/scr/renderer/phantom_display.h"
+    "src/scr/renderer/real_display.h"
+    "src/scr/renderer/renderer_config.cc"
+    "src/scr/renderer/renderer_config.h"
+    "src/scr/renderer/render_pipeline.cc"
+    "src/scr/renderer/render_pipeline.h"
+    "src/scr/renderer/render_types.h"
+    "src/scr/renderer/placebo_context.cc"
+    "src/scr/renderer/placebo_context.h"
+    "src/scr/renderer/placebo_filter_chain.cc"
+    "src/scr/renderer/placebo_filter_chain.h"
+    "src/scr/renderer/screenshot_manager.cc"
+    "src/scr/renderer/screenshot_manager.h"
     "src/text_font.cc"
     "src/text_font.h"
     "src/text_object.cc"
@@ -304,6 +322,7 @@ endif()
 if(WIN32)
     target_link_libraries(${EXECUTABLE_NAME}
         winmm
+        dxgi
     )
 endif()
 
@@ -375,6 +394,129 @@ target_include_directories(${EXECUTABLE_NAME} PRIVATE ${ZLIB_INCLUDE_DIRS})
 target_link_libraries(${EXECUTABLE_NAME} ${SDL2_LIBRARIES})
 target_include_directories(${EXECUTABLE_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
 
+find_package(OpenGL REQUIRED)
+target_link_libraries(${EXECUTABLE_NAME} OpenGL::GL)
+
+# Vulkan support for HDR rendering
+find_package(Vulkan QUIET)
+if(Vulkan_FOUND)
+    message(STATUS "Vulkan found: ${Vulkan_LIBRARY}")
+    target_compile_definitions(${EXECUTABLE_NAME} PRIVATE FALLOUT_HAVE_VULKAN=1)
+    target_link_libraries(${EXECUTABLE_NAME} Vulkan::Vulkan)
+    target_include_directories(${EXECUTABLE_NAME} PRIVATE ${Vulkan_INCLUDE_DIRS})
+    
+    # Link shaderc for GLSL to SPIR-V compilation
+    # Shaderc is included in the Vulkan SDK
+    if(WIN32)
+        # Get Vulkan SDK path from environment or use the found path
+        if(DEFINED ENV{VULKAN_SDK})
+            set(VULKAN_SDK_PATH "$ENV{VULKAN_SDK}")
+        else()
+            get_filename_component(VULKAN_SDK_PATH "${Vulkan_LIBRARY}" DIRECTORY)
+            get_filename_component(VULKAN_SDK_PATH "${VULKAN_SDK_PATH}" DIRECTORY)
+        endif()
+        
+        set(SHADERC_LIB_DEBUG "${VULKAN_SDK_PATH}/Lib/shaderc_combinedd.lib")
+        set(SHADERC_LIB_RELEASE "${VULKAN_SDK_PATH}/Lib/shaderc_combined.lib")
+        
+        if(EXISTS "${SHADERC_LIB_RELEASE}")
+            target_link_libraries(${EXECUTABLE_NAME} 
+                $<$<CONFIG:Debug>:${SHADERC_LIB_DEBUG}>
+                $<$<CONFIG:Release>:${SHADERC_LIB_RELEASE}>
+                $<$<CONFIG:RelWithDebInfo>:${SHADERC_LIB_RELEASE}>
+                $<$<CONFIG:MinSizeRel>:${SHADERC_LIB_RELEASE}>
+            )
+            target_compile_definitions(${EXECUTABLE_NAME} PRIVATE FALLOUT_HAVE_SHADERC=1)
+            message(STATUS "Shaderc found: ${SHADERC_LIB_RELEASE}")
+        else()
+            message(WARNING "Shaderc not found in Vulkan SDK - runtime shader compilation disabled")
+            target_compile_definitions(${EXECUTABLE_NAME} PRIVATE FALLOUT_HAVE_SHADERC=0)
+        endif()
+    endif()
+else()
+    message(WARNING "Vulkan not found - HDR rendering will be limited")
+    target_compile_definitions(${EXECUTABLE_NAME} PRIVATE FALLOUT_HAVE_VULKAN=0)
+    target_compile_definitions(${EXECUTABLE_NAME} PRIVATE FALLOUT_HAVE_SHADERC=0)
+endif()
+
+# libplacebo for advanced upscaling and color management
+option(FALLOUT_USE_LIBPLACEBO "Use libplacebo for upscaling and HDR effects" ON)
+
+if(FALLOUT_USE_LIBPLACEBO AND Vulkan_FOUND)
+    # Try finding libplacebo via vcpkg or pkg-config
+    find_package(libplacebo CONFIG QUIET)
+    
+    if(libplacebo_FOUND)
+        message(STATUS "libplacebo found via CMake config")
+        target_compile_definitions(${EXECUTABLE_NAME} PRIVATE FALLOUT_HAVE_LIBPLACEBO=1)
+        target_link_libraries(${EXECUTABLE_NAME} libplacebo::libplacebo)
+    else()
+        # Try pkg-config
+        find_package(PkgConfig QUIET)
+        if(PKG_CONFIG_FOUND)
+            pkg_check_modules(LIBPLACEBO QUIET libplacebo)
+            if(LIBPLACEBO_FOUND)
+                message(STATUS "libplacebo found via pkg-config: ${LIBPLACEBO_VERSION}")
+                target_compile_definitions(${EXECUTABLE_NAME} PRIVATE FALLOUT_HAVE_LIBPLACEBO=1)
+                target_link_libraries(${EXECUTABLE_NAME} ${LIBPLACEBO_LIBRARIES})
+                target_include_directories(${EXECUTABLE_NAME} PRIVATE ${LIBPLACEBO_INCLUDE_DIRS})
+                target_link_directories(${EXECUTABLE_NAME} PRIVATE ${LIBPLACEBO_LIBRARY_DIRS})
+            endif()
+        endif()
+        
+        # Try manual path (for pre-built packages)
+        if(NOT LIBPLACEBO_FOUND)
+            if(DEFINED ENV{LIBPLACEBO_ROOT})
+                set(LIBPLACEBO_ROOT "$ENV{LIBPLACEBO_ROOT}")
+            elseif(EXISTS "${CMAKE_SOURCE_DIR}/third_party/libplacebo")
+                set(LIBPLACEBO_ROOT "${CMAKE_SOURCE_DIR}/third_party/libplacebo")
+            endif()
+            
+            if(LIBPLACEBO_ROOT AND EXISTS "${LIBPLACEBO_ROOT}/include/libplacebo/config.h")
+                message(STATUS "libplacebo found at: ${LIBPLACEBO_ROOT}")
+                target_compile_definitions(${EXECUTABLE_NAME} PRIVATE FALLOUT_HAVE_LIBPLACEBO=1)
+                target_include_directories(${EXECUTABLE_NAME} PRIVATE "${LIBPLACEBO_ROOT}/include")
+                
+                if(WIN32)
+                    if(EXISTS "${LIBPLACEBO_ROOT}/lib/libplacebo.dll.a")
+                        # MinGW build
+                        target_link_libraries(${EXECUTABLE_NAME} "${LIBPLACEBO_ROOT}/lib/libplacebo.dll.a")
+                    elseif(EXISTS "${LIBPLACEBO_ROOT}/lib/placebo.lib")
+                        # MSVC build
+                        target_link_libraries(${EXECUTABLE_NAME} "${LIBPLACEBO_ROOT}/lib/placebo.lib")
+                    endif()
+                    
+                    # Copy DLLs to output
+                    add_custom_command(TARGET ${EXECUTABLE_NAME} POST_BUILD
+                        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                        "${LIBPLACEBO_ROOT}/bin"
+                        "$<TARGET_FILE_DIR:${EXECUTABLE_NAME}>"
+                        COMMENT "Copying libplacebo binaries..."
+                    )
+                else()
+                    target_link_libraries(${EXECUTABLE_NAME} "${LIBPLACEBO_ROOT}/lib/libplacebo.so")
+                endif()
+                
+                set(LIBPLACEBO_FOUND TRUE)
+            endif()
+        endif()
+        
+        if(NOT LIBPLACEBO_FOUND)
+            message(STATUS "libplacebo not found - advanced upscaling disabled")
+            message(STATUS "  Install via: vcpkg install libplacebo[vulkan,shaderc,lcms]")
+            message(STATUS "  Or set LIBPLACEBO_ROOT environment variable")
+            target_compile_definitions(${EXECUTABLE_NAME} PRIVATE FALLOUT_HAVE_LIBPLACEBO=0)
+        endif()
+    endif()
+else()
+    if(NOT Vulkan_FOUND)
+        message(STATUS "libplacebo requires Vulkan - disabled")
+    else()
+        message(STATUS "libplacebo disabled by user")
+    endif()
+    target_compile_definitions(${EXECUTABLE_NAME} PRIVATE FALLOUT_HAVE_LIBPLACEBO=0)
+endif()
+
 if(APPLE)
     if(IOS)
         install(TARGETS ${EXECUTABLE_NAME} DESTINATION "Payload")
@@ -393,3 +535,11 @@ if(APPLE)
 
     include(CPack)
 endif()
+
+# Copy shaders to build directory
+add_custom_command(TARGET ${EXECUTABLE_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_SOURCE_DIR}/data/shaders"
+    "$<TARGET_FILE_DIR:${EXECUTABLE_NAME}>/data/shaders"
+    COMMENT "Copying shaders to output directory..."
+)

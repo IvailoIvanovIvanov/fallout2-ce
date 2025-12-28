@@ -48,6 +48,8 @@ namespace fallout {
 #define GAME_CONFIG_BRIGHTNESS_KEY "brightness"
 #define GAME_CONFIG_MOUSE_SENSITIVITY_KEY "mouse_sensitivity"
 #define GAME_CONFIG_INITIALIZE_KEY "initialize"
+
+
 #define GAME_CONFIG_DEVICE_KEY "device"
 #define GAME_CONFIG_PORT_KEY "port"
 #define GAME_CONFIG_IRQ_KEY "irq"

@@ -1,9 +1,14 @@
 #include "dinput.h"
 
+#include "svga.h"
+#include "scr/renderer/display_scaler.h"
+
 namespace fallout {
 
 static int gMouseWheelDeltaX = 0;
 static int gMouseWheelDeltaY = 0;
+static double gMouseAccX = 0.0;
+static double gMouseAccY = 0.0;
 
 // 0x4E0400
 bool directInputInit()
@@ -53,7 +58,28 @@ bool mouseDeviceGetData(MouseData* mouseState)
     // update mouse position manually.
     SDL_PumpEvents();
 
-    Uint32 buttons = SDL_GetRelativeMouseState(&(mouseState->x), &(mouseState->y));
+    int relX, relY;
+    Uint32 buttons = SDL_GetRelativeMouseState(&relX, &relY);
+
+    if (gUsePhantomDisplay) {
+        double scale = displayScalerGetInverseScale();
+        
+        // Accumulate scaled movement
+        gMouseAccX += relX * scale;
+        gMouseAccY += relY * scale;
+
+        // Extract integer part
+        mouseState->x = (int)gMouseAccX;
+        mouseState->y = (int)gMouseAccY;
+
+        // Keep fractional part
+        gMouseAccX -= mouseState->x;
+        gMouseAccY -= mouseState->y;
+    } else {
+        mouseState->x = relX;
+        mouseState->y = relY;
+    }
+
     mouseState->buttons[0] = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
     mouseState->buttons[1] = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
     mouseState->wheelX = gMouseWheelDeltaX;
