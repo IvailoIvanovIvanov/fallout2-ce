@@ -2,6 +2,9 @@
 
 #include <SDL.h>
 
+#include <algorithm>
+#include <string.h>
+
 #include "audio_engine.h"
 #include "color.h"
 #include "delay.h"
@@ -14,6 +17,7 @@
 #include "text_font.h"
 #include "touch.h"
 #include "win32.h"
+#include "window_manager.h"
 
 namespace fallout {
 
@@ -85,6 +89,9 @@ static int gInputEventQueueReadIndex;
 
 // 0x6AC774
 static unsigned char* gScreenshotBuffer;
+
+static int gScreenshotWidth;
+static int gScreenshotHeight;
 
 // 0x6AC77C
 static int gInputEventQueueWriteIndex;
@@ -213,6 +220,7 @@ void enqueueInputEvent(int a1)
         takeScreenshot();
         return;
     }
+
 
     if (gInputEventQueueWriteIndex == gInputEventQueueReadIndex) {
         return;
@@ -343,10 +351,46 @@ void tickersDisable()
 // 0x4C8F4C
 void takeScreenshot()
 {
-    int width = _scr_size.right - _scr_size.left + 1;
-    int height = _scr_size.bottom - _scr_size.top + 1;
-    gScreenshotBuffer = (unsigned char*)internal_malloc(width * height);
+    gScreenshotWidth = screenGetWidth();
+    gScreenshotHeight = screenGetHeight();
+
+    if (gScreenshotWidth <= 0 || gScreenshotHeight <= 0) {
+        gScreenshotWidth = 0;
+        gScreenshotHeight = 0;
+        return;
+    }
+
+    if (isTrueColorRendererActive()) {
+        unsigned char* screenBuffer = windowGetScreenBuffer();
+        int screenPitch = windowGetScreenPitch();
+        if (screenBuffer == nullptr || screenPitch == 0) {
+            return;
+        }
+
+        gScreenshotBuffer = (unsigned char*)internal_malloc(gScreenshotWidth * gScreenshotHeight);
+        if (gScreenshotBuffer == nullptr) {
+            gScreenshotWidth = 0;
+            gScreenshotHeight = 0;
+            return;
+        }
+
+        for (int row = 0; row < gScreenshotHeight; row++) {
+            memcpy(gScreenshotBuffer + row * gScreenshotWidth, screenBuffer + row * screenPitch, gScreenshotWidth);
+        }
+
+        unsigned char* palette = _getSystemPalette();
+        gScreenshotHandler(gScreenshotWidth, gScreenshotHeight, gScreenshotBuffer, palette);
+        internal_free(gScreenshotBuffer);
+        gScreenshotBuffer = nullptr;
+        gScreenshotWidth = 0;
+        gScreenshotHeight = 0;
+        return;
+    }
+
+    gScreenshotBuffer = (unsigned char*)internal_malloc(gScreenshotWidth * gScreenshotHeight);
     if (gScreenshotBuffer == nullptr) {
+        gScreenshotWidth = 0;
+        gScreenshotHeight = 0;
         return;
     }
 
@@ -359,22 +403,36 @@ void takeScreenshot()
     WindowDrawingProc2* v1 = _mouse_blit_trans;
     _mouse_blit_trans = nullptr;
 
-    windowRefreshAll(&_scr_size);
+    Rect refreshRect;
+    refreshRect.left = 0;
+    refreshRect.top = 0;
+    refreshRect.right = std::max(0, gScreenshotWidth - 1);
+    refreshRect.bottom = std::max(0, gScreenshotHeight - 1);
+    windowRefreshAll(&refreshRect);
 
     _mouse_blit_trans = v1;
     _mouse_blit = v2;
     _scr_blit = v0;
 
     unsigned char* palette = _getSystemPalette();
-    gScreenshotHandler(width, height, gScreenshotBuffer, palette);
+    gScreenshotHandler(gScreenshotWidth, gScreenshotHeight, gScreenshotBuffer, palette);
     internal_free(gScreenshotBuffer);
+    gScreenshotBuffer = nullptr;
+    gScreenshotWidth = 0;
+    gScreenshotHeight = 0;
 }
 
 // 0x4C8FF0
 static void screenshotBlitter(unsigned char* src, int srcPitch, int a3, int srcX, int srcY, int width, int height, int destX, int destY)
 {
-    int destWidth = _scr_size.right - _scr_size.left + 1;
-    blitBufferToBuffer(src + srcPitch * srcY + srcX, width, height, srcPitch, gScreenshotBuffer + destWidth * destY + destX, destWidth);
+    int destWidth = gScreenshotWidth;
+    if (destWidth <= 0) {
+        destWidth = screenGetWidth();
+    }
+
+    if (gScreenshotBuffer != nullptr && destWidth > 0) {
+        blitBufferToBuffer(src + srcPitch * srcY + srcX, width, height, srcPitch, gScreenshotBuffer + destWidth * destY + destX, destWidth);
+    }
 }
 
 // 0x4C9048
@@ -914,8 +972,10 @@ void _GNW95_process_message()
         case SDL_MOUSEMOTION:
         case SDL_MOUSEBUTTONDOWN:
         case SDL_MOUSEBUTTONUP:
+            mouseDeviceHandleEvent(&e);
+            break;
         case SDL_MOUSEWHEEL:
-            handleMouseEvent(&e);
+            mouseDeviceAccumulateWheelDelta(e.wheel.x, e.wheel.y);
             break;
         case SDL_FINGERDOWN:
             touch_handle_start(&(e.tfinger));

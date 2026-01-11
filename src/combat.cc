@@ -3120,6 +3120,10 @@ static void combatAttemptEnd()
 // 0x4227DC
 void _combat_turn_run()
 {
+    // Phase 7c: Enable deferred presentation during combat animation loops
+    bool wasDeferred = windowIsDeferredPresentationEnabled();
+    windowSetDeferredPresentation(true);
+
     while (_combat_turn_running > 0) {
         sharedFpsLimiter.mark();
 
@@ -3128,12 +3132,18 @@ void _combat_turn_run()
         renderPresent();
         sharedFpsLimiter.throttle();
     }
+
+    windowSetDeferredPresentation(wasDeferred);
 }
 
 // 0x4227F4
 static int _combat_input()
 {
     ScopedGameMode gm(GameMode::kPlayerTurn);
+
+    // Phase 7c: Enable deferred presentation during combat input loop
+    bool wasDeferred = windowIsDeferredPresentationEnabled();
+    windowSetDeferredPresentation(true);
 
     while ((gCombatState & COMBAT_STATE_0x02) != 0) {
         sharedFpsLimiter.mark();
@@ -3182,6 +3192,8 @@ static int _combat_input()
         renderPresent();
         sharedFpsLimiter.throttle();
     }
+
+    windowSetDeferredPresentation(wasDeferred);
 
     int v4 = _game_user_wants_to_quit;
     if (_game_user_wants_to_quit == 1) {
@@ -5595,6 +5607,10 @@ static int calledShotSelectHitLocation(Object* critter, int* hitLocation, int hi
     _gmouse_disable(0);
     gameMouseSetCursor(MOUSE_CURSOR_ARROW);
 
+    // Phase 7c: Enable deferred presentation during called shot selection
+    bool wasDeferred = windowIsDeferredPresentationEnabled();
+    windowSetDeferredPresentation(true);
+
     int eventCode;
     while (true) {
         sharedFpsLimiter.mark();
@@ -5616,6 +5632,8 @@ static int calledShotSelectHitLocation(Object* critter, int* hitLocation, int hi
         renderPresent();
         sharedFpsLimiter.throttle();
     }
+
+    windowSetDeferredPresentation(wasDeferred);
 
     _gmouse_enable();
 

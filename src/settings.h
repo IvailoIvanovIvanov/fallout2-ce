@@ -23,6 +23,17 @@ struct SystemSettings {
     int splash = 0;
     int free_space = 20480;
     int times_run = 0;
+    std::string hd_art_path = "art";
+    bool render_command_trace = false;
+    bool render_command_replay = false;
+    bool render_display_orchestrator = false;
+    bool render_command_direct_blit_fallback = true;
+    bool gpu_overlay = false;  // Phase 7: GPU-resident overlay texture for HD content
+    bool gpu_scaling = true;   // Phase 8.3: Use GPU for upscaling instead of CPU (massive performance boost)
+    bool streaming_textures = true; // Phase 8.5: Use SDL_LockTexture for direct GPU memory writes
+    bool vsync = true;         // Phase 7: Enable VSync for tear-free rendering
+    int target_fps = 60;       // Phase 7: Target frame rate for FPS limiter
+    int hd_lighting_quality = 1; // 0=Original, 1=Enhanced (gamma-correct), 2=Smooth (reduced banding)
 };
 
 struct PreferencesSettings {
@@ -72,6 +83,10 @@ struct DebugSettings {
     bool show_script_messages = false;
     bool show_load_info = false;
     bool output_map_data_info = false;
+    bool input_overlay = false;
+    bool hd_missing_watermark = false;
+    // Focused logging for render path debugging (legacy vs orchestrator)
+    bool render_path_trace = false;
 };
 
 struct MapperSettings {

@@ -2,12 +2,16 @@
 
 #include <math.h>
 #include <string.h>
+#include <cstdint>
 
 #include <algorithm>
 
 #include "db.h"
+#include "lighting_abstraction.h"
 #include "memory.h"
+#include "settings.h"
 #include "svga.h"
+#include "window_manager.h"
 
 namespace fallout {
 
@@ -504,6 +508,11 @@ bool _initColors()
     }
 
     _setSystemPalette(_cmap);
+    windowTrueColorSetPaletteBaseline(_getSystemPalette());
+
+    // Initialize lighting quality based on settings
+    int quality = std::clamp(settings.system.hd_lighting_quality, 0, 2);
+    lightingSetQuality(static_cast<LightingQuality>(quality));
 
     return true;
 }
@@ -514,6 +523,56 @@ void _colorsClose()
     for (int index = 0; index < 256; index++) {
         _freeColorBlendTable(index);
     }
+}
+
+uint32_t paletteIndexToArgb(unsigned char index)
+{
+    unsigned char r6 = _systemCmap[index * 3 + 0];
+    unsigned char g6 = _systemCmap[index * 3 + 1];
+    unsigned char b6 = _systemCmap[index * 3 + 2];
+
+    unsigned char r = static_cast<unsigned char>((r6 << 2) | (r6 >> 4));
+    unsigned char g = static_cast<unsigned char>((g6 << 2) | (g6 >> 4));
+    unsigned char b = static_cast<unsigned char>((b6 << 2) | (b6 >> 4));
+
+    return 0xFF000000 | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | b;
+}
+
+uint8_t colorApplyIntensityToChannel(uint8_t value, int intensityIndex)
+{
+    // Use the lighting abstraction for enhanced lighting
+    return LightingProcessor::getInstance().applyLightingToChannel(value, intensityIndex);
+}
+
+uint32_t colorApplyLightingToArgb(uint32_t color, int intensityIndex)
+{
+    // Use the lighting abstraction for enhanced lighting
+    return LightingProcessor::getInstance().applyLighting(color, intensityIndex);
+}
+
+uint32_t colorPremultiplyArgb(uint32_t color)
+{
+    uint8_t a = static_cast<uint8_t>(color >> 24);
+    uint8_t r = static_cast<uint8_t>((color >> 16) & 0xFF);
+    uint8_t g = static_cast<uint8_t>((color >> 8) & 0xFF);
+    uint8_t b = static_cast<uint8_t>(color & 0xFF);
+
+    if (a == 0) {
+        return 0;
+    }
+
+    auto premultiplyChannel = [a](uint8_t channel) -> uint8_t {
+        return static_cast<uint8_t>((channel * a + 127) / 255);
+    };
+
+    uint8_t pr = premultiplyChannel(r);
+    uint8_t pg = premultiplyChannel(g);
+    uint8_t pb = premultiplyChannel(b);
+
+    return (static_cast<uint32_t>(a) << 24)
+        | (static_cast<uint32_t>(pr) << 16)
+        | (static_cast<uint32_t>(pg) << 8)
+        | static_cast<uint32_t>(pb);
 }
 
 } // namespace fallout

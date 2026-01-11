@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <limits>
 
 #include "animation.h"
 #include "art.h"
@@ -11,6 +12,7 @@
 #include "combat.h"
 #include "critter.h"
 #include "debug.h"
+#include "diagnostics.h"
 #include "draw.h"
 #include "game.h"
 #include "game_mouse.h"
@@ -26,7 +28,9 @@
 #include "svga.h"
 #include "text_object.h"
 #include "tile.h"
+#include "window_manager.h"
 #include "worldmap.h"
+#include "renderer/display_scaler.h"
 
 namespace fallout {
 
@@ -269,6 +273,11 @@ static int gObjectsWindowPitch;
 
 // 0x6610B4
 static int gObjectsWindowWidth;
+
+
+
+
+
 
 // obj_dude
 // 0x6610B8
@@ -4942,8 +4951,7 @@ static void _obj_render_object(Object* object, Rect* rect, int light)
             frameWidth,
             gObjectsWindowBuffer + gObjectsWindowPitch * objectRect.top + objectRect.left,
             gObjectsWindowPitch);
-        artUnlock(cacheEntry);
-        return;
+        goto END_RENDER;
     }
 
     if (type == 2 || type == 3) {
@@ -5055,8 +5063,7 @@ static void _obj_render_object(Object* object, Rect* rect, int light)
                         eggWidth,
                         light);
                     artUnlock(eggHandle);
-                    artUnlock(cacheEntry);
-                    return;
+                    goto END_RENDER;
                 }
 
                 artUnlock(eggHandle);
@@ -5085,6 +5092,7 @@ static void _obj_render_object(Object* object, Rect* rect, int light)
         break;
     }
 
+END_RENDER:
     artUnlock(cacheEntry);
 }
 

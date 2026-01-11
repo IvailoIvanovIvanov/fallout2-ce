@@ -2,6 +2,7 @@
 #define WINDOW_MANAGER_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "geometry.h"
 
@@ -98,12 +99,29 @@ typedef struct Window {
     int tx;
     int ty;
     unsigned char* buffer;
+    uint32_t* trueColorOverlay;
+    unsigned char* trueColorMask;
+    uint32_t* trueColorPhysicalOverlay;
+    unsigned char* trueColorPhysicalMask;
+    int trueColorPhysicalPitch;
+    int trueColorPhysicalWidth;
+    int trueColorPhysicalHeight;
+    Rect trueColorPhysicalViewport;
     Button* buttonListHead;
     Button* hoveredButton;
     Button* clickedButton;
     MenuBar* menuBar;
     WindowBlitProc* blitProc;
 } Window;
+
+typedef struct WindowPhysicalTrueColorBuffer {
+    uint32_t* pixels;
+    unsigned char* mask;
+    int pitch;
+    int width;
+    int height;
+    Rect viewport;
+} WindowPhysicalTrueColorBuffer;
 
 typedef void ButtonCallback(int btn, int keyCode);
 typedef void RadioButtonCallback(int btn);
@@ -170,8 +188,33 @@ void windowRefreshRect(int win, const Rect* rect);
 void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3);
 void windowRefreshAll(Rect* rect);
 void _win_get_mouse_buf(unsigned char* a1);
+unsigned char* windowGetVirtualScreenBuffer();
+int windowGetVirtualScreenPitch();
+bool windowIsVirtualScreenEnabled();
+void windowPresentVirtualScreen();
+void windowVirtualScreenInvalidateAll();
+void windowVirtualScreenInvalidateRect(const Rect& rect);
+uint32_t windowVirtualScreenGetDirtySequence();
+bool windowVirtualScreenGetDirtyRect(Rect* outRect);  // Phase 8.4: Get and reset dirty region
+// Legacy true-color/true-screen helpers kept for compatibility while the
+// virtual adapter is rolled out. They currently return safe defaults.
+void windowTrueColorSetPaletteBaseline(const unsigned char* palette);
+bool isTrueColorRendererActive();
+unsigned char* windowGetScreenBuffer();
+int windowGetScreenPitch();
+bool windowHasTrueColorOverlay(int win);
+uint32_t* windowGetTrueColorOverlay(int win);
+unsigned char* windowGetTrueColorMask(int win);
+bool windowHasPhysicalTrueColorOverlay(int win);
+bool windowGetPhysicalTrueColorOverlay(int win, WindowPhysicalTrueColorBuffer* outBuffer);
+void windowRefreshPhysicalTrueColorBuffers();
+uint32_t windowGetPhysicalTrueColorOverlayRevision();
+void windowClearTrueColorRegion(int win, int left, int top, int width, int height);
+void windowDebugStampMissingHdGlyph(int win, int left, int top, int width, int height);
 Window* windowGetWindow(int win);
 unsigned char* windowGetBuffer(int win);
+bool windowResolveBufferRect(const unsigned char* buffer, int pitch, int width, int height, Rect* outRect, int* outWindowId = nullptr);
+bool windowResolveTrueColorRegion(const unsigned char* buffer, int pitch, int width, int height, Rect* outRect, uint32_t** outOverlay, unsigned char** outMask, int* outOverlayPitch);
 int windowGetAtPoint(int x, int y);
 int windowGetWidth(int win);
 int windowGetHeight(int win);
@@ -197,6 +240,10 @@ int buttonDisable(int btn);
 int _win_set_button_rest_state(int btn, bool checked, int flags);
 int _win_group_radio_buttons(int buttonCount, int* btns);
 int _win_button_press_and_release(int btn);
+
+// Phase 7b: Deferred presentation to reduce flickering during animations
+void windowSetDeferredPresentation(bool enabled);
+bool windowIsDeferredPresentationEnabled();
 
 } // namespace fallout
 

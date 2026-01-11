@@ -3,6 +3,7 @@
 #include <limits.h>
 #include <string.h>
 
+#include "renderer/upscaler.h"
 #include "art.h"
 #include "autorun.h"
 #include "character_selector.h"
@@ -230,6 +231,9 @@ int falloutMain(int argc, char** argv)
 // 0x480CC0
 static bool falloutInit(int argc, char** argv)
 {
+    // Initialize upscaler singleton (creates upscale.log file)
+    upscalerGetImpl();
+    
     if (gameInitWithOptions("FALLOUT II", false, 0, 0, argc, argv) == -1) {
         return false;
     }
@@ -323,6 +327,10 @@ static void mainLoop()
 
     scriptsEnable();
 
+    // Phase 7b: Enable deferred presentation for smooth animation
+    // This prevents multiple partial screen presents per frame
+    windowSetDeferredPresentation(true);
+
     while (_game_user_wants_to_quit == 0) {
         sharedFpsLimiter.mark();
 
@@ -350,6 +358,9 @@ static void mainLoop()
         renderPresent();
         sharedFpsLimiter.throttle();
     }
+
+    // Phase 7b: Disable deferred presentation when leaving main loop
+    windowSetDeferredPresentation(false);
 
     scriptsDisable();
 

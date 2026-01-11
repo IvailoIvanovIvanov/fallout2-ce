@@ -57,6 +57,17 @@ static void settingsFromConfig()
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_HASHING_KEY, settings.system.hashing);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_SPLASH_KEY, settings.system.splash);
     settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_FREE_SPACE_KEY, settings.system.free_space);
+    settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_RENDER_COMMAND_TRACE_KEY, settings.system.render_command_trace);
+    settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_RENDER_COMMAND_REPLAY_KEY, settings.system.render_command_replay);
+    settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_RENDER_DISPLAY_ORCHESTRATOR_KEY, settings.system.render_display_orchestrator);
+    settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_RENDER_COMMAND_DIRECT_BLIT_FALLBACK_KEY, settings.system.render_command_direct_blit_fallback);
+    settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_GPU_OVERLAY_KEY, settings.system.gpu_overlay);
+    settingsRead(GAME_CONFIG_SYSTEM_KEY, "gpu_scaling", settings.system.gpu_scaling);
+    settingsRead(GAME_CONFIG_SYSTEM_KEY, "streaming_textures", settings.system.streaming_textures);
+    settingsRead(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_HD_ART_PATH_KEY, settings.system.hd_art_path);
+    settingsRead(GAME_CONFIG_SYSTEM_KEY, "vsync", settings.system.vsync);
+    settingsRead(GAME_CONFIG_SYSTEM_KEY, "target_fps", settings.system.target_fps);
+    settingsRead(GAME_CONFIG_SYSTEM_KEY, "hd_lighting_quality", settings.system.hd_lighting_quality);
 
     settingsRead(GAME_CONFIG_PREFERENCES_KEY, GAME_CONFIG_GAME_DIFFICULTY_KEY, settings.preferences.game_difficulty);
     settingsRead(GAME_CONFIG_PREFERENCES_KEY, GAME_CONFIG_COMBAT_DIFFICULTY_KEY, settings.preferences.combat_difficulty);
@@ -100,6 +111,9 @@ static void settingsFromConfig()
     settingsRead(GAME_CONFIG_DEBUG_KEY, GAME_CONFIG_SHOW_SCRIPT_MESSAGES_KEY, settings.debug.show_script_messages);
     settingsRead(GAME_CONFIG_DEBUG_KEY, GAME_CONFIG_SHOW_LOAD_INFO_KEY, settings.debug.show_load_info);
     settingsRead(GAME_CONFIG_DEBUG_KEY, GAME_CONFIG_OUTPUT_MAP_DATA_INFO_KEY, settings.debug.output_map_data_info);
+    settingsRead(GAME_CONFIG_DEBUG_KEY, GAME_CONFIG_DEBUG_INPUT_OVERLAY_KEY, settings.debug.input_overlay);
+    settingsRead(GAME_CONFIG_DEBUG_KEY, GAME_CONFIG_HD_MISSING_WATERMARK_KEY, settings.debug.hd_missing_watermark);
+    settingsRead(GAME_CONFIG_DEBUG_KEY, "render_path_trace", settings.debug.render_path_trace);
 
     settingsRead(GAME_CONFIG_MAPPER_KEY, GAME_CONFIG_OVERRIDE_LIBRARIAN_KEY, settings.mapper.override_librarian);
     settingsRead(GAME_CONFIG_MAPPER_KEY, GAME_CONFIG_LIBRARIAN_KEY, settings.mapper.librarian);
@@ -131,6 +145,17 @@ static void settingsToConfig()
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_HASHING_KEY, settings.system.hashing);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_SPLASH_KEY, settings.system.splash);
     settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_FREE_SPACE_KEY, settings.system.free_space);
+    settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_RENDER_COMMAND_TRACE_KEY, settings.system.render_command_trace);
+    settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_RENDER_COMMAND_REPLAY_KEY, settings.system.render_command_replay);
+    settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_RENDER_DISPLAY_ORCHESTRATOR_KEY, settings.system.render_display_orchestrator);
+    settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_RENDER_COMMAND_DIRECT_BLIT_FALLBACK_KEY, settings.system.render_command_direct_blit_fallback);
+    settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_GPU_OVERLAY_KEY, settings.system.gpu_overlay);
+    settingsWrite(GAME_CONFIG_SYSTEM_KEY, "gpu_scaling", settings.system.gpu_scaling);
+    settingsWrite(GAME_CONFIG_SYSTEM_KEY, "streaming_textures", settings.system.streaming_textures);
+    settingsWrite(GAME_CONFIG_SYSTEM_KEY, GAME_CONFIG_HD_ART_PATH_KEY, settings.system.hd_art_path);
+    settingsWrite(GAME_CONFIG_SYSTEM_KEY, "vsync", settings.system.vsync);
+    settingsWrite(GAME_CONFIG_SYSTEM_KEY, "target_fps", settings.system.target_fps);
+    settingsWrite(GAME_CONFIG_SYSTEM_KEY, "hd_lighting_quality", settings.system.hd_lighting_quality);
 
     settingsWrite(GAME_CONFIG_PREFERENCES_KEY, GAME_CONFIG_GAME_DIFFICULTY_KEY, settings.preferences.game_difficulty);
     settingsWrite(GAME_CONFIG_PREFERENCES_KEY, GAME_CONFIG_COMBAT_DIFFICULTY_KEY, settings.preferences.combat_difficulty);
@@ -174,6 +199,9 @@ static void settingsToConfig()
     settingsWrite(GAME_CONFIG_DEBUG_KEY, GAME_CONFIG_SHOW_SCRIPT_MESSAGES_KEY, settings.debug.show_script_messages);
     settingsWrite(GAME_CONFIG_DEBUG_KEY, GAME_CONFIG_SHOW_LOAD_INFO_KEY, settings.debug.show_load_info);
     settingsWrite(GAME_CONFIG_DEBUG_KEY, GAME_CONFIG_OUTPUT_MAP_DATA_INFO_KEY, settings.debug.output_map_data_info);
+    settingsWrite(GAME_CONFIG_DEBUG_KEY, GAME_CONFIG_DEBUG_INPUT_OVERLAY_KEY, settings.debug.input_overlay);
+    settingsWrite(GAME_CONFIG_DEBUG_KEY, GAME_CONFIG_HD_MISSING_WATERMARK_KEY, settings.debug.hd_missing_watermark);
+    settingsWrite(GAME_CONFIG_DEBUG_KEY, "render_path_trace", settings.debug.render_path_trace);
 
     settingsWrite(GAME_CONFIG_MAPPER_KEY, GAME_CONFIG_OVERRIDE_LIBRARIAN_KEY, settings.mapper.override_librarian);
     settingsWrite(GAME_CONFIG_MAPPER_KEY, GAME_CONFIG_LIBRARIAN_KEY, settings.mapper.librarian);

@@ -5,9 +5,11 @@
 #include "color.h"
 #include "cycle.h"
 #include "debug.h"
+#include "renderer/display_scaler.h"
 #include "game_sound.h"
 #include "input.h"
 #include "svga.h"
+#include "window_manager.h"
 
 namespace fallout {
 

@@ -2,6 +2,10 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
 
 #include <vector>
 
@@ -14,6 +18,8 @@
 #include "critter.h"
 #include "cycle.h"
 #include "debug.h"
+#include "diagnostics.h"
+#include "renderer/display_scaler.h"
 #include "draw.h"
 #include "elevator.h"
 #include "game.h"
@@ -67,6 +73,7 @@ static void _square_reset();
 static int _square_load(File* stream, int a2);
 static int mapHeaderWrite(MapHeader* ptr, File* stream);
 static int mapHeaderRead(MapHeader* ptr, File* stream);
+static void mapScrollPhysicalTrueColorOverlay(int screenDx, int screenDy);
 
 // 0x50B058
 static char byte_50B058[] = "";
@@ -204,7 +211,7 @@ int isoInit()
 
     debugPrint(">art_init\t\t");
 
-    if (tileInit(_square, SQUARE_GRID_WIDTH, SQUARE_GRID_HEIGHT, HEX_GRID_WIDTH, HEX_GRID_HEIGHT, gIsoWindowBuffer, screenGetWidth(), screenGetVisibleHeight(), screenGetWidth(), isoWindowRefreshRect) != 0) {
+    if (tileInit(_square, SQUARE_GRID_WIDTH, SQUARE_GRID_HEIGHT, HEX_GRID_WIDTH, HEX_GRID_HEIGHT, gIsoWindowBuffer, gIsoWindow, screenGetWidth(), screenGetVisibleHeight(), screenGetWidth(), isoWindowRefreshRect) != 0) {
         debugPrint("tile_init failed in iso_init\n");
         return -1;
     }
@@ -340,6 +347,7 @@ bool isoDisable()
         return false;
     }
 
+
     _scr_disable_critters();
     tickersRemove(_dude_fidget);
     tickersRemove(_object_animate);
@@ -347,6 +355,10 @@ bool isoDisable()
     textObjectsDisable();
 
     gIsoEnabled = false;
+
+    if (gIsoWindow != -1 && windowHasTrueColorOverlay(gIsoWindow)) {
+        windowClearTrueColorRegion(gIsoWindow, 0, 0, windowGetWidth(gIsoWindow), windowGetHeight(gIsoWindow));
+    }
 
     return true;
 }
@@ -599,10 +611,151 @@ int mapGetCurrentMap()
     return gMapHeader.index;
 }
 
+static int mapRoundScaledDelta(int value, double scale)
+{
+    if (scale <= 0.0) {
+        scale = 1.0;
+    }
+
+    double scaled = static_cast<double>(value) * scale;
+    return scaled >= 0.0 ? static_cast<int>(scaled + 0.5) : static_cast<int>(scaled - 0.5);
+}
+
+static void mapScrollPhysicalTrueColorOverlay(int screenDx, int screenDy)
+{
+    if (screenDx == 0 && screenDy == 0) {
+        return;
+    }
+
+    WindowPhysicalTrueColorBuffer buffer;
+    if (!windowGetPhysicalTrueColorOverlay(gIsoWindow, &buffer)) {
+        return;
+    }
+
+    if (buffer.width <= 0 || buffer.height <= 0 || buffer.pitch <= 0) {
+        return;
+    }
+
+    const double scale = displayScalerGetScale();
+    const int physicalDx = mapRoundScaledDelta(screenDx, scale);
+    const int physicalDy = mapRoundScaledDelta(screenDy, scale);
+
+    if (physicalDx == 0 && physicalDy == 0) {
+        return;
+    }
+
+    const int width = buffer.width;
+    const int height = buffer.height;
+    const int pitch = buffer.pitch;
+
+    int copyWidth = width - std::abs(physicalDx);
+    int copyHeight = height - std::abs(physicalDy);
+    if (copyWidth <= 0 || copyHeight <= 0) {
+        size_t pixelCount = static_cast<size_t>(pitch) * height;
+        if (buffer.pixels != nullptr) {
+            memset(buffer.pixels, 0, pixelCount * sizeof(uint32_t));
+        }
+        if (buffer.mask != nullptr) {
+            memset(buffer.mask, 0, pixelCount);
+        }
+        return;
+    }
+
+    auto scrollPlane = [&](auto* plane) {
+        if (plane == nullptr) {
+            return;
+        }
+
+        auto* srcRow = plane;
+        auto* destRow = plane;
+        int rowStep;
+
+        if (physicalDy < 0) {
+            srcRow = plane + pitch * (copyHeight - 1);
+            destRow = plane + pitch * (height - 1);
+            if (physicalDx < 0) {
+                destRow -= physicalDx;
+            } else {
+                srcRow += physicalDx;
+            }
+            rowStep = -pitch;
+        } else {
+            destRow = plane;
+            srcRow = plane + pitch * physicalDy;
+            if (physicalDx < 0) {
+                destRow -= physicalDx;
+            } else {
+                srcRow += physicalDx;
+            }
+            rowStep = pitch;
+        }
+
+        for (int row = 0; row < copyHeight; row++) {
+            memmove(destRow, srcRow, copyWidth * sizeof(*plane));
+            destRow += rowStep;
+            srcRow += rowStep;
+        }
+    };
+
+    scrollPlane(buffer.pixels);
+    scrollPlane(buffer.mask);
+
+    // Clear the newly revealed edge regions to prevent stale pixels from showing
+    // When we scroll, the memmove shifts existing content but the exposed edges
+    // contain old data that must be cleared before new tiles are rendered
+    auto clearEdge = [&](int left, int top, int clearWidth, int clearHeight) {
+        if (clearWidth <= 0 || clearHeight <= 0 || left < 0 || top < 0) {
+            return;
+        }
+        if (left + clearWidth > width) {
+            clearWidth = width - left;
+        }
+        if (top + clearHeight > height) {
+            clearHeight = height - top;
+        }
+        if (clearWidth <= 0 || clearHeight <= 0) {
+            return;
+        }
+        for (int row = 0; row < clearHeight; row++) {
+            if (buffer.pixels != nullptr) {
+                uint32_t* pixelRow = buffer.pixels + (top + row) * pitch + left;
+                memset(pixelRow, 0, clearWidth * sizeof(uint32_t));
+            }
+            if (buffer.mask != nullptr) {
+                unsigned char* maskRow = buffer.mask + (top + row) * pitch + left;
+                memset(maskRow, 0, clearWidth);
+            }
+        }
+    };
+
+    // Clear horizontal edge (top or bottom)
+    if (physicalDy > 0) {
+        // Scrolled down - clear top edge
+        clearEdge(0, 0, width, physicalDy);
+    } else if (physicalDy < 0) {
+        // Scrolled up - clear bottom edge
+        clearEdge(0, height + physicalDy, width, -physicalDy);
+    }
+
+    // Clear vertical edge (left or right)
+    if (physicalDx > 0) {
+        // Scrolled right - clear left edge
+        clearEdge(0, 0, physicalDx, height);
+    } else if (physicalDx < 0) {
+        // Scrolled left - clear right edge
+        clearEdge(width + physicalDx, 0, -physicalDx, height);
+    }
+}
 // 0x4826C0
 int mapScroll(int dx, int dy)
 {
-    if (getTicksSince(gIsoWindowScrollTimestamp) < 33) {
+    // Phase 7: Use target_fps to calculate scroll throttle for smoother scrolling
+    // At 60fps, this is 16ms; at 30fps it's 33ms (original behavior)
+    unsigned int scrollThresholdMs = settings.system.target_fps > 0 
+        ? 1000 / settings.system.target_fps 
+        : 16;  // Default to 60fps if not set
+    
+    if (getTicksSince(gIsoWindowScrollTimestamp) < scrollThresholdMs) {
         return -2;
     }
 
@@ -688,6 +841,99 @@ int mapScroll(int dx, int dy)
         src += step;
     }
 
+
+    if (windowHasTrueColorOverlay(gIsoWindow)) {
+        uint32_t* overlay = windowGetTrueColorOverlay(gIsoWindow);
+        unsigned char* mask = windowGetTrueColorMask(gIsoWindow);
+        int overlayPitch = windowGetWidth(gIsoWindow);
+        int overlayHeight = windowGetHeight(gIsoWindow);
+
+        uint32_t* overlaySrc;
+        uint32_t* overlayDest;
+        unsigned char* maskSrc;
+        unsigned char* maskDest;
+        int overlayStep;
+
+        if (screenDy < 0) {
+            overlaySrc = overlay + overlayPitch * (height - 1);
+            overlayDest = overlay + overlayPitch * (overlayHeight - 1);
+            maskSrc = mask + overlayPitch * (height - 1);
+            maskDest = mask + overlayPitch * (overlayHeight - 1);
+            if (screenDx < 0) {
+                overlayDest -= screenDx;
+                maskDest -= screenDx;
+            } else {
+                overlaySrc += screenDx;
+                maskSrc += screenDx;
+            }
+            overlayStep = -overlayPitch;
+        } else {
+            overlayDest = overlay;
+            overlaySrc = overlay + overlayPitch * screenDy;
+            maskDest = mask;
+            maskSrc = mask + overlayPitch * screenDy;
+            if (screenDx < 0) {
+                overlayDest -= screenDx;
+                maskDest -= screenDx;
+            } else {
+                overlaySrc += screenDx;
+                maskSrc += screenDx;
+            }
+            overlayStep = overlayPitch;
+        }
+
+        for (int y = 0; y < height; y++) {
+            memmove(overlayDest, overlaySrc, width * sizeof(uint32_t));
+            memmove(maskDest, maskSrc, width);
+            overlayDest += overlayStep;
+            overlaySrc += overlayStep;
+            maskDest += overlayStep;
+            maskSrc += overlayStep;
+        }
+
+        // Clear the newly revealed edge regions in the logical overlay
+        auto clearLogicalEdge = [&](int left, int top, int clearWidth, int clearHeight) {
+            if (clearWidth <= 0 || clearHeight <= 0 || left < 0 || top < 0) {
+                return;
+            }
+            if (left + clearWidth > overlayPitch) {
+                clearWidth = overlayPitch - left;
+            }
+            if (top + clearHeight > overlayHeight) {
+                clearHeight = overlayHeight - top;
+            }
+            if (clearWidth <= 0 || clearHeight <= 0) {
+                return;
+            }
+            for (int row = 0; row < clearHeight; row++) {
+                uint32_t* pixelRow = overlay + (top + row) * overlayPitch + left;
+                unsigned char* maskRow = mask + (top + row) * overlayPitch + left;
+                memset(pixelRow, 0, clearWidth * sizeof(uint32_t));
+                memset(maskRow, 0, clearWidth);
+            }
+        };
+
+        // Clear horizontal edge (top or bottom)
+        if (screenDy > 0) {
+            // Scrolled down - clear top edge
+            clearLogicalEdge(0, 0, overlayPitch, screenDy);
+        } else if (screenDy < 0) {
+            // Scrolled up - clear bottom edge
+            clearLogicalEdge(0, overlayHeight + screenDy, overlayPitch, -screenDy);
+        }
+
+        // Clear vertical edge (left or right)
+        if (screenDx > 0) {
+            // Scrolled right - clear left edge
+            clearLogicalEdge(0, 0, screenDx, overlayHeight);
+        } else if (screenDx < 0) {
+            // Scrolled left - clear right edge
+            clearLogicalEdge(overlayPitch + screenDx, 0, -screenDx, overlayHeight);
+        }
+
+        mapScrollPhysicalTrueColorOverlay(screenDx, screenDy);
+    }
+
     if (screenDx != 0) {
         _map_scroll_refresh(&r2);
     }
@@ -697,6 +943,7 @@ int mapScroll(int dx, int dy)
     }
 
     windowRefresh(gIsoWindow);
+
 
     return 0;
 }
@@ -771,7 +1018,11 @@ int mapLoadByName(char* fileName)
 
         if (stream != nullptr) {
             fileClose(stream);
+            artTrueColorStatsReset();
             rc = mapLoadSaved(fileName);
+            if (rc == 0) {
+                artTrueColorStatsLog(fileName);
+            }
             wmMapMusicStart();
         }
     }
@@ -780,8 +1031,12 @@ int mapLoadByName(char* fileName)
         const char* filePath = mapBuildPath(fileName);
         File* stream = fileOpen(filePath, "rb");
         if (stream != nullptr) {
+            artTrueColorStatsReset();
             rc = mapLoad(stream);
             fileClose(stream);
+            if (rc == 0) {
+                artTrueColorStatsLog(fileName);
+            }
         }
 
         if (rc == 0) {
@@ -817,6 +1072,8 @@ static int mapLoad(File* stream)
 {
     _map_save_in_game(true);
     backgroundSoundLoad("wind2", 12, 13, 16);
+    
+    
     isoDisable();
     _partyMemberPrepLoad();
     _gmouse_disable_scrolling();
@@ -1519,6 +1776,12 @@ static void isoWindowRefreshRectGame(Rect* rect)
         rectGetWidth(&gIsoWindowRect),
         0);
 
+    if (windowHasTrueColorOverlay(gIsoWindow)) {
+        int relativeLeft = rectToUpdate.left - gIsoWindowRect.left;
+        int relativeTop = rectToUpdate.top - gIsoWindowRect.top;
+        windowClearTrueColorRegion(gIsoWindow, relativeLeft, relativeTop, rectGetWidth(&rectToUpdate), rectGetHeight(&rectToUpdate));
+    }
+
     tileRenderFloorsInRect(&rectToUpdate, gElevation);
     _obj_render_pre_roof(&rectToUpdate, gElevation);
     tileRenderRoofsInRect(&rectToUpdate, gElevation);
@@ -1538,6 +1801,12 @@ static void isoWindowRefreshRectMapper(Rect* rect)
         rectGetHeight(&rectToUpdate),
         rectGetWidth(&gIsoWindowRect),
         0);
+
+    if (windowHasTrueColorOverlay(gIsoWindow)) {
+        int relativeLeft = rectToUpdate.left - gIsoWindowRect.left;
+        int relativeTop = rectToUpdate.top - gIsoWindowRect.top;
+        windowClearTrueColorRegion(gIsoWindow, relativeLeft, relativeTop, rectGetWidth(&rectToUpdate), rectGetHeight(&rectToUpdate));
+    }
 
     tileRenderFloorsInRect(&rectToUpdate, gElevation);
     _grid_render(&rectToUpdate, gElevation);

@@ -32,6 +32,7 @@ bld/
 [Oo]bj/
 [Ll]og/
 [Ll]ogs/
+data/
 
 # Visual Studio 2015/2017 cache/options directory
 .vs/
@@ -392,3 +393,11 @@ FodyWeavers.xsd
 /out
 /build
 CMakeUserPresets.json
+build-vcpkg*
+venv*
+third_party*
+realesrgan*
+CMakeFiles*
+_deps*
+onnxruntime*
+DirectML*

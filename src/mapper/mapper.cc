@@ -287,6 +287,14 @@ int crit_bid;
 // 0x6EC4A8
 unsigned char* tool;
 
+static constexpr int kMapperMenuBarHeight = 16;
+static constexpr int kMapperToolbarHeight = 100;
+
+static int gMapperToolWindowTop = 0;
+static int gMapperToolWindowWidth = 0;
+static int gMapperToolWindowHeight = 0;
+static int gMapperToolWindowPitch = 0;
+
 // 0x6EC4AC
 int tool_win;
 
@@ -541,7 +549,13 @@ int mapper_edit_init(int argc, char** argv)
     setup_map_dirs();
     mapper_load_toolbar(4, 0);
 
-    max_art_buttons = (_scr_size.right - _scr_size.left - 136) / 50;
+    int screenWidth = screenGetWidth();
+    int screenHeight = screenGetHeight();
+
+    max_art_buttons = (screenWidth - 136) / 50;
+    if (max_art_buttons < 0) {
+        max_art_buttons = 0;
+    }
     art_shape = (unsigned char*)internal_malloc(art_scale_height * art_scale_width);
     if (art_shape == NULL) {
         printf("Can't malloc memory!!\n");
@@ -550,15 +564,15 @@ int mapper_edit_init(int argc, char** argv)
 
     menu_bar = windowCreate(0,
         0,
-        rectGetWidth(&_scr_size),
-        16,
+        screenWidth,
+        kMapperMenuBarHeight,
         _colorTable[0],
         WINDOW_HIDDEN);
     _win_register_menu_bar(menu_bar,
         0,
         0,
-        rectGetWidth(&_scr_size),
-        16,
+        screenWidth,
+        kMapperMenuBarHeight,
         260,
         _colorTable[8456]);
     _win_register_menu_pulldown(menu_bar,
@@ -597,42 +611,51 @@ int mapper_edit_init(int argc, char** argv)
             _colorTable[8456]);
     }
 
+    int toolWindowY = screenHeight - kMapperToolbarHeight;
     tool_win = windowCreate(0,
-        _scr_size.bottom - 99,
-        rectGetWidth(&_scr_size),
-        100,
+        toolWindowY,
+        screenWidth,
+        kMapperToolbarHeight,
         256,
         0);
     tool = windowGetBuffer(tool_win);
 
-    lbm_buf = (unsigned char*)internal_malloc(640 * 480);
+    gMapperToolWindowTop = toolWindowY;
+    gMapperToolWindowHeight = windowGetHeight(tool_win);
+    gMapperToolWindowWidth = windowGetWidth(tool_win);
+    gMapperToolWindowPitch = windowGetPitch(tool_win);
+
+    const int lbmPitch = screenWidth;
+    const int lbmHeight = 480;
+    const int toolRightAlignedButtonX = gMapperToolWindowWidth - 18 - 1;
+
+    lbm_buf = (unsigned char*)internal_malloc(lbmPitch * lbmHeight);
     load_lbm_to_buf("data\\mapper2.lbm",
         lbm_buf,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         0,
         0,
-        _scr_size.right - _scr_size.left,
-        479);
+        screenWidth - 1,
+        lbmHeight - 1);
 
-    //
-    blitBufferToBuffer(lbm_buf + 380 * rectGetWidth(&_scr_size),
-        rectGetWidth(&_scr_size),
+    blitBufferToBuffer(lbm_buf + 380 * lbmPitch,
+        screenWidth,
         100,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         tool,
-        rectGetWidth(&_scr_size));
+        gMapperToolWindowPitch);
 
     //
-    blitBufferToBuffer(lbm_buf + 406 * (rectGetWidth(&_scr_size)) + 101,
+    blitBufferToBuffer(lbm_buf + 406 * lbmPitch + 101,
         18,
         23,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         l_up,
         18);
-    blitBufferToBuffer(lbm_buf + 253 * (rectGetWidth(&_scr_size)) + 101,
+    blitBufferToBuffer(lbm_buf + 253 * lbmPitch + 101,
         18,
         23,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         l_down,
         18);
     buttonCreate(tool_win,
@@ -650,20 +673,20 @@ int mapper_edit_init(int argc, char** argv)
         0);
 
     //
-    blitBufferToBuffer(lbm_buf + 406 * (rectGetWidth(&_scr_size)) + 622,
+    blitBufferToBuffer(lbm_buf + 406 * lbmPitch + 622,
         18,
         23,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         r_up,
         18);
-    blitBufferToBuffer(lbm_buf + 253 * (rectGetWidth(&_scr_size)) + 622,
+    blitBufferToBuffer(lbm_buf + 253 * lbmPitch + 622,
         18,
         23,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         r_down,
         18);
     buttonCreate(tool_win,
-        _scr_size.right - 18,
+        toolRightAlignedButtonX,
         1,
         18,
         23,
@@ -677,16 +700,16 @@ int mapper_edit_init(int argc, char** argv)
         0);
 
     //
-    blitBufferToBuffer(lbm_buf + 381 * (rectGetWidth(&_scr_size)) + 101,
+    blitBufferToBuffer(lbm_buf + 381 * lbmPitch + 101,
         18,
         23,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         shift_l_up,
         18);
-    blitBufferToBuffer(lbm_buf + 228 * (rectGetWidth(&_scr_size)) + 101,
+    blitBufferToBuffer(lbm_buf + 228 * lbmPitch + 101,
         18,
         23,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         shift_l_down,
         18);
     buttonCreate(tool_win,
@@ -704,20 +727,20 @@ int mapper_edit_init(int argc, char** argv)
         0);
 
     //
-    blitBufferToBuffer(lbm_buf + 381 * (rectGetWidth(&_scr_size)) + 622,
+    blitBufferToBuffer(lbm_buf + 381 * lbmPitch + 622,
         18,
         23,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         shift_r_up,
         18);
-    blitBufferToBuffer(lbm_buf + 228 * (rectGetWidth(&_scr_size)) + 622,
+    blitBufferToBuffer(lbm_buf + 228 * lbmPitch + 622,
         18,
         23,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         shift_r_down,
         18);
     buttonCreate(tool_win,
-        _scr_size.right - 18,
+        toolRightAlignedButtonX,
         1,
         18,
         23,
@@ -749,16 +772,16 @@ int mapper_edit_init(int argc, char** argv)
     }
 
     // ELEVATION INC
-    blitBufferToBuffer(lbm_buf + 431 * (rectGetWidth(&_scr_size)) + 1,
+    blitBufferToBuffer(lbm_buf + 431 * lbmPitch + 1,
         18,
         23,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         einc_up,
         18);
-    blitBufferToBuffer(lbm_buf + 325 * (rectGetWidth(&_scr_size)) + 1,
+    blitBufferToBuffer(lbm_buf + 325 * lbmPitch + 1,
         18,
         23,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         einc_down,
         18);
     buttonCreate(tool_win,
@@ -776,16 +799,16 @@ int mapper_edit_init(int argc, char** argv)
         0);
 
     // ELEVATION DEC
-    blitBufferToBuffer(lbm_buf + 456 * (rectGetWidth(&_scr_size)) + 1,
+    blitBufferToBuffer(lbm_buf + 456 * lbmPitch + 1,
         18,
         23,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         edec_up,
         18);
-    blitBufferToBuffer(lbm_buf + 350 * (rectGetWidth(&_scr_size)) + 1,
+    blitBufferToBuffer(lbm_buf + 350 * lbmPitch + 1,
         18,
         23,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         edec_down,
         18);
     buttonCreate(tool_win,
@@ -804,10 +827,10 @@ int mapper_edit_init(int argc, char** argv)
 
     // ELEVATION
     for (index = 0; index < 4; index++) {
-        blitBufferToBuffer(lbm_buf + 293 * rectGetWidth(&_scr_size) + 19 * index,
+        blitBufferToBuffer(lbm_buf + 293 * lbmPitch + 19 * index,
             19,
             26,
-            rectGetWidth(&_scr_size),
+            lbmPitch,
             e_num[1],
             19);
     }
@@ -815,30 +838,30 @@ int mapper_edit_init(int argc, char** argv)
     view_mode = false;
 
     //
-    blitBufferToBuffer(lbm_buf + 169 * (rectGetWidth(&_scr_size)) + 64,
+    blitBufferToBuffer(lbm_buf + 169 * lbmPitch + 64,
         58,
         13,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         to_iso_up,
         58);
-    blitBufferToBuffer(lbm_buf + 108 * (rectGetWidth(&_scr_size)) + 64,
+    blitBufferToBuffer(lbm_buf + 108 * lbmPitch + 64,
         58,
         13,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         to_iso_down,
         58);
 
     // ROOF
-    blitBufferToBuffer(lbm_buf + 464 * (rectGetWidth(&_scr_size)) + 64,
+    blitBufferToBuffer(lbm_buf + 464 * lbmPitch + 64,
         58,
         13,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         roof_up,
         58);
-    blitBufferToBuffer(lbm_buf + 358 * (rectGetWidth(&_scr_size)) + 64,
+    blitBufferToBuffer(lbm_buf + 358 * lbmPitch + 64,
         58,
         13,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         roof_down,
         58);
     roof_bid = buttonCreate(tool_win,
@@ -860,16 +883,16 @@ int mapper_edit_init(int argc, char** argv)
     }
 
     // HEX
-    blitBufferToBuffer(lbm_buf + 464 * (rectGetWidth(&_scr_size)) + 64,
+    blitBufferToBuffer(lbm_buf + 464 * lbmPitch + 64,
         58,
         13,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         hex_up,
         58);
-    blitBufferToBuffer(lbm_buf + 358 * (rectGetWidth(&_scr_size)) + 64,
+    blitBufferToBuffer(lbm_buf + 358 * lbmPitch + 64,
         58,
         13,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         hex_down,
         58);
     hex_bid = buttonCreate(tool_win,
@@ -887,16 +910,16 @@ int mapper_edit_init(int argc, char** argv)
         BUTTON_FLAG_0x01);
 
     // OBJ
-    blitBufferToBuffer(lbm_buf + 434 * (rectGetWidth(&_scr_size)) + 125,
+    blitBufferToBuffer(lbm_buf + 434 * lbmPitch + 125,
         66,
         13,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         obj_up,
         66);
-    blitBufferToBuffer(lbm_buf + 328 * (rectGetWidth(&_scr_size)) + 125,
+    blitBufferToBuffer(lbm_buf + 328 * lbmPitch + 125,
         66,
         13,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         obj_down,
         66);
     obj_bid = buttonCreate(tool_win,
@@ -914,16 +937,16 @@ int mapper_edit_init(int argc, char** argv)
         BUTTON_FLAG_0x01);
 
     // CRIT
-    blitBufferToBuffer(lbm_buf + 449 * (rectGetWidth(&_scr_size)) + 125,
+    blitBufferToBuffer(lbm_buf + 449 * lbmPitch + 125,
         66,
         13,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         crit_up,
         66);
-    blitBufferToBuffer(lbm_buf + 343 * (rectGetWidth(&_scr_size)) + 125,
+    blitBufferToBuffer(lbm_buf + 343 * lbmPitch + 125,
         66,
         13,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         crit_down,
         66);
     crit_bid = buttonCreate(tool_win,
@@ -941,16 +964,16 @@ int mapper_edit_init(int argc, char** argv)
         BUTTON_FLAG_0x01);
 
     // SCEN
-    blitBufferToBuffer(lbm_buf + 434 * (rectGetWidth(&_scr_size)) + 194,
+    blitBufferToBuffer(lbm_buf + 434 * lbmPitch + 194,
         53,
         13,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         scen_up,
         53);
-    blitBufferToBuffer(lbm_buf + 328 * (rectGetWidth(&_scr_size)) + 194,
+    blitBufferToBuffer(lbm_buf + 328 * lbmPitch + 194,
         53,
         13,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         scen_down,
         53);
     scen_bid = buttonCreate(tool_win,
@@ -968,16 +991,16 @@ int mapper_edit_init(int argc, char** argv)
         BUTTON_FLAG_0x01);
 
     // WALL
-    blitBufferToBuffer(lbm_buf + 434 * (rectGetWidth(&_scr_size)) + 194,
+    blitBufferToBuffer(lbm_buf + 434 * lbmPitch + 194,
         53,
         13,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         wall_up,
         53);
-    blitBufferToBuffer(lbm_buf + 328 * (rectGetWidth(&_scr_size)) + 194,
+    blitBufferToBuffer(lbm_buf + 328 * lbmPitch + 194,
         53,
         13,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         wall_down,
         53);
     wall_bid = buttonCreate(tool_win,
@@ -995,16 +1018,16 @@ int mapper_edit_init(int argc, char** argv)
         BUTTON_FLAG_0x01);
 
     // MISC
-    blitBufferToBuffer(lbm_buf + 464 * (rectGetWidth(&_scr_size)) + 194,
+    blitBufferToBuffer(lbm_buf + 464 * lbmPitch + 194,
         53,
         13,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         misc_up,
         53);
-    blitBufferToBuffer(lbm_buf + 358 * (rectGetWidth(&_scr_size)) + 194,
+    blitBufferToBuffer(lbm_buf + 358 * lbmPitch + 194,
         53,
         13,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         misc_down,
         53);
     misc_bid = buttonCreate(tool_win,
@@ -1022,16 +1045,16 @@ int mapper_edit_init(int argc, char** argv)
         BUTTON_FLAG_0x01);
 
     // HEIGHT INC
-    blitBufferToBuffer(lbm_buf + 431 * rectGetWidth(&_scr_size) + 251,
+    blitBufferToBuffer(lbm_buf + 431 * lbmPitch + 251,
         18,
         23,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         height_inc_up,
         18);
-    blitBufferToBuffer(lbm_buf + 325 * rectGetWidth(&_scr_size) + 251,
+    blitBufferToBuffer(lbm_buf + 325 * lbmPitch + 251,
         18,
         23,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         height_inc_down,
         18);
     buttonCreate(tool_win,
@@ -1049,16 +1072,16 @@ int mapper_edit_init(int argc, char** argv)
         0);
 
     // HEIGHT DEC
-    blitBufferToBuffer(lbm_buf + 456 * rectGetWidth(&_scr_size) + 251,
+    blitBufferToBuffer(lbm_buf + 456 * lbmPitch + 251,
         18,
         23,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         height_dec_up,
         18);
-    blitBufferToBuffer(lbm_buf + 350 * rectGetWidth(&_scr_size) + 251,
+    blitBufferToBuffer(lbm_buf + 350 * lbmPitch + 251,
         18,
         23,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         height_dec_down,
         18);
     buttonCreate(tool_win,
@@ -1079,13 +1102,13 @@ int mapper_edit_init(int argc, char** argv)
     for (index = 0; index < ROTATION_COUNT; index++) {
         int x = rotate_arrows_x_offs[index] + 285;
         int y = rotate_arrows_y_offs[index] + 25;
-        unsigned char v1 = lbm_buf[27 * (_scr_size.right + 1) + 287];
+        unsigned char v1 = lbm_buf[27 * lbmPitch + 287];
         int k;
 
-        blitBufferToBuffer(lbm_buf + y * rectGetWidth(&_scr_size) + x,
+        blitBufferToBuffer(lbm_buf + y * lbmPitch + x,
             10,
             10,
-            rectGetWidth(&_scr_size),
+            lbmPitch,
             rotate_arrows[1][index],
             10);
 
@@ -1095,10 +1118,10 @@ int mapper_edit_init(int argc, char** argv)
             }
         }
 
-        blitBufferToBuffer(lbm_buf + y * rectGetWidth(&_scr_size) + x - 52,
+        blitBufferToBuffer(lbm_buf + y * lbmPitch + x - 52,
             10,
             10,
-            rectGetWidth(&_scr_size),
+            lbmPitch,
             rotate_arrows[0][index],
             10);
 
@@ -1110,16 +1133,16 @@ int mapper_edit_init(int argc, char** argv)
     }
 
     // COPY
-    blitBufferToBuffer(lbm_buf + 435 * (rectGetWidth(&_scr_size)) + 325,
+    blitBufferToBuffer(lbm_buf + 435 * lbmPitch + 325,
         49,
         19,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         copy_up,
         49);
-    blitBufferToBuffer(lbm_buf + 329 * (rectGetWidth(&_scr_size)) + 325,
+    blitBufferToBuffer(lbm_buf + 329 * lbmPitch + 325,
         49,
         19,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         copy_down,
         49);
     copy_bid = buttonCreate(tool_win,
@@ -1137,16 +1160,16 @@ int mapper_edit_init(int argc, char** argv)
         0);
 
     // PASTE
-    blitBufferToBuffer(lbm_buf + 457 * (rectGetWidth(&_scr_size)) + 325,
+    blitBufferToBuffer(lbm_buf + 457 * lbmPitch + 325,
         49,
         19,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         paste_up,
         49);
-    blitBufferToBuffer(lbm_buf + 351 * (rectGetWidth(&_scr_size)) + 325,
+    blitBufferToBuffer(lbm_buf + 351 * lbmPitch + 325,
         49,
         19,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         paste_down,
         49);
     paste_bid = buttonCreate(tool_win,
@@ -1164,16 +1187,16 @@ int mapper_edit_init(int argc, char** argv)
         0);
 
     // EDIT
-    blitBufferToBuffer(lbm_buf + 435 * (rectGetWidth(&_scr_size)) + 378,
+    blitBufferToBuffer(lbm_buf + 435 * lbmPitch + 378,
         49,
         19,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         edit_up,
         49);
-    blitBufferToBuffer(lbm_buf + 329 * (rectGetWidth(&_scr_size)) + 378,
+    blitBufferToBuffer(lbm_buf + 329 * lbmPitch + 378,
         49,
         19,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         edit_down,
         49);
     edit_bid = buttonCreate(tool_win,
@@ -1191,16 +1214,16 @@ int mapper_edit_init(int argc, char** argv)
         0);
 
     // DELETE
-    blitBufferToBuffer(lbm_buf + 457 * rectGetWidth(&_scr_size) + 378,
+    blitBufferToBuffer(lbm_buf + 457 * lbmPitch + 378,
         49,
         19,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         delete_up,
         49);
-    blitBufferToBuffer(lbm_buf + 351 * rectGetWidth(&_scr_size) + 378,
+    blitBufferToBuffer(lbm_buf + 351 * lbmPitch + 378,
         49,
         19,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         delete_down,
         49);
     delete_bid = buttonCreate(tool_win,
@@ -1219,42 +1242,42 @@ int mapper_edit_init(int argc, char** argv)
 
     draw_mode = false;
 
-    blitBufferToBuffer(lbm_buf + 169 * rectGetWidth(&_scr_size) + 430,
+    blitBufferToBuffer(lbm_buf + 169 * lbmPitch + 430,
         45,
         43,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         to_edit_up,
         45);
-    blitBufferToBuffer(lbm_buf + 108 * rectGetWidth(&_scr_size) + 430,
+    blitBufferToBuffer(lbm_buf + 108 * lbmPitch + 430,
         45,
         43,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         to_edit_down,
         45);
 
-    blitBufferToBuffer(lbm_buf + 169 * rectGetWidth(&_scr_size) + 327,
+    blitBufferToBuffer(lbm_buf + 169 * lbmPitch + 327,
         45,
         43,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         copy_group_up,
         45);
-    blitBufferToBuffer(lbm_buf + 108 * rectGetWidth(&_scr_size) + 327,
+    blitBufferToBuffer(lbm_buf + 108 * lbmPitch + 327,
         45,
         43,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         copy_group_down,
         45);
 
-    blitBufferToBuffer(lbm_buf + 169 * rectGetWidth(&_scr_size) + 379,
+    blitBufferToBuffer(lbm_buf + 169 * lbmPitch + 379,
         45,
         43,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         erase_up,
         45);
-    blitBufferToBuffer(lbm_buf + 108 * rectGetWidth(&_scr_size) + 379,
+    blitBufferToBuffer(lbm_buf + 108 * lbmPitch + 379,
         45,
         43,
-        rectGetWidth(&_scr_size),
+        lbmPitch,
         erase_down,
         45);
 
@@ -1433,14 +1456,14 @@ void print_toolbar_name(int object_type)
     Rect rect;
     char name[80];
 
-    rect.left = 0;
-    rect.top = 0;
-    rect.right = 0;
-    rect.bottom = 22;
-    bufferFill(tool + 2 + 2 * (_scr_size.right - _scr_size.left) + 2,
+    rect.left = 2;
+    rect.top = 2;
+    rect.right = rect.left + 96;
+    rect.bottom = rect.top + 19;
+    bufferFill(tool + rect.top * gMapperToolWindowPitch + rect.left,
         96,
-        _scr_size.right - _scr_size.left + 1,
-        19,
+        rect.bottom - rect.top,
+        gMapperToolWindowPitch,
         _colorTable[21140]);
 
     sprintf(name, "%s", artGetObjectTypeName(object_type));
@@ -1454,9 +1477,9 @@ void redraw_toolname()
 {
     Rect rect;
 
-    rect.left = _scr_size.right - _scr_size.left - 149;
+    rect.left = gMapperToolWindowWidth - 150;
     rect.top = 60;
-    rect.right = _scr_size.right - _scr_size.left + 1;
+    rect.right = gMapperToolWindowWidth;
     rect.bottom = 95;
     windowRefreshRect(tool_win, &rect);
 }
@@ -1464,9 +1487,10 @@ void redraw_toolname()
 // 0x48B278
 void clear_toolname()
 {
-    windowDrawText(tool_win, "", 120, _scr_size.right - _scr_size.left - 149, 60, 260);
-    windowDrawText(tool_win, "", 120, _scr_size.right - _scr_size.left - 149, 70, 260);
-    windowDrawText(tool_win, "", 120, _scr_size.right - _scr_size.left - 149, 80, 260);
+    int textLeft = gMapperToolWindowWidth - 150;
+    windowDrawText(tool_win, "", 120, textLeft, 60, 260);
+    windowDrawText(tool_win, "", 120, textLeft, 70, 260);
+    windowDrawText(tool_win, "", 120, textLeft, 80, 260);
     redraw_toolname();
 }
 
@@ -1481,10 +1505,11 @@ void update_toolname(int* pid, int type, int id)
         return;
     }
 
+    int textLeft = gMapperToolWindowWidth - 150;
     windowDrawText(tool_win,
         protoGetName(proto->pid),
         120,
-        _scr_size.right - _scr_size.left - 149,
+        textLeft,
         60,
         260);
 
@@ -1493,7 +1518,7 @@ void update_toolname(int* pid, int type, int id)
         windowDrawText(tool_win,
             gItemTypeNames[proto->item.type],
             120,
-            _scr_size.right - _scr_size.left - 149,
+            textLeft,
             70,
             260);
         break;
@@ -1501,7 +1526,7 @@ void update_toolname(int* pid, int type, int id)
         windowDrawText(tool_win,
             "",
             120,
-            _scr_size.right - _scr_size.left - 149,
+            textLeft,
             70,
             260);
         break;
@@ -1509,7 +1534,7 @@ void update_toolname(int* pid, int type, int id)
         windowDrawText(tool_win,
             proto_wall_light_str(proto->wall.flags),
             120,
-            _scr_size.right - _scr_size.left - 149,
+            textLeft,
             70,
             260);
         break;
@@ -1517,7 +1542,7 @@ void update_toolname(int* pid, int type, int id)
         windowDrawText(tool_win,
             "",
             120,
-            _scr_size.right - _scr_size.left - 149,
+            textLeft,
             70,
             260);
         break;
@@ -1525,7 +1550,7 @@ void update_toolname(int* pid, int type, int id)
         windowDrawText(tool_win,
             "",
             120,
-            _scr_size.right - _scr_size.left - 149,
+            textLeft,
             70,
             260);
         break;
@@ -1533,7 +1558,7 @@ void update_toolname(int* pid, int type, int id)
         windowDrawText(tool_win,
             "",
             120,
-            _scr_size.right - _scr_size.left - 149,
+            textLeft,
             70,
             260);
         break;
@@ -1542,7 +1567,7 @@ void update_toolname(int* pid, int type, int id)
     windowDrawText(tool_win,
         "",
         120,
-        _scr_size.right - _scr_size.left - 149,
+        textLeft,
         80,
         260);
 
@@ -1555,9 +1580,10 @@ void update_high_obj_name(Object* obj)
     Proto* proto;
 
     if (protoGetProto(obj->pid, &proto) != -1) {
-        windowDrawText(tool_win, protoGetName(obj->pid), 120, _scr_size.right - _scr_size.left - 149, 60, 260);
-        windowDrawText(tool_win, "", 120, _scr_size.right - _scr_size.left - 149, 70, 260);
-        windowDrawText(tool_win, "", 120, _scr_size.right - _scr_size.left - 149, 80, 260);
+        int textLeft = gMapperToolWindowWidth - 150;
+        windowDrawText(tool_win, protoGetName(obj->pid), 120, textLeft, 60, 260);
+        windowDrawText(tool_win, "", 120, textLeft, 70, 260);
+        windowDrawText(tool_win, "", 120, textLeft, 80, 260);
         redraw_toolname();
     }
 }
@@ -1592,36 +1618,38 @@ void mapper_refresh_rotation()
     int index;
 
     rect.left = 270;
-    rect.top = 431 - (_scr_size.bottom - 99);
+    rect.top = 431 - gMapperToolWindowTop;
     rect.right = 317;
     rect.bottom = rect.top + 47;
 
     sprintf(string, "%d", rotation);
 
     if (tool != NULL) {
+        int toolPitch = gMapperToolWindowPitch;
+        int textY = 452 - gMapperToolWindowTop;
         windowFill(tool_win,
             290,
-            452 - (_scr_size.bottom - 99),
+            textY,
             10,
             12,
-            tool[(452 - (_scr_size.bottom - 99)) * (_scr_size.right + 1) + 289]);
+            tool[textY * toolPitch + 289]);
         windowDrawText(tool_win,
             string,
             10,
             292,
-            452 - (_scr_size.bottom - 99),
+            textY,
             0x2010104);
 
         for (index = 0; index < 6; index++) {
             int x = rotate_arrows_x_offs[index] + 269;
-            int y = rotate_arrows_y_offs[index] + (430 - (_scr_size.bottom - 99));
+            int y = rotate_arrows_y_offs[index] + (430 - gMapperToolWindowTop);
 
             blitBufferToBufferTrans(rotate_arrows[index == rotation][index],
                 10,
                 10,
                 10,
-                tool + y * (_scr_size.right + 1) + x,
-                _scr_size.right + 1);
+                tool + y * toolPitch + x,
+                toolPitch);
         }
 
         windowRefreshRect(tool_win, &rect);
@@ -1649,8 +1677,8 @@ void handle_new_map(int* a1, int* a2)
         19,
         26,
         19,
-        tool + rect.top * rectGetWidth(&_scr_size) + rect.left,
-        rectGetWidth(&_scr_size));
+        tool + rect.top * gMapperToolWindowPitch + rect.left,
+        gMapperToolWindowPitch);
     windowRefreshRect(tool_win, &rect);
 
     if (*a1 < 0 || *a1 > 6) {

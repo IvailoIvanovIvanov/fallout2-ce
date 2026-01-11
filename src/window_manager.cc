@@ -3,19 +3,27 @@
 #include <string.h>
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cmath>
+#include <cstdio>
 
 #include <SDL.h>
 
+#include "renderer/display_scaler.h"
+#include "diagnostics.h"
 #include "color.h"
 #include "debug.h"
 #include "dinput.h"
 #include "draw.h"
+#include "geometry.h"
 #include "input.h"
 #include "memory.h"
 #include "mouse.h"
 #include "palette.h"
 #include "svga.h"
 #include "text_font.h"
+#include "settings.h"
 #include "win32.h"
 #include "window_manager_private.h"
 
@@ -42,6 +50,26 @@ static int _win_group_check_buttons(int buttonCount, int* btns, int maxChecked, 
 static int _button_check_group(Button* button);
 static void _button_draw(Button* button, Window* window, unsigned char* data, bool draw, Rect* bound, bool sound);
 static void _GNW_button_refresh(Window* window, Rect* rect);
+static void virtualScreenResetDirty();
+static void virtualScreenInvalidateRect(const Rect* rect);
+static void virtualScreenInvalidateAll();
+static void logVirtualScreenRectStats(const Rect& rect);
+static int windowCompositeTrueColorOverlays(const Rect& rect);
+static int windowScrubTrueColorMask(uint32_t* overlayStart, unsigned char* maskStart, int pitch, int width, int height);
+static bool shouldAllocatePhysicalTrueColorOverlay();
+static bool rectEquals(const Rect& a, const Rect& b);
+static void windowClearPhysicalTrueColorOverlay(Window* window);
+static void windowFreePhysicalTrueColorOverlay(Window* window);
+static bool windowEnsurePhysicalTrueColorOverlay(Window* window, const Rect& viewport, bool viewportChanged);
+static void windowSyncPhysicalTrueColorBuffersIfNeeded();
+static void windowResetPresentStats();
+static void windowAccumulateLogicalRectStats(const Rect& rect);
+static void windowAccumulatePhysicalRectStats(const Rect& rect);
+static void windowAccumulateHdLogicalPixels(int count);
+static void windowAccumulateHdPhysicalPixels(int count);
+static void windowLogPresentStats(const Rect& logicalRect, const Rect& physicalRect);
+static bool virtualAdapterTraceEnabled();
+static void logVirtualAdapterTraceRect(const char* stage, const Rect& rect);
 
 // 0x50FA30
 static char _path_patches[] = "";
@@ -69,6 +97,16 @@ int _GNW_wcolor[6] = {
 
 // 0x51E3FC
 static unsigned char* _screen_buffer = nullptr;
+static int _screen_buffer_pitch = 0;
+static bool gVirtualScreenEnabled = false;
+static Rect gVirtualScreenDirtyRect = { 0, 0, -1, -1 };
+static bool gVirtualScreenDirty = false;
+static uint32_t gVirtualScreenDirtySequence = 0;
+
+// Phase 7b: Deferred presentation to reduce flickering
+// When true, windowRefreshRect() will NOT call windowPresentVirtualScreen()
+// The main game loop's renderPresent() will handle presentation once per frame
+static bool gDeferredPresentationEnabled = false;
 
 // 0x51E400
 static bool _insideWinExit = false;
@@ -108,6 +146,659 @@ static void* _GNW_texture;
 
 // 0x6ADF40
 static ButtonGroup gButtonGroups[BUTTON_GROUP_LIST_CAPACITY];
+static const int kVirtualScreenTraceMinArea = 10000;
+static Rect gPhysicalTrueColorViewport = { 0, 0, -1, -1 };
+static bool gPhysicalTrueColorViewportValid = false;
+static uint32_t gPhysicalTrueColorOverlayRevision = 1;
+struct WindowPresentStats {
+    uint64_t logicalPixels = 0;
+    uint64_t physicalPixels = 0;
+    uint64_t hdLogicalPixels = 0;
+    uint64_t hdPhysicalPixels = 0;
+};
+static WindowPresentStats gWindowPresentStats;
+
+static bool rectEquals(const Rect& a, const Rect& b)
+{
+    return a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom;
+}
+
+static void windowResetPresentStats()
+{
+    gWindowPresentStats = {};
+}
+
+static void windowAccumulateLogicalRectStats(const Rect& rect)
+{
+    int width = rectGetWidth(&rect);
+    int height = rectGetHeight(&rect);
+    if (width > 0 && height > 0) {
+        gWindowPresentStats.logicalPixels += static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
+    }
+}
+
+static void windowAccumulatePhysicalRectStats(const Rect& rect)
+{
+    int width = rectGetWidth(&rect);
+    int height = rectGetHeight(&rect);
+    if (width > 0 && height > 0) {
+        gWindowPresentStats.physicalPixels += static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
+    }
+}
+
+static void windowAccumulateHdLogicalPixels(int count)
+{
+    if (count > 0) {
+        gWindowPresentStats.hdLogicalPixels += static_cast<uint64_t>(count);
+    }
+}
+
+static void windowAccumulateHdPhysicalPixels(int count)
+{
+    if (count > 0) {
+        gWindowPresentStats.hdPhysicalPixels += static_cast<uint64_t>(count);
+    }
+}
+
+static void windowLogPresentStats(const Rect& logicalRect, const Rect& physicalRect)
+{
+    if (!diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        return;
+    }
+
+    const double scale = displayScalerGetScale();
+    diagnosticsLog(DiagnosticsLevel::Trace,
+        "SCALER",
+        "present_stats logical=(%d,%d %dx%d) physical=(%d,%d %dx%d) logical_px=%llu physical_px=%llu hd_physical=%llu hd_logical=%llu hd_total=%llu scale=%.4f",
+        logicalRect.left,
+        logicalRect.top,
+        rectGetWidth(&logicalRect),
+        rectGetHeight(&logicalRect),
+        physicalRect.left,
+        physicalRect.top,
+        rectGetWidth(&physicalRect),
+        rectGetHeight(&physicalRect),
+        static_cast<unsigned long long>(gWindowPresentStats.logicalPixels),
+        static_cast<unsigned long long>(gWindowPresentStats.physicalPixels),
+        static_cast<unsigned long long>(gWindowPresentStats.hdPhysicalPixels),
+        static_cast<unsigned long long>(gWindowPresentStats.hdLogicalPixels),
+        static_cast<unsigned long long>(gWindowPresentStats.hdPhysicalPixels + gWindowPresentStats.hdLogicalPixels),
+        scale);
+}
+
+static bool virtualAdapterTraceEnabled()
+{
+    if (!gVirtualScreenEnabled) {
+        return false;
+    }
+
+    if (true) {  // virtual_adapter_trace removed
+        return false;
+    }
+
+    if (_screen_buffer == nullptr || _screen_buffer_pitch <= 0) {
+        return false;
+    }
+
+    return diagnosticsWouldLog(DiagnosticsLevel::Trace);
+}
+
+static void logVirtualAdapterTraceRect(const char* stage, const Rect& rect)
+{
+    if (!virtualAdapterTraceEnabled() || stage == nullptr) {
+        return;
+    }
+
+    Rect clipped;
+    rectCopy(&clipped, &rect);
+    const Rect& bounds = displayScalerGetLogicalBounds();
+    if (rectIntersection(&clipped, &bounds, &clipped) == -1) {
+        return;
+    }
+
+    const int width = rectGetWidth(&clipped);
+    const int height = rectGetHeight(&clipped);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    const size_t totalPixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (totalPixels == 0) {
+        return;
+    }
+
+    unsigned int minValue = 0xFF;
+    unsigned int maxValue = 0;
+    unsigned long long checksum = 0;
+
+    const size_t sampleStart = 0;
+    const size_t sampleMiddle = totalPixels / 2;
+    const size_t sampleEnd = totalPixels - 1;
+    unsigned int sampleStartValue = 0;
+    unsigned int sampleMiddleValue = 0;
+    unsigned int sampleEndValue = 0;
+
+    size_t currentIndex = 0;
+    for (int y = 0; y < height; y++) {
+        const unsigned char* row = _screen_buffer + (clipped.top + y) * _screen_buffer_pitch + clipped.left;
+        for (int x = 0; x < width; x++, currentIndex++) {
+            unsigned int value = row[x];
+            checksum += value;
+            if (value < minValue) {
+                minValue = value;
+            }
+            if (value > maxValue) {
+                maxValue = value;
+            }
+
+            if (currentIndex == sampleStart) {
+                sampleStartValue = value;
+            }
+            if (currentIndex == sampleMiddle) {
+                sampleMiddleValue = value;
+            }
+            if (currentIndex == sampleEnd) {
+                sampleEndValue = value;
+            }
+        }
+    }
+
+    diagnosticsLog(DiagnosticsLevel::Trace,
+        "VA_TRACE",
+        "%s rect=(%d,%d %dx%d) min=%u max=%u checksum=0x%llX samples=%u,%u,%u",
+        stage,
+        clipped.left,
+        clipped.top,
+        width,
+        height,
+        minValue,
+        maxValue,
+        checksum,
+        sampleStartValue,
+        sampleMiddleValue,
+        sampleEndValue);
+}
+
+static void logVirtualScreenRectStats(const Rect& rect)
+{
+    if (!diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        return;
+    }
+
+    if (_screen_buffer == nullptr || _screen_buffer_pitch == 0) {
+        return;
+    }
+
+    int width = rectGetWidth(&rect);
+    int height = rectGetHeight(&rect);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    size_t totalPixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (totalPixels == 0) {
+        return;
+    }
+
+    unsigned int minValue = 0xFF;
+    unsigned int maxValue = 0;
+    unsigned long long checksum = 0;
+
+    size_t sampleFirstIndex = 0;
+    size_t sampleMiddleIndex = totalPixels / 2;
+    size_t sampleLastIndex = totalPixels - 1;
+    unsigned int firstSample = 0;
+    unsigned int middleSample = 0;
+    unsigned int lastSample = 0;
+
+    size_t currentIndex = 0;
+    for (int y = 0; y < height; y++) {
+        const unsigned char* row = _screen_buffer + (rect.top + y) * _screen_buffer_pitch + rect.left;
+        for (int x = 0; x < width; x++, currentIndex++) {
+            unsigned int value = row[x];
+            checksum += value;
+            if (value < minValue) {
+                minValue = value;
+            }
+            if (value > maxValue) {
+                maxValue = value;
+            }
+
+            if (currentIndex == sampleFirstIndex) {
+                firstSample = value;
+            }
+            if (currentIndex == sampleMiddleIndex) {
+                middleSample = value;
+            }
+            if (currentIndex == sampleLastIndex) {
+                lastSample = value;
+            }
+        }
+    }
+
+    diagnosticsLog(DiagnosticsLevel::Trace,
+        "WINDOW",
+        "virtualScreen stats rect=(%d,%d %dx%d) min=%u max=%u checksum=0x%llX samples=%u,%u,%u",
+        rect.left,
+        rect.top,
+        width,
+        height,
+        minValue,
+        maxValue,
+        checksum,
+        firstSample,
+        middleSample,
+        lastSample);
+}
+
+static void virtualScreenResetDirty()
+{
+    gVirtualScreenDirtyRect.left = 0;
+    gVirtualScreenDirtyRect.top = 0;
+    gVirtualScreenDirtyRect.right = -1;
+    gVirtualScreenDirtyRect.bottom = -1;
+    gVirtualScreenDirty = false;
+}
+
+static void virtualScreenInvalidateRect(const Rect* rect)
+{
+    if (!gVirtualScreenEnabled || rect == nullptr) {
+        return;
+    }
+
+    Rect clipped;
+    rectCopy(&clipped, rect);
+    const Rect& bounds = displayScalerGetLogicalBounds();
+    if (rectIntersection(&clipped, &bounds, &clipped) == -1) {
+        return;
+    }
+
+    if (!gVirtualScreenDirty) {
+        gVirtualScreenDirtyRect = clipped;
+        gVirtualScreenDirty = true;
+    } else {
+        if (clipped.left < gVirtualScreenDirtyRect.left) {
+            gVirtualScreenDirtyRect.left = clipped.left;
+        }
+        if (clipped.top < gVirtualScreenDirtyRect.top) {
+            gVirtualScreenDirtyRect.top = clipped.top;
+        }
+        if (clipped.right > gVirtualScreenDirtyRect.right) {
+            gVirtualScreenDirtyRect.right = clipped.right;
+        }
+        if (clipped.bottom > gVirtualScreenDirtyRect.bottom) {
+            gVirtualScreenDirtyRect.bottom = clipped.bottom;
+        }
+    }
+
+    gVirtualScreenDirtySequence++;
+}
+
+static void virtualScreenInvalidateAll()
+{
+    if (!gVirtualScreenEnabled) {
+        return;
+    }
+
+    Rect bounds = displayScalerGetLogicalBounds();
+    virtualScreenInvalidateRect(&bounds);
+}
+
+static int windowScrubTrueColorMask(uint32_t* overlayStart, unsigned char* maskStart, int pitch, int width, int height)
+{
+    int sanitized = 0;
+
+    for (int row = 0; row < height; row++) {
+        uint32_t* overlayRow = overlayStart + row * pitch;
+        unsigned char* maskRow = maskStart + row * pitch;
+
+        for (int column = 0; column < width; column++) {
+            if (maskRow[column] == 0) {
+                if (overlayRow[column] != 0) {
+                    overlayRow[column] = 0;
+                }
+                continue;
+            }
+
+            if (maskRow[column] != 1) {
+                maskRow[column] = 1;
+            }
+
+            if ((overlayRow[column] >> 24) == 0) {
+                maskRow[column] = 0;
+                overlayRow[column] = 0;
+                sanitized++;
+            }
+        }
+    }
+
+    return sanitized;
+}
+
+static bool shouldAllocatePhysicalTrueColorOverlay()
+{
+    if (!gVirtualScreenEnabled) {
+        return false;
+    }
+
+    if (true) {  // virtual_adapter_fullres removed
+        return false;
+    }
+
+    constexpr double kScaleEpsilon = 1.0e-4;
+    const double scale = displayScalerGetScale();
+    return scale >= 1.0 - kScaleEpsilon;
+}
+
+static void windowClearPhysicalTrueColorOverlay(Window* window)
+{
+    if (window == nullptr) {
+        return;
+    }
+
+    if (window->trueColorPhysicalOverlay == nullptr || window->trueColorPhysicalMask == nullptr) {
+        return;
+    }
+
+    if (window->trueColorPhysicalWidth <= 0 || window->trueColorPhysicalHeight <= 0) {
+        return;
+    }
+
+    size_t pixelCount = static_cast<size_t>(window->trueColorPhysicalWidth) * static_cast<size_t>(window->trueColorPhysicalHeight);
+    memset(window->trueColorPhysicalOverlay, 0, pixelCount * sizeof(uint32_t));
+    memset(window->trueColorPhysicalMask, 0, pixelCount);
+}
+
+static void windowFreePhysicalTrueColorOverlay(Window* window)
+{
+    if (window == nullptr) {
+        return;
+    }
+
+    if (window->trueColorPhysicalOverlay != nullptr) {
+        internal_free(window->trueColorPhysicalOverlay);
+        window->trueColorPhysicalOverlay = nullptr;
+    }
+
+    if (window->trueColorPhysicalMask != nullptr) {
+        internal_free(window->trueColorPhysicalMask);
+        window->trueColorPhysicalMask = nullptr;
+    }
+
+    window->trueColorPhysicalPitch = 0;
+    window->trueColorPhysicalWidth = 0;
+    window->trueColorPhysicalHeight = 0;
+    window->trueColorPhysicalViewport = { 0, 0, -1, -1 };
+}
+
+static bool windowEnsurePhysicalTrueColorOverlay(Window* window, const Rect& viewport, bool viewportChanged)
+{
+    if (window == nullptr) {
+        return false;
+    }
+
+    const int viewportWidth = rectGetWidth(&viewport);
+    const int viewportHeight = rectGetHeight(&viewport);
+
+    if (viewportWidth <= 0 || viewportHeight <= 0) {
+        if (window->trueColorPhysicalOverlay != nullptr || window->trueColorPhysicalMask != nullptr) {
+            windowFreePhysicalTrueColorOverlay(window);
+            return true;
+        }
+        return false;
+    }
+
+    bool changed = false;
+    const bool hasBuffers = window->trueColorPhysicalOverlay != nullptr
+        && window->trueColorPhysicalMask != nullptr
+        && window->trueColorPhysicalPitch > 0;
+
+    if (!hasBuffers || window->trueColorPhysicalWidth != viewportWidth || window->trueColorPhysicalHeight != viewportHeight) {
+        windowFreePhysicalTrueColorOverlay(window);
+
+        size_t pixelCount = static_cast<size_t>(viewportWidth) * static_cast<size_t>(viewportHeight);
+        size_t overlayBytes = pixelCount * sizeof(uint32_t);
+        uint32_t* overlay = (uint32_t*)internal_malloc(overlayBytes);
+        unsigned char* mask = (unsigned char*)internal_malloc(pixelCount);
+
+        if (overlay == nullptr || mask == nullptr) {
+            if (overlay != nullptr) {
+                internal_free(overlay);
+            }
+            if (mask != nullptr) {
+                internal_free(mask);
+            }
+
+            if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                diagnosticsLog(DiagnosticsLevel::Info,
+                    "SCALER",
+                    "windowEnsurePhysicalTrueColorOverlay id=%d unable to allocate %zu byte physical true-color overlay",
+                    window->id,
+                    overlayBytes + pixelCount);
+            }
+
+            return true;
+        }
+
+        memset(overlay, 0, overlayBytes);
+        memset(mask, 0, pixelCount);
+
+        window->trueColorPhysicalOverlay = overlay;
+        window->trueColorPhysicalMask = mask;
+        window->trueColorPhysicalPitch = viewportWidth;
+        window->trueColorPhysicalWidth = viewportWidth;
+        window->trueColorPhysicalHeight = viewportHeight;
+        window->trueColorPhysicalViewport = viewport;
+        changed = true;
+    } else if (!rectEquals(window->trueColorPhysicalViewport, viewport)) {
+        window->trueColorPhysicalViewport = viewport;
+        windowClearPhysicalTrueColorOverlay(window);
+        changed = true;
+    } else if (viewportChanged) {
+        windowClearPhysicalTrueColorOverlay(window);
+        changed = true;
+    }
+
+    return changed;
+}
+
+static void windowSyncPhysicalTrueColorBuffersIfNeeded()
+{
+    if (!gWindowSystemInitialized) {
+        return;
+    }
+
+    const bool shouldHaveBuffers = shouldAllocatePhysicalTrueColorOverlay();
+    const Rect& viewport = displayScalerGetPhysicalViewport();
+    const int viewportWidth = rectGetWidth(&viewport);
+    const int viewportHeight = rectGetHeight(&viewport);
+    const bool viewportValid = viewportWidth > 0 && viewportHeight > 0;
+
+    if (!shouldHaveBuffers || !viewportValid) {
+        bool freed = false;
+        for (int index = 0; index < gWindowsLength; index++) {
+            Window* window = gWindows[index];
+            if (window == nullptr) {
+                continue;
+            }
+
+            if (window->trueColorPhysicalOverlay != nullptr || window->trueColorPhysicalMask != nullptr) {
+                windowFreePhysicalTrueColorOverlay(window);
+                freed = true;
+            }
+        }
+
+        if (freed) {
+            gPhysicalTrueColorOverlayRevision++;
+        }
+
+        gPhysicalTrueColorViewportValid = false;
+        gPhysicalTrueColorViewport = { 0, 0, -1, -1 };
+        return;
+    }
+
+    bool viewportChanged = !gPhysicalTrueColorViewportValid || !rectEquals(gPhysicalTrueColorViewport, viewport);
+    bool updated = false;
+
+    for (int index = 0; index < gWindowsLength; index++) {
+        Window* window = gWindows[index];
+        if (window == nullptr) {
+            continue;
+        }
+
+        if (windowEnsurePhysicalTrueColorOverlay(window, viewport, viewportChanged)) {
+            updated = true;
+        }
+    }
+
+    if (updated) {
+        gPhysicalTrueColorOverlayRevision++;
+    }
+
+    gPhysicalTrueColorViewportValid = true;
+    gPhysicalTrueColorViewport = viewport;
+}
+
+static int windowCompositeTrueColorOverlays(const Rect& rect)
+{
+    if (!gVirtualScreenEnabled) {
+        return 0;
+    }
+
+    windowRefreshPhysicalTrueColorBuffers();
+
+    int pixelsOverridden = 0;
+
+    for (int index = 0; index < gWindowsLength; index++) {
+        Window* window = gWindows[index];
+        if (window == nullptr) {
+            continue;
+        }
+
+        const bool hasLogicalOverlay = window->trueColorOverlay != nullptr && window->trueColorMask != nullptr;
+        const bool hasPhysicalOverlay = window->trueColorPhysicalOverlay != nullptr
+            && window->trueColorPhysicalMask != nullptr
+            && window->trueColorPhysicalPitch > 0
+            && window->trueColorPhysicalWidth > 0
+            && window->trueColorPhysicalHeight > 0;
+
+        if (!hasLogicalOverlay && !hasPhysicalOverlay) {
+            continue;
+        }
+
+        Rect clipped;
+        if (rectIntersection(&(window->rect), &rect, &clipped) == -1) {
+            continue;
+        }
+
+        int width = rectGetWidth(&clipped);
+        int height = rectGetHeight(&clipped);
+        if (width <= 0 || height <= 0) {
+            continue;
+        }
+
+        bool attemptedPhysicalComposite = false;
+        if (hasPhysicalOverlay) {
+            Rect physicalRect = displayScalerLogicalToPhysical(clipped);
+            Rect viewport = window->trueColorPhysicalViewport;
+            if (rectIntersection(&physicalRect, &viewport, &physicalRect) != -1) {
+                int physicalWidth = rectGetWidth(&physicalRect);
+                int physicalHeight = rectGetHeight(&physicalRect);
+                if (physicalWidth > 0 && physicalHeight > 0) {
+                    attemptedPhysicalComposite = true;
+                    int destLeft = physicalRect.left - viewport.left;
+                    int destTop = physicalRect.top - viewport.top;
+                    uint32_t* overlayStart = window->trueColorPhysicalOverlay + destTop * window->trueColorPhysicalPitch + destLeft;
+                    unsigned char* maskStart = window->trueColorPhysicalMask + destTop * window->trueColorPhysicalPitch + destLeft;
+
+                    int sanitized = windowScrubTrueColorMask(overlayStart, maskStart, window->trueColorPhysicalPitch, physicalWidth, physicalHeight);
+                    if (sanitized > 0 && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                        diagnosticsLog(DiagnosticsLevel::Info,
+                            "SCALER",
+                            "windowCompositeTrueColorOverlays scrubbed=%d window=%d physical=(%d,%d %dx%d)",
+                            sanitized,
+                            window->id,
+                            physicalRect.left,
+                            physicalRect.top,
+                            physicalWidth,
+                            physicalHeight);
+                    }
+
+                    Rect presenterRect = physicalRect;
+                    rectOffset(&presenterRect, -viewport.left, -viewport.top);
+                    
+                    int written = 0;
+                    
+                    // Phase 7: Use GPU overlay when enabled for hardware-accelerated compositing
+                    if (gpuOverlayIsEnabled()) {
+                        // GPU path: upload directly to GPU overlay texture
+                        // Alpha blending handles transparency, no mask processing needed
+                        written = blitToGpuOverlayTexture(overlayStart, window->trueColorPhysicalPitch, presenterRect);
+                        
+                        if (settings.debug.render_path_trace && written > 0) {
+                            diagnosticsLog(DiagnosticsLevel::Info,
+                                "GPU_OVERLAY",
+                                "composited win=%d pixels=%d physical=(%d,%d %dx%d)",
+                                window->id,
+                                written,
+                                physicalRect.left,
+                                physicalRect.top,
+                                physicalWidth,
+                                physicalHeight);
+                        }
+                    } else {
+                        // CPU path: copy to presenter surface with mask
+                        written = blitPhysicalTrueColorRectToTexture(overlayStart, maskStart, window->trueColorPhysicalPitch, presenterRect);
+                        
+                        // RENDER PATH TRACE: Log HD overlay compositing
+                        if (settings.debug.render_path_trace && written > 0) {
+                            diagnosticsLog(DiagnosticsLevel::Info,
+                                "RENDERPATH",
+                                "PHANTOM: HD overlay composited win=%d pixels=%d physical=(%d,%d %dx%d)",
+                                window->id,
+                                written,
+                                physicalRect.left,
+                                physicalRect.top,
+                                physicalWidth,
+                                physicalHeight);
+                        }
+                    }
+                    
+                    windowAccumulateHdPhysicalPixels(written);
+                    pixelsOverridden += written;
+                }
+            }
+        }
+
+        if (attemptedPhysicalComposite || !hasLogicalOverlay) {
+            continue;
+        }
+
+        int offsetX = clipped.left - window->rect.left;
+        int offsetY = clipped.top - window->rect.top;
+        uint32_t* overlayStart = window->trueColorOverlay + offsetY * window->width + offsetX;
+        unsigned char* maskStart = window->trueColorMask + offsetY * window->width + offsetX;
+
+        int sanitized = windowScrubTrueColorMask(overlayStart, maskStart, window->width, width, height);
+        if (sanitized > 0 && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+            diagnosticsLog(DiagnosticsLevel::Info,
+                "SCALER",
+                "windowCompositeTrueColorOverlays scrubbed=%d window=%d logical=(%d,%d %dx%d)",
+                sanitized,
+                window->id,
+                clipped.left,
+                clipped.top,
+                width,
+                height);
+        }
+
+        int written = blitTrueColorRectToTexture(overlayStart, maskStart, window->width, clipped);
+        windowAccumulateHdLogicalPixels(written);
+        pixelsOverridden += written;
+    }
+
+    return pixelsOverridden;
+}
 
 // 0x4D5C30
 int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitProc* videoSystemExitProc, int a3)
@@ -163,8 +854,14 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
         return WINDOW_MANAGER_ERR_8;
     }
 
-    if (a3 & 1) {
-        _screen_buffer = (unsigned char*)internal_malloc((_scr_size.bottom - _scr_size.top + 1) * (_scr_size.right - _scr_size.left + 1));
+    int screenWidth = screenGetWidth();
+    int screenHeight = screenGetHeight();
+
+    bool wantScreenBuffer = (a3 & 1) != 0;
+    // virtual_adapter removed
+
+    if (wantScreenBuffer) {
+        _screen_buffer = (unsigned char*)internal_malloc(screenWidth * screenHeight);
         if (_screen_buffer == nullptr) {
             if (gVideoSystemExitProc != nullptr) {
                 gVideoSystemExitProc();
@@ -174,9 +871,19 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
 
             return WINDOW_MANAGER_ERR_NO_MEMORY;
         }
+
+        _screen_buffer_pitch = screenWidth;
+    } else {
+        _screen_buffer = nullptr;
+        _screen_buffer_pitch = 0;
     }
 
-    _buffering = false;
+    gVirtualScreenEnabled = false && _screen_buffer != nullptr;  // virtual_adapter removed
+    _buffering = gVirtualScreenEnabled;
+    virtualScreenResetDirty();
+    if (gVirtualScreenEnabled) {
+        virtualScreenInvalidateAll();
+    }
     _doing_refresh_all = 0;
 
     if (!_initColors()) {
@@ -228,15 +935,26 @@ int windowManagerInit(VideoSystemInitProc* videoSystemInitProc, VideoSystemExitP
 
     window->id = 0;
     window->flags = 0;
-    window->rect.left = _scr_size.left;
-    window->rect.top = _scr_size.top;
-    window->rect.right = _scr_size.right;
-    window->rect.bottom = _scr_size.bottom;
-    window->width = _scr_size.right - _scr_size.left + 1;
-    window->height = _scr_size.bottom - _scr_size.top + 1;
+    window->rect.left = 0;
+    window->rect.top = 0;
+    window->rect.right = screenWidth - 1;
+    window->rect.bottom = screenHeight - 1;
+    window->width = screenWidth;
+    window->height = screenHeight;
     window->tx = 0;
     window->ty = 0;
     window->buffer = nullptr;
+    window->trueColorOverlay = nullptr;
+    window->trueColorMask = nullptr;
+    window->trueColorPhysicalOverlay = nullptr;
+    window->trueColorPhysicalMask = nullptr;
+    window->trueColorPhysicalPitch = 0;
+    window->trueColorPhysicalWidth = 0;
+    window->trueColorPhysicalHeight = 0;
+    window->trueColorPhysicalViewport.left = 0;
+    window->trueColorPhysicalViewport.top = 0;
+    window->trueColorPhysicalViewport.right = -1;
+    window->trueColorPhysicalViewport.bottom = -1;
     window->buttonListHead = nullptr;
     window->hoveredButton = nullptr;
     window->clickedButton = nullptr;
@@ -279,6 +997,10 @@ void windowManagerExit(void)
             if (_screen_buffer != nullptr) {
                 internal_free(_screen_buffer);
             }
+            _screen_buffer = nullptr;
+            _screen_buffer_pitch = 0;
+            gVirtualScreenEnabled = false;
+            virtualScreenResetDirty();
 
             if (gVideoSystemExitProc != nullptr) {
                 gVideoSystemExitProc();
@@ -318,11 +1040,14 @@ int windowCreate(int x, int y, int width, int height, int color, int flags)
         return -1;
     }
 
-    if (width > rectGetWidth(&_scr_size)) {
+    int screenWidth = screenGetWidth();
+    int screenHeight = screenGetHeight();
+
+    if (width > screenWidth) {
         return -1;
     }
 
-    if (height > rectGetHeight(&_scr_size)) {
+    if (height > screenHeight) {
         return -1;
     }
 
@@ -337,12 +1062,96 @@ int windowCreate(int x, int y, int width, int height, int color, int flags)
         return -1;
     }
 
+    window->trueColorOverlay = nullptr;
+    window->trueColorMask = nullptr;
+    window->trueColorPhysicalOverlay = nullptr;
+    window->trueColorPhysicalMask = nullptr;
+    window->trueColorPhysicalPitch = 0;
+    window->trueColorPhysicalWidth = 0;
+    window->trueColorPhysicalHeight = 0;
+    window->trueColorPhysicalViewport.left = 0;
+    window->trueColorPhysicalViewport.top = 0;
+    window->trueColorPhysicalViewport.right = -1;
+    window->trueColorPhysicalViewport.bottom = -1;
+
     int id = 1;
     while (windowGetWindow(id) != nullptr) {
         id++;
     }
 
     window->id = id;
+
+    if (gVirtualScreenEnabled) {
+        size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
+        size_t overlayBytes = pixelCount * sizeof(uint32_t);
+        uint32_t* overlay = nullptr;
+        unsigned char* mask = nullptr;
+
+        if (pixelCount > 0) {
+            overlay = (uint32_t*)internal_malloc(overlayBytes);
+            mask = (unsigned char*)internal_malloc(pixelCount);
+        }
+
+        if (overlay == nullptr || mask == nullptr) {
+            if (overlay != nullptr) {
+                internal_free(overlay);
+            }
+            if (mask != nullptr) {
+                internal_free(mask);
+            }
+
+            if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                diagnosticsLog(DiagnosticsLevel::Info,
+                    "SCALER",
+                    "windowCreate id=%d unable to allocate %zu byte true-color overlay",
+                    window->id,
+                    overlayBytes + pixelCount);
+            }
+        } else {
+            memset(overlay, 0, overlayBytes);
+            memset(mask, 0, pixelCount);
+            window->trueColorOverlay = overlay;
+            window->trueColorMask = mask;
+        }
+    }
+
+    if (shouldAllocatePhysicalTrueColorOverlay()) {
+        const Rect& viewport = displayScalerGetPhysicalViewport();
+        const int viewportWidth = rectGetWidth(&viewport);
+        const int viewportHeight = rectGetHeight(&viewport);
+        if (viewportWidth > 0 && viewportHeight > 0) {
+            size_t pixelCount = static_cast<size_t>(viewportWidth) * static_cast<size_t>(viewportHeight);
+            size_t overlayBytes = pixelCount * sizeof(uint32_t);
+            uint32_t* overlay = (uint32_t*)internal_malloc(overlayBytes);
+            unsigned char* mask = (unsigned char*)internal_malloc(pixelCount);
+
+            if (overlay == nullptr || mask == nullptr) {
+                if (overlay != nullptr) {
+                    internal_free(overlay);
+                }
+                if (mask != nullptr) {
+                    internal_free(mask);
+                }
+
+                if (diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+                    diagnosticsLog(DiagnosticsLevel::Info,
+                        "SCALER",
+                        "windowCreate id=%d unable to allocate %zu byte physical true-color overlay",
+                        window->id,
+                        overlayBytes + pixelCount);
+                }
+            } else {
+                memset(overlay, 0, overlayBytes);
+                memset(mask, 0, pixelCount);
+                window->trueColorPhysicalOverlay = overlay;
+                window->trueColorPhysicalMask = mask;
+                window->trueColorPhysicalPitch = viewportWidth;
+                window->trueColorPhysicalWidth = viewportWidth;
+                window->trueColorPhysicalHeight = viewportHeight;
+                window->trueColorPhysicalViewport = viewport;
+            }
+        }
+    }
 
     if ((flags & WINDOW_USE_DEFAULTS) != 0) {
         flags |= _window_flags;
@@ -450,6 +1259,16 @@ void windowFree(int win)
         internal_free(window->buffer);
     }
 
+    if (window->trueColorOverlay != nullptr) {
+        internal_free(window->trueColorOverlay);
+    }
+
+    if (window->trueColorMask != nullptr) {
+        internal_free(window->trueColorMask);
+    }
+
+    windowFreePhysicalTrueColorOverlay(window);
+
     if (window->menuBar != nullptr) {
         internal_free(window->menuBar);
     }
@@ -468,6 +1287,9 @@ void windowFree(int win)
 void _win_buffering(bool a1)
 {
     if (_screen_buffer != nullptr) {
+        if (gVirtualScreenEnabled && !a1) {
+            return;
+        }
         _buffering = a1;
     }
 }
@@ -730,12 +1552,15 @@ void _win_move(int win, int x, int y)
         x += 2;
     }
 
-    if (x + window->width - 1 > _scr_size.right) {
-        x = _scr_size.right - window->width + 1;
+    int screenWidth = screenGetWidth();
+    int screenHeight = screenGetHeight();
+
+    if (x + window->width - 1 > screenWidth - 1) {
+        x = screenWidth - window->width;
     }
 
-    if (y + window->height - 1 > _scr_size.bottom) {
-        y = _scr_size.bottom - window->height + 1;
+    if (y + window->height - 1 > screenHeight - 1) {
+        y = screenHeight - window->height;
     }
 
     if ((window->flags & WINDOW_MANAGED) != 0) {
@@ -771,6 +1596,11 @@ void windowRefresh(int win)
     }
 
     _GNW_win_refresh(window, &(window->rect), nullptr);
+
+    // Phase 7b: Only present immediately if deferred presentation is disabled
+    if (!gDeferredPresentationEnabled) {
+        windowPresentVirtualScreen();
+    }
 }
 
 // 0x4D6F80
@@ -791,6 +1621,11 @@ void windowRefreshRect(int win, const Rect* rect)
     rectOffset(&newRect, window->rect.left, window->rect.top);
 
     _GNW_win_refresh(window, &newRect, nullptr);
+    
+    // Phase 7b: Only present immediately if deferred presentation is disabled
+    if (!gDeferredPresentationEnabled) {
+        windowPresentVirtualScreen();
+    }
 }
 
 // 0x4D6FD8
@@ -801,6 +1636,8 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
 
     // TODO: Get rid of this.
     dest_pitch = 0;
+
+    const int screenWidth = screenGetWidth();
 
     if ((window->flags & WINDOW_HIDDEN) != 0) {
         return;
@@ -851,29 +1688,38 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                                 dest_pitch);
                         }
                     } else {
+                        // NOTE: We always write to _screen_buffer, even when orchestrator is active.
+                        // The _screen_buffer content is needed for the indexed presenter texture.
+                        // The HD overlay from the orchestrator is composited ON TOP of the indexed layer.
+                        // Skipping these writes causes a black screen!
                         if (_buffering) {
+                            // Mark region dirty for virtual screen system
+                            if (gVirtualScreenEnabled) {
+                                virtualScreenInvalidateRect(&(v20->rect));
+                            }
+                            // Always write to _screen_buffer
                             if (window->flags & WINDOW_TRANSPARENT) {
                                 window->blitProc(
                                     window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
                                     v20->rect.right - v20->rect.left + 1,
                                     v20->rect.bottom - v20->rect.top + 1,
                                     window->width,
-                                    _screen_buffer + v20->rect.top * (_scr_size.right - _scr_size.left + 1) + v20->rect.left,
-                                    _scr_size.right - _scr_size.left + 1);
+                                    _screen_buffer + v20->rect.top * screenWidth + v20->rect.left,
+                                    screenWidth);
                             } else {
                                 blitBufferToBuffer(
                                     window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
                                     v20->rect.right - v20->rect.left + 1,
                                     v20->rect.bottom - v20->rect.top + 1,
                                     window->width,
-                                    _screen_buffer + v20->rect.top * (_scr_size.right - _scr_size.left + 1) + v20->rect.left,
-                                    _scr_size.right - _scr_size.left + 1);
+                                    _screen_buffer + v20->rect.top * screenWidth + v20->rect.left,
+                                    screenWidth);
                             }
                         } else {
                             _scr_blit(
                                 window->buffer + v20->rect.left - window->rect.left + (v20->rect.top - window->rect.top) * window->width,
                                 window->width,
-                                v20->rect.bottom - v20->rect.bottom + 1,
+                                v20->rect.bottom - v20->rect.top + 1,
                                 0,
                                 0,
                                 v20->rect.right - v20->rect.left + 1,
@@ -886,6 +1732,7 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                     v20 = v20->next;
                 }
             } else {
+                // Background window (id=0) - fill with background color
                 RectListNode* v16 = v26;
                 while (v16 != nullptr) {
                     int width = v16->rect.right - v16->rect.left + 1;
@@ -903,12 +1750,13 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                                 dest_pitch);
                         } else {
                             if (_buffering) {
+                                // Always write to _screen_buffer - needed for indexed presenter
                                 blitBufferToBuffer(buf,
                                     width,
                                     height,
                                     width,
-                                    _screen_buffer + v16->rect.top * (_scr_size.right - _scr_size.left + 1) + v16->rect.left,
-                                    _scr_size.right - _scr_size.left + 1);
+                                    _screen_buffer + v16->rect.top * screenWidth + v16->rect.left,
+                                    screenWidth);
                             } else {
                                 _scr_blit(buf, width, height, 0, 0, width, height, v16->rect.left, v16->rect.top);
                             }
@@ -925,16 +1773,43 @@ void _GNW_win_refresh(Window* window, Rect* rect, unsigned char* a3)
                 v24 = v23->next;
 
                 if (_buffering && !a3) {
-                    _scr_blit(
-                        _screen_buffer + v23->rect.left + (_scr_size.right - _scr_size.left + 1) * v23->rect.top,
-                        _scr_size.right - _scr_size.left + 1,
-                        v23->rect.bottom - v23->rect.top + 1,
-                        0,
-                        0,
-                        v23->rect.right - v23->rect.left + 1,
-                        v23->rect.bottom - v23->rect.top + 1,
-                        v23->rect.left,
-                        v23->rect.top);
+                    if (gVirtualScreenEnabled) {
+                        if (virtualAdapterTraceEnabled()) {
+                            char stage[64];
+                            std::snprintf(stage, sizeof(stage), "gnw_refresh win=%d", window->id);
+                            logVirtualAdapterTraceRect(stage, v23->rect);
+                        }
+                        if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+                            const int width = rectGetWidth(&(v23->rect));
+                            const int height = rectGetHeight(&(v23->rect));
+                            const int area = width * height;
+                            if (area >= kVirtualScreenTraceMinArea) {
+                                diagnosticsLog(DiagnosticsLevel::Trace,
+                                    "WINDOW",
+                                    "virtualScreenInvalidate window=%d area=%d rect=(%d,%d %dx%d) buffering=%d refresh_all=%d",
+                                    window->id,
+                                    area,
+                                    v23->rect.left,
+                                    v23->rect.top,
+                                    width,
+                                    height,
+                                    _buffering ? 1 : 0,
+                                    _doing_refresh_all ? 1 : 0);
+                            }
+                        }
+                        virtualScreenInvalidateRect(&(v23->rect));
+                    } else {
+                        _scr_blit(
+                            _screen_buffer + v23->rect.left + screenWidth * v23->rect.top,
+                            screenWidth,
+                            v23->rect.bottom - v23->rect.top + 1,
+                            0,
+                            0,
+                            v23->rect.right - v23->rect.left + 1,
+                            v23->rect.bottom - v23->rect.top + 1,
+                            v23->rect.left,
+                            v23->rect.top);
+                    }
                 }
 
                 _rect_free(v23);
@@ -1052,20 +1927,22 @@ void win_drag(int win)
         dx = mx - dx;
         dy = my - dy;
 
-        if (dx + window->rect.left < _scr_size.left) {
-            dx = _scr_size.left - window->rect.left;
+        const Rect& logicalBounds = displayScalerGetLogicalBounds();
+
+        if (dx + window->rect.left < logicalBounds.left) {
+            dx = logicalBounds.left - window->rect.left;
         }
 
-        if (dx + window->rect.right > _scr_size.right) {
-            dx = _scr_size.right - window->rect.right;
+        if (dx + window->rect.right > logicalBounds.right) {
+            dx = logicalBounds.right - window->rect.right;
         }
 
-        if (dy + window->rect.top < _scr_size.top) {
-            dy = _scr_size.top - window->rect.top;
+        if (dy + window->rect.top < logicalBounds.top) {
+            dy = logicalBounds.top - window->rect.top;
         }
 
-        if (dy + window->rect.bottom > _scr_size.bottom) {
-            dy = _scr_size.bottom - window->rect.bottom;
+        if (dy + window->rect.bottom > logicalBounds.bottom) {
+            dy = logicalBounds.bottom - window->rect.bottom;
         }
 
         renderPresent();
@@ -1102,6 +1979,11 @@ void _refresh_all(Rect* rect, unsigned char* a2)
                 mouseShowCursor();
             }
         }
+
+        // Phase 7c: Only present immediately if deferred presentation is disabled
+        if (!gDeferredPresentationEnabled) {
+            windowPresentVirtualScreen();
+        }
     }
 }
 
@@ -1135,6 +2017,161 @@ unsigned char* windowGetBuffer(int win)
     }
 
     return window->buffer;
+}
+
+bool windowResolveBufferRect(const unsigned char* buffer, int pitch, int width, int height, Rect* outRect, int* outWindowId)
+{
+    if (!gWindowSystemInitialized) {
+        return false;
+    }
+
+    if (buffer == nullptr || outRect == nullptr) {
+        return false;
+    }
+
+    if (width <= 0 || height <= 0 || pitch <= 0) {
+        return false;
+    }
+
+    if (outWindowId != nullptr) {
+        *outWindowId = -1;
+    }
+
+    auto tryResolve = [&](const unsigned char* base, int basePitch, int baseHeight, const Rect& baseRect, int owningWindowId) {
+        if (base == nullptr) {
+            return false;
+        }
+
+        if (pitch != basePitch) {
+            return false;
+        }
+
+        ptrdiff_t delta = buffer - base;
+        if (delta < 0) {
+            return false;
+        }
+
+        const ptrdiff_t limit = static_cast<ptrdiff_t>(basePitch) * baseHeight;
+        if (delta >= limit) {
+            return false;
+        }
+
+        int localY = static_cast<int>(delta / basePitch);
+        int localX = static_cast<int>(delta % basePitch);
+
+        Rect resolved;
+        resolved.left = baseRect.left + localX;
+        resolved.top = baseRect.top + localY;
+        resolved.right = resolved.left + width - 1;
+        resolved.bottom = resolved.top + height - 1;
+
+        if (rectIntersection(&resolved, &baseRect, &resolved) == -1) {
+            return false;
+        }
+
+        *outRect = resolved;
+        if (outWindowId != nullptr) {
+            *outWindowId = owningWindowId;
+        }
+        return true;
+    };
+
+    if (gVirtualScreenEnabled && _screen_buffer != nullptr) {
+        const Rect& logical = displayScalerGetLogicalBounds();
+        if (tryResolve(_screen_buffer, _screen_buffer_pitch, rectGetHeight(&logical), logical, -1)) {
+            return true;
+        }
+    }
+
+    for (int index = 0; index < gWindowsLength; index++) {
+        Window* window = gWindows[index];
+        if (window == nullptr || window->buffer == nullptr) {
+            continue;
+        }
+
+        Rect rect;
+        rectCopy(&rect, &(window->rect));
+        if (tryResolve(window->buffer, window->width, window->height, rect, window->id)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool windowResolveTrueColorRegion(const unsigned char* buffer, int pitch, int width, int height, Rect* outRect, uint32_t** outOverlay, unsigned char** outMask, int* outOverlayPitch)
+{
+    if (!gWindowSystemInitialized) {
+        return false;
+    }
+
+    if (buffer == nullptr || width <= 0 || height <= 0 || pitch <= 0) {
+        return false;
+    }
+
+    for (int index = 0; index < gWindowsLength; index++) {
+        Window* window = gWindows[index];
+        if (window == nullptr || window->buffer == nullptr) {
+            continue;
+        }
+
+        if (window->trueColorOverlay == nullptr || window->trueColorMask == nullptr) {
+            continue;
+        }
+
+        if (pitch != window->width) {
+            continue;
+        }
+
+        ptrdiff_t delta = buffer - window->buffer;
+        if (delta < 0) {
+            continue;
+        }
+
+        const ptrdiff_t limit = static_cast<ptrdiff_t>(window->width) * window->height;
+        if (delta >= limit) {
+            continue;
+        }
+
+        int localY = static_cast<int>(delta / window->width);
+        int localX = static_cast<int>(delta % window->width);
+
+        Rect resolved;
+        resolved.left = window->rect.left + localX;
+        resolved.top = window->rect.top + localY;
+        resolved.right = resolved.left + width - 1;
+        resolved.bottom = resolved.top + height - 1;
+
+        Rect clipped;
+        rectCopy(&clipped, &resolved);
+        if (rectIntersection(&resolved, &(window->rect), &clipped) == -1) {
+            continue;
+        }
+
+        if (clipped.left != resolved.left || clipped.top != resolved.top || clipped.right != resolved.right || clipped.bottom != resolved.bottom) {
+            continue;
+        }
+
+        if (outRect != nullptr) {
+            *outRect = clipped;
+        }
+
+        if (outOverlay != nullptr) {
+            *outOverlay = window->trueColorOverlay + localY * window->width + localX;
+        }
+
+        if (outMask != nullptr) {
+            *outMask = window->trueColorMask + localY * window->width + localX;
+        }
+
+        if (outOverlayPitch != nullptr) {
+            *outOverlayPitch = window->width;
+        }
+
+        return true;
+    }
+
+    return false;
 }
 
 // 0x4D78CC
@@ -2557,6 +3594,400 @@ int _win_button_press_and_release(int btn)
     }
 
     return 0;
+}
+
+unsigned char* windowGetVirtualScreenBuffer()
+{
+    return _screen_buffer;
+}
+
+int windowGetVirtualScreenPitch()
+{
+    return _screen_buffer != nullptr ? _screen_buffer_pitch : 0;
+}
+
+bool windowIsVirtualScreenEnabled()
+{
+    return gVirtualScreenEnabled;
+}
+
+void windowPresentVirtualScreen()
+{
+    windowRefreshPhysicalTrueColorBuffers();
+
+    if (!gVirtualScreenEnabled || !gVirtualScreenDirty || _screen_buffer == nullptr) {
+        return;
+    }
+
+    windowResetPresentStats();
+
+    Rect rect = gVirtualScreenDirtyRect;
+    virtualScreenResetDirty();
+
+    const Rect& bounds = displayScalerGetLogicalBounds();
+    if (rectIntersection(&rect, &bounds, &rect) == -1) {
+        return;
+    }
+
+    int width = rectGetWidth(&rect);
+    int height = rectGetHeight(&rect);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    if (virtualAdapterTraceEnabled()) {
+        logVirtualAdapterTraceRect("present_dirty", rect);
+    }
+
+    logVirtualScreenRectStats(rect);
+    windowAccumulateLogicalRectStats(rect);
+
+    Rect physicalDirtyRect = displayScalerLogicalToPhysical(rect);
+    if (virtualAdapterTraceEnabled()) {
+        diagnosticsLog(DiagnosticsLevel::Trace,
+            "VA_TRACE",
+            "present_map logical=(%d,%d %dx%d) physical=(%d,%d %dx%d)",
+            rect.left,
+            rect.top,
+            width,
+            height,
+            physicalDirtyRect.left,
+            physicalDirtyRect.top,
+            rectGetWidth(&physicalDirtyRect),
+            rectGetHeight(&physicalDirtyRect));
+    }
+    windowAccumulatePhysicalRectStats(physicalDirtyRect);
+
+    // Phase 5: When orchestrator is active, it handles HD overlays but base indexed background still needs rendering
+    
+    // Always render the indexed background to presenter (8-bit base layer)
+    const unsigned char* virtualScreenBuffer = windowGetVirtualScreenBuffer();
+    if (virtualScreenBuffer != nullptr) {
+        const int pitch = windowGetVirtualScreenPitch();
+        blitIndexedRectToTexture(virtualScreenBuffer, pitch, rect);
+    }
+    
+    // Only warn if virtual adapter is explicitly enabled but orchestrator isn't working
+    if (gVirtualScreenEnabled && diagnosticsWouldLog(DiagnosticsLevel::Info)) {
+        diagnosticsLog(DiagnosticsLevel::Info,
+            "SCALER",
+            "virtual_adapter enabled but orchestrator inactive - using fallback rendering");
+    }
+
+    int overlayPixels = windowCompositeTrueColorOverlays(rect);
+    if (overlayPixels > 0 && diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        diagnosticsLog(DiagnosticsLevel::Trace,
+            "SCALER",
+            "hd_overlay virtual=(%d,%d %dx%d) pixels_overridden=%d",
+            rect.left,
+            rect.top,
+            width,
+            height,
+            overlayPixels);
+    }
+
+    if (diagnosticsWouldLog(DiagnosticsLevel::Trace)) {
+        const Rect& viewport = displayScalerGetPhysicalViewport();
+        diagnosticsLog(
+            DiagnosticsLevel::Trace,
+            "SCALER",
+            "virtual_present virtual=(%d,%d %dx%d) viewport=(%d,%d %dx%d)",
+            rect.left,
+            rect.top,
+            width,
+            height,
+            viewport.left,
+            viewport.top,
+            rectGetWidth(&viewport),
+            rectGetHeight(&viewport));
+    }
+
+    windowLogPresentStats(rect, physicalDirtyRect);
+}
+
+void windowVirtualScreenInvalidateAll()
+{
+    virtualScreenInvalidateAll();
+}
+
+void windowVirtualScreenInvalidateRect(const Rect& rect)
+{
+    virtualScreenInvalidateRect(&rect);
+}
+
+uint32_t windowVirtualScreenGetDirtySequence()
+{
+    return gVirtualScreenDirtySequence;
+}
+
+// Phase 8.4: Get the current dirty rect and reset for next frame
+// Returns true if there was a dirty region, false if nothing was dirty
+bool windowVirtualScreenGetDirtyRect(Rect* outRect)
+{
+    if (outRect == nullptr) {
+        return false;
+    }
+    
+    if (!gVirtualScreenDirty) {
+        // Nothing dirty - return invalid rect
+        outRect->left = 0;
+        outRect->top = 0;
+        outRect->right = -1;
+        outRect->bottom = -1;
+        return false;
+    }
+    
+    // Copy the dirty rect
+    *outRect = gVirtualScreenDirtyRect;
+    
+    // Reset for next frame
+    virtualScreenResetDirty();
+    
+    return true;
+}
+
+void windowRefreshPhysicalTrueColorBuffers()
+{
+    windowSyncPhysicalTrueColorBuffersIfNeeded();
+}
+
+uint32_t windowGetPhysicalTrueColorOverlayRevision()
+{
+    return gPhysicalTrueColorOverlayRevision;
+}
+
+// Legacy true-color compatibility layer ------------------------------------
+
+void windowTrueColorSetPaletteBaseline(const unsigned char* /*palette*/)
+{
+    // No-op until the true-color compositor returns.
+}
+
+bool isTrueColorRendererActive()
+{
+    return gVirtualScreenEnabled;
+}
+
+unsigned char* windowGetScreenBuffer()
+{
+    return _screen_buffer;
+}
+
+int windowGetScreenPitch()
+{
+    return _screen_buffer != nullptr ? _screen_buffer_pitch : 0;
+}
+
+bool windowHasTrueColorOverlay(int win)
+{
+    if (!gVirtualScreenEnabled) {
+        return false;
+    }
+
+    Window* window = windowGetWindow(win);
+    if (window == nullptr) {
+        return false;
+    }
+
+    return window->trueColorOverlay != nullptr && window->trueColorMask != nullptr;
+}
+
+uint32_t* windowGetTrueColorOverlay(int win)
+{
+    if (!windowHasTrueColorOverlay(win)) {
+        return nullptr;
+    }
+
+    Window* window = windowGetWindow(win);
+    return window != nullptr ? window->trueColorOverlay : nullptr;
+}
+
+unsigned char* windowGetTrueColorMask(int win)
+{
+    if (!windowHasTrueColorOverlay(win)) {
+        return nullptr;
+    }
+
+    Window* window = windowGetWindow(win);
+    return window != nullptr ? window->trueColorMask : nullptr;
+}
+
+bool windowHasPhysicalTrueColorOverlay(int win)
+{
+    if (!gVirtualScreenEnabled) {
+        return false;
+    }
+
+    windowRefreshPhysicalTrueColorBuffers();
+
+    Window* window = windowGetWindow(win);
+    if (window == nullptr) {
+        return false;
+    }
+
+    return window->trueColorPhysicalOverlay != nullptr && window->trueColorPhysicalMask != nullptr && window->trueColorPhysicalPitch > 0;
+}
+
+bool windowGetPhysicalTrueColorOverlay(int win, WindowPhysicalTrueColorBuffer* outBuffer)
+{
+    windowRefreshPhysicalTrueColorBuffers();
+
+    if (!windowHasPhysicalTrueColorOverlay(win)) {
+        return false;
+    }
+
+    Window* window = windowGetWindow(win);
+    if (window == nullptr) {
+        return false;
+    }
+
+    if (outBuffer != nullptr) {
+        outBuffer->pixels = window->trueColorPhysicalOverlay;
+        outBuffer->mask = window->trueColorPhysicalMask;
+        outBuffer->pitch = window->trueColorPhysicalPitch;
+        outBuffer->width = window->trueColorPhysicalWidth;
+        outBuffer->height = window->trueColorPhysicalHeight;
+        outBuffer->viewport = window->trueColorPhysicalViewport;
+    }
+
+    return true;
+}
+
+void windowClearTrueColorRegion(int win, int left, int top, int width, int height)
+{
+    windowRefreshPhysicalTrueColorBuffers();
+
+    if (!windowHasTrueColorOverlay(win) || width <= 0 || height <= 0) {
+        return;
+    }
+
+    Window* window = windowGetWindow(win);
+    if (window == nullptr) {
+        return;
+    }
+
+    int startX = std::clamp(left, 0, window->width);
+    int startY = std::clamp(top, 0, window->height);
+    int endX = std::clamp(left + width, 0, window->width);
+    int endY = std::clamp(top + height, 0, window->height);
+
+    if (startX >= endX || startY >= endY) {
+        return;
+    }
+
+    int rowWidth = endX - startX;
+    for (int y = startY; y < endY; y++) {
+        int offset = y * window->width + startX;
+        memset(window->trueColorMask + offset, 0, rowWidth);
+        memset(window->trueColorOverlay + offset, 0, rowWidth * sizeof(uint32_t));
+    }
+
+    if (window->trueColorPhysicalOverlay != nullptr && window->trueColorPhysicalMask != nullptr) {
+        // Optimization disabled due to missing DisplayScalerScaleTable
+    }
+
+    if (window->trueColorPhysicalOverlay != nullptr && window->trueColorPhysicalMask != nullptr && window->trueColorPhysicalPitch > 0 && window->trueColorPhysicalWidth > 0 && window->trueColorPhysicalHeight > 0) {
+        Rect logicalRect;
+        logicalRect.left = window->rect.left + startX;
+        logicalRect.top = window->rect.top + startY;
+        logicalRect.right = logicalRect.left + (rowWidth - 1);
+        logicalRect.bottom = logicalRect.top + (endY - startY - 1);
+
+        Rect physicalRect = displayScalerLogicalToPhysical(logicalRect);
+        Rect viewport = window->trueColorPhysicalViewport;
+        if (rectIntersection(&physicalRect, &viewport, &physicalRect) != -1) {
+            int physicalWidth = rectGetWidth(&physicalRect);
+            int physicalHeight = rectGetHeight(&physicalRect);
+            if (physicalWidth > 0 && physicalHeight > 0) {
+                int destLeft = physicalRect.left - viewport.left;
+                int destTop = physicalRect.top - viewport.top;
+                for (int row = 0; row < physicalHeight; row++) {
+                    uint32_t* overlayRow = window->trueColorPhysicalOverlay + (destTop + row) * window->trueColorPhysicalPitch + destLeft;
+                    unsigned char* maskRow = window->trueColorPhysicalMask + (destTop + row) * window->trueColorPhysicalPitch + destLeft;
+                    memset(overlayRow, 0, physicalWidth * sizeof(uint32_t));
+                    memset(maskRow, 0, physicalWidth);
+                }
+            }
+        }
+    }
+}
+
+void windowDebugStampMissingHdGlyph(int win, int left, int top, int width, int height)
+{
+    if (!settings.debug.hd_missing_watermark) {
+        return;
+    }
+
+    if (!windowHasTrueColorOverlay(win)) {
+        return;
+    }
+
+    Window* window = windowGetWindow(win);
+    if (window == nullptr) {
+        return;
+    }
+
+    int regionLeft = std::clamp(left, 0, window->width);
+    int regionTop = std::clamp(top, 0, window->height);
+    int regionRight = std::clamp(left + width, 0, window->width);
+    int regionBottom = std::clamp(top + height, 0, window->height);
+    if (regionLeft >= regionRight || regionTop >= regionBottom) {
+        return;
+    }
+
+    constexpr int glyphWidth = 6;
+    constexpr int glyphHeight = 6;
+    static const unsigned char glyph[glyphHeight][glyphWidth] = {
+        { 1, 0, 0, 0, 0, 1 },
+        { 1, 1, 0, 0, 1, 1 },
+        { 1, 0, 1, 1, 0, 1 },
+        { 1, 0, 1, 1, 0, 1 },
+        { 1, 1, 0, 0, 1, 1 },
+        { 1, 0, 0, 0, 0, 1 },
+    };
+
+    int regionWidth = regionRight - regionLeft;
+    int regionHeight = regionBottom - regionTop;
+    int drawWidth = std::min(glyphWidth, regionWidth);
+    int drawHeight = std::min(glyphHeight, regionHeight);
+    if (drawWidth <= 0 || drawHeight <= 0) {
+        return;
+    }
+
+    int glyphLeft = regionLeft + (regionWidth - drawWidth) / 2;
+    int glyphTop = regionTop + (regionHeight - drawHeight) / 2;
+
+    uint32_t* overlayRow = window->trueColorOverlay + glyphTop * window->width + glyphLeft;
+    unsigned char* maskRow = window->trueColorMask + glyphTop * window->width + glyphLeft;
+    const uint32_t glyphColor = 0xFFFF40FF;
+
+    for (int y = 0; y < drawHeight; y++) {
+        const unsigned char* glyphRow = glyph[y];
+        uint32_t* overlayPixel = overlayRow;
+        unsigned char* maskPixel = maskRow;
+        for (int x = 0; x < drawWidth; x++) {
+            if (glyphRow[x] != 0) {
+                *overlayPixel = glyphColor;
+                *maskPixel = 1;
+            }
+            overlayPixel++;
+            maskPixel++;
+        }
+
+        overlayRow += window->width;
+        maskRow += window->width;
+    }
+}
+
+// Phase 7b: Deferred presentation control
+void windowSetDeferredPresentation(bool enabled)
+{
+    gDeferredPresentationEnabled = enabled;
+}
+
+bool windowIsDeferredPresentationEnabled()
+{
+    return gDeferredPresentationEnabled;
 }
 
 } // namespace fallout

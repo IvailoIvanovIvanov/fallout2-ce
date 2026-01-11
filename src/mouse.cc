@@ -1,6 +1,7 @@
 #include "mouse.h"
 
 #include "color.h"
+#include "renderer/display_scaler.h"
 #include "dinput.h"
 #include "input.h"
 #include "kb.h"
@@ -141,10 +142,12 @@ int mouseInit()
     }
 
     gMouseInitialized = true;
-    gMouseCursorX = _scr_size.right / 2;
-    gMouseCursorY = _scr_size.bottom / 2;
-    _raw_x = _scr_size.right / 2;
-    _raw_y = _scr_size.bottom / 2;
+
+    LogicalSpace logicalSpace = displayScalerGetLogicalSpace();
+    gMouseCursorX = logicalSpace.width / 2;
+    gMouseCursorY = logicalSpace.height / 2;
+    _raw_x = gMouseCursorX;
+    _raw_y = gMouseCursorY;
     _mouse_idle_start_time = getTicks();
 
     return 0;
@@ -309,30 +312,32 @@ void mouseShowCursor()
             }
         }
 
-        if (gMouseCursorX >= _scr_size.left) {
-            if (gMouseCursorWidth + gMouseCursorX - 1 <= _scr_size.right) {
+        const Rect& logicalBounds = displayScalerGetLogicalBounds();
+
+        if (gMouseCursorX >= logicalBounds.left) {
+            if (gMouseCursorWidth + gMouseCursorX - 1 <= logicalBounds.right) {
                 v8 = gMouseCursorWidth;
                 v7 = 0;
             } else {
                 v7 = 0;
-                v8 = _scr_size.right - gMouseCursorX + 1;
+                v8 = logicalBounds.right - gMouseCursorX + 1;
             }
         } else {
-            v7 = _scr_size.left - gMouseCursorX;
-            v8 = gMouseCursorWidth - (_scr_size.left - gMouseCursorX);
+            v7 = logicalBounds.left - gMouseCursorX;
+            v8 = gMouseCursorWidth - (logicalBounds.left - gMouseCursorX);
         }
 
-        if (gMouseCursorY >= _scr_size.top) {
-            if (gMouseCursorHeight + gMouseCursorY - 1 <= _scr_size.bottom) {
+        if (gMouseCursorY >= logicalBounds.top) {
+            if (gMouseCursorHeight + gMouseCursorY - 1 <= logicalBounds.bottom) {
                 v9 = 0;
                 v10 = gMouseCursorHeight;
             } else {
                 v9 = 0;
-                v10 = _scr_size.bottom - gMouseCursorY + 1;
+                v10 = logicalBounds.bottom - gMouseCursorY + 1;
             }
         } else {
-            v9 = _scr_size.top - gMouseCursorY;
-            v10 = gMouseCursorHeight - (_scr_size.top - gMouseCursorY);
+            v9 = logicalBounds.top - gMouseCursorY;
+            v10 = gMouseCursorHeight - (logicalBounds.top - gMouseCursorY);
         }
 
         gMouseCursorData = v2;
@@ -341,6 +346,7 @@ void mouseShowCursor()
         } else {
             _mouse_blit(gMouseCursorData, gMouseCursorWidth, gMouseCursorHeight, v7, v9, v8, v10, v7 + gMouseCursorX, v9 + gMouseCursorY);
         }
+
 
         v2 = gMouseCursorData;
         gCursorIsHidden = false;
@@ -435,8 +441,12 @@ void _mouse_info()
 
     MouseData mouseData;
     if (mouseDeviceGetData(&mouseData)) {
-        x = mouseData.x;
-        y = mouseData.y;
+        // Use absolute position to calculate delta, ensuring sync with OS cursor
+        int currentX = _mouse_hotx + gMouseCursorX;
+        int currentY = _mouse_hoty + gMouseCursorY;
+        
+        x = mouseData.absoluteX - currentX;
+        y = mouseData.absoluteY - currentY;
 
         if (mouseData.buttons[0] == 1) {
             buttons |= MOUSE_STATE_LEFT_BUTTON_DOWN;
@@ -451,8 +461,9 @@ void _mouse_info()
     }
 
     // Adjust for mouse senstivity.
-    x = (int)(x * gMouseSensitivity);
-    y = (int)(y * gMouseSensitivity);
+    // NOTE: Sensitivity is ignored when using absolute positioning to keep 1:1 mapping with OS cursor.
+    // x = (int)(x * gMouseSensitivity);
+    // y = (int)(y * gMouseSensitivity);
 
     _mouse_simulate_input(x, y, buttons);
 
@@ -614,16 +625,18 @@ void _mouse_set_position(int x, int y)
 // 0x4CAA38
 static void _mouse_clip()
 {
-    if (_mouse_hotx + gMouseCursorX < _scr_size.left) {
-        gMouseCursorX = _scr_size.left - _mouse_hotx;
-    } else if (_mouse_hotx + gMouseCursorX > _scr_size.right) {
-        gMouseCursorX = _scr_size.right - _mouse_hotx;
+    const Rect& logicalBounds = displayScalerGetLogicalBounds();
+
+    if (_mouse_hotx + gMouseCursorX < logicalBounds.left) {
+        gMouseCursorX = logicalBounds.left - _mouse_hotx;
+    } else if (_mouse_hotx + gMouseCursorX > logicalBounds.right) {
+        gMouseCursorX = logicalBounds.right - _mouse_hotx;
     }
 
-    if (_mouse_hoty + gMouseCursorY < _scr_size.top) {
-        gMouseCursorY = _scr_size.top - _mouse_hoty;
-    } else if (_mouse_hoty + gMouseCursorY > _scr_size.bottom) {
-        gMouseCursorY = _scr_size.bottom - _mouse_hoty;
+    if (_mouse_hoty + gMouseCursorY < logicalBounds.top) {
+        gMouseCursorY = logicalBounds.top - _mouse_hoty;
+    } else if (_mouse_hoty + gMouseCursorY > logicalBounds.bottom) {
+        gMouseCursorY = logicalBounds.bottom - _mouse_hoty;
     }
 }
 
@@ -643,16 +656,15 @@ bool cursorIsHidden()
 void _mouse_get_raw_state(int* out_x, int* out_y, int* out_buttons)
 {
     MouseData mouseData;
-    if (!mouseDeviceGetData(&mouseData)) {
-        mouseData.x = 0;
-        mouseData.y = 0;
+    if (mouseDeviceGetData(&mouseData)) {
+        _raw_x = mouseData.absoluteX - _mouse_hotx;
+        _raw_y = mouseData.absoluteY - _mouse_hoty;
+    } else {
         mouseData.buttons[0] = (gMouseEvent & MOUSE_EVENT_LEFT_BUTTON_DOWN) != 0;
         mouseData.buttons[1] = (gMouseEvent & MOUSE_EVENT_RIGHT_BUTTON_DOWN) != 0;
     }
 
     _raw_buttons = 0;
-    _raw_x += mouseData.x;
-    _raw_y += mouseData.y;
 
     if (mouseData.buttons[0] != 0) {
         _raw_buttons |= MOUSE_EVENT_LEFT_BUTTON_DOWN;

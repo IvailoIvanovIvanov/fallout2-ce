@@ -524,12 +524,7 @@ int gameHandleKey(int eventCode, bool isInCombatMode)
 
         if ((mouseState & MOUSE_EVENT_LEFT_BUTTON_DOWN) != 0) {
             if ((mouseState & MOUSE_EVENT_LEFT_BUTTON_REPEAT) == 0) {
-                if (mouseX == _scr_size.left || mouseX == _scr_size.right
-                    || mouseY == _scr_size.top || mouseY == _scr_size.bottom) {
-                    _gmouse_clicked_on_edge = true;
-                } else {
-                    _gmouse_clicked_on_edge = false;
-                }
+                _gmouse_clicked_on_edge = gameMouseIsAtScrollEdge(mouseX, mouseY);
             }
         } else {
             if ((mouseState & MOUSE_EVENT_LEFT_BUTTON_UP) != 0) {
@@ -560,12 +555,7 @@ int gameHandleKey(int eventCode, bool isInCombatMode)
 
             if ((mouseEvent & MOUSE_EVENT_LEFT_BUTTON_DOWN) != 0) {
                 if ((mouseEvent & MOUSE_EVENT_LEFT_BUTTON_REPEAT) == 0) {
-                    if (mouseX == _scr_size.left || mouseX == _scr_size.right
-                        || mouseY == _scr_size.top || mouseY == _scr_size.bottom) {
-                        _gmouse_clicked_on_edge = true;
-                    } else {
-                        _gmouse_clicked_on_edge = false;
-                    }
+                    _gmouse_clicked_on_edge = gameMouseIsAtScrollEdge(mouseX, mouseY);
                 }
             } else {
                 if ((mouseEvent & MOUSE_EVENT_LEFT_BUTTON_UP) != 0) {

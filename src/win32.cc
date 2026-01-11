@@ -6,6 +6,8 @@
 
 #ifndef _WIN32
 #include <unistd.h>
+#else
+#include <windows.h>
 #endif
 
 #include "main.h"
@@ -27,11 +29,50 @@ HANDLE GNW95_mutex = nullptr;
 
 int main(int argc, char* argv[])
 {
+    // Write immediate startup marker
+    {
+        // Removed game_startup.log
+    }
+
     int rc;
 
 #if _WIN32
+    // Enable Per-Monitor DPI awareness so SDL gets the true native resolution
+    // This must be done before any window creation (including SDL_Init)
+    // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ((DPI_AWARENESS_CONTEXT)-4)
+    // We use SetProcessDpiAwarenessContext if available (Windows 10 1703+),
+    // otherwise fall back to SetProcessDPIAware (Vista+)
+    {
+        typedef BOOL (WINAPI *SetProcessDpiAwarenessContextProc)(void*);
+        typedef BOOL (WINAPI *SetProcessDPIAwareProc)(void);
+        
+        HMODULE user32 = GetModuleHandleA("user32.dll");
+        if (user32 != nullptr) {
+            SetProcessDpiAwarenessContextProc setDpiContext = 
+                (SetProcessDpiAwarenessContextProc)GetProcAddress(user32, "SetProcessDpiAwarenessContext");
+            if (setDpiContext != nullptr) {
+                // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+                setDpiContext((void*)-4);
+            } else {
+                // Fallback for older Windows versions
+                SetProcessDPIAwareProc setDpiAware = 
+                    (SetProcessDPIAwareProc)GetProcAddress(user32, "SetProcessDPIAware");
+                if (setDpiAware != nullptr) {
+                    setDpiAware();
+                }
+            }
+        }
+    }
+
     GNW95_mutex = CreateMutexA(0, TRUE, "GNW95MUTEX");
-    if (GetLastError() != ERROR_SUCCESS) {
+    DWORD mutexError = GetLastError();
+    if (mutexError != ERROR_SUCCESS) {
+        // Show message box so user knows what happened
+        MessageBoxA(NULL, 
+            "Fallout 2 CE is already running, or a previous instance did not exit cleanly.\n\n"
+            "Check Task Manager for fallout2-ce.exe processes.",
+            "Fallout 2 CE - Already Running", 
+            MB_OK | MB_ICONWARNING);
         return 0;
     }
 #endif

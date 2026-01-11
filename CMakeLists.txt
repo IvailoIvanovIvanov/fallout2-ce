@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.5)
 
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
 
@@ -14,6 +14,7 @@ if(APPLE)
     endif()
 endif()
 
+cmake_policy(SET CMP0076 NEW)
 project(${EXECUTABLE_NAME})
 
 set(CMAKE_CXX_STANDARD 17)
@@ -73,6 +74,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/dbox.h"
     "src/debug.cc"
     "src/debug.h"
+    "src/diagnostics.cc"
+    "src/diagnostics.h"
     "src/dfile.cc"
     "src/dfile.h"
     "src/dialog.cc"
@@ -83,6 +86,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/dinput.h"
     "src/display_monitor.cc"
     "src/display_monitor.h"
+    "src/renderer/display_scaler.cc"
+    "src/renderer/display_scaler.h"
     "src/draw.cc"
     "src/draw.h"
     "src/elevator.cc"
@@ -116,6 +121,9 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/geometry.h"
     "src/graph_lib.cc"
     "src/graph_lib.h"
+    "src/renderer/gpu_context.h"
+    "src/renderer/opengl_context.cc"
+    "src/renderer/opengl_context.h"
     "src/heap.cc"
     "src/heap.h"
     "src/input.cc"
@@ -136,6 +144,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/kb.h"
     "src/light.cc"
     "src/light.h"
+    "src/lighting_abstraction.cc"
+    "src/lighting_abstraction.h"
     "src/lips.cc"
     "src/lips.h"
     "src/loadsave.cc"
@@ -191,6 +201,21 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/queue.h"
     "src/random.cc"
     "src/random.h"
+    "src/renderer/buffer_manager.cc"
+    "src/renderer/buffer_manager.h"
+    "src/renderer/anime4k_pass.cc"
+    "src/renderer/anime4k_pass.h"
+    "src/renderer/blur_filter.cc"
+    "src/renderer/blur_filter.h"
+    "src/renderer/hdr_filter.cc"
+    "src/renderer/hdr_filter.h"
+    "src/renderer/render_pipeline.cc"
+    "src/renderer/render_pipeline.h"
+    "src/renderer/scaler_pass.cc"
+    "src/renderer/scaler_pass.h"
+    "src/renderer/shader_pass.h"
+    "src/renderer/generic_shader_pass.cc"
+    "src/renderer/generic_shader_pass.h"
     "src/reaction.cc"
     "src/reaction.h"
     "src/region.cc"
@@ -219,6 +244,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/string_parsers.h"
     "src/svga.cc"
     "src/svga.h"
+    "src/renderer/upscaler.cc"
+    "src/renderer/upscaler.h"
     "src/text_font.cc"
     "src/text_font.h"
     "src/text_object.cc"
@@ -246,6 +273,7 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/worldmap.h"
     "src/xfile.cc"
     "src/xfile.h"
+    "third_party/stb/stb_image_impl.cc"
 )
 
 target_sources(${EXECUTABLE_NAME} PUBLIC
@@ -374,6 +402,20 @@ target_include_directories(${EXECUTABLE_NAME} PRIVATE ${ZLIB_INCLUDE_DIRS})
 
 target_link_libraries(${EXECUTABLE_NAME} ${SDL2_LIBRARIES})
 target_include_directories(${EXECUTABLE_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
+target_include_directories(${EXECUTABLE_NAME} PRIVATE "${CMAKE_SOURCE_DIR}/third_party/stb")
+
+# Windows OpenGL support
+if(WIN32)
+    target_link_libraries(${EXECUTABLE_NAME} 
+        opengl32.lib
+    )
+endif()
+
+# OpenGL Support
+if(NOT WIN32)
+    find_package(OpenGL REQUIRED)
+    target_link_libraries(${EXECUTABLE_NAME} OpenGL::GL)
+endif()
 
 if(APPLE)
     if(IOS)
@@ -393,3 +435,12 @@ if(APPLE)
 
     include(CPack)
 endif()
+
+# Copy Shaders
+add_custom_command(TARGET ${EXECUTABLE_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_SOURCE_DIR}/src/renderer/shaders"
+    "$<TARGET_FILE_DIR:${EXECUTABLE_NAME}>/data/shaders"
+)
+
+

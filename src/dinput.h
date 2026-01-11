@@ -8,6 +8,8 @@ namespace fallout {
 typedef struct MouseData {
     int x;
     int y;
+    int absoluteX;
+    int absoluteY;
     unsigned char buttons[2];
     int wheelX;
     int wheelY;
@@ -28,12 +30,11 @@ bool keyboardDeviceUnacquire();
 bool keyboardDeviceReset();
 bool keyboardDeviceGetData(KeyboardData* keyboardData);
 bool mouseDeviceInit();
+void mouseDeviceAccumulateWheelDelta(int x, int y);
+void mouseDeviceHandleEvent(const SDL_Event* event);
 void mouseDeviceFree();
 bool keyboardDeviceInit();
 void keyboardDeviceFree();
-
-void handleMouseEvent(SDL_Event* event);
-void handleTouchEvent(SDL_Event* event);
 
 } // namespace fallout
 
